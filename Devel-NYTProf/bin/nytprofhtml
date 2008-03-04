@@ -397,14 +397,14 @@ __END__
 
 =head1 NAME
 
-nytprofhtml - Devel::NYTProf::Reader HTML format implementation
+nytprofhtml - L<Devel::NYTProf::Reader> HTML format implementation
 
 =head1 SYNOPSIS
 
  $ nytprofhtml [-h] [-d] [-o <output directory>] [-f <input file>]
 
- C<perl -d:NYTProf some_perl_app.pl>
- C<nytprofhtml>
+ perl -d:NYTProf some_perl_app.pl
+ nytprofhtml
  Generating HTML Output...
 
 =head1 HISTORY
@@ -416,8 +416,8 @@ by The New York Times Co. to help our developers quickly identify bottlenecks in
 large Perl applications.  The Times loves Perl and we hope the community will 
 benefit from our work as much as we have from theirs.
 
-Please visit L<code.nytimes.com>, our open source blog to see what we are up 
-to, and then check out L<nytimes.com> for the latest news!
+Please visit L<http://open.nytimes.com>, our open source blog to see what we are up to, L<http://code.nytimes.com> to see some of our open projects and then 
+check out L<htt://nytimes.com> for the latest news!
 
 =head1 DESCRIPTION
 
@@ -434,7 +434,7 @@ median.
 That might sound complicated, but in reality you can just run the command and
 enjoy your report!
 
-Note: You'll need to run your app through Devel::NYTProf debugger first 
+Note: You'll need to run your app through L<Devel::NYTProf> debugger first 
 
 =head1 COMMAND-LINE OPTIONS
 
@@ -462,13 +462,18 @@ Print the help message
 
 =head1 SAMPLE OUTPUT
 
-<a href="../../t/sample/">Sample Output</a>
-Sample output is located in the test directory.
+=over 4
+
+=item L<http://adkap.com/images/Screenshot-XML-LibXML.pm.png>
+
+=item L<http://adkap.com/images/Screenshot-Profile-Index.png>
+
+=back
 
 =head1 SEE ALSO
 
 L<Devel::NYTProf>
-L<Devel::NYTProf::Reader
+L<Devel::NYTProf::Reader>
 L<nytprofcsv>
 
 =head1 AUTHOR

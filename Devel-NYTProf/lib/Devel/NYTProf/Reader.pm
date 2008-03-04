@@ -353,14 +353,14 @@ sub report {
 __END__
 =head1 NAME
 
-Devel::NYTProf::Reader - Tranforms Devel::NYTProf output into comprehensive, easy to read reports in (nearly) arbitrary format.
+Devel::NYTProf::Reader - Tranforms L<Devel::NYTProf> output into comprehensive, easy to read reports in (nearly) arbitrary format.
 
 =head1 SYNOPSIS
 
  # This module comes with two scripts that implement it:
  #
- # L<nytprofhtml> - create an html report with all statistics and analysis
- # L<nytprofcsv> - create a basic comma delimited report
+ # nytprofhtml - create an html report with statistics highlighting
+ # nytprofcsv - create a basic comma delimited report
  #
  # They are in the bin directory of your perl path, so add that to your PATH.
  #
@@ -390,7 +390,7 @@ Devel::NYTProf::Reader - Tranforms Devel::NYTProf output into comprehensive, eas
  # generate the report
  $reporter->report();
 
- # many configuration options exist.  See L<nytprofhtml>, advanced example.
+ # many configuration options exist.  See nytprofhtml, advanced example.
 
 =head1 HISTORY
 
@@ -401,8 +401,8 @@ by The New York Times Co. to help our developers quickly identify bottlenecks in
 large Perl applications.  The Times loves Perl and we hope the community will 
 benefit from our work as much as we have from theirs.
 
-Please visit L<code.nytimes.com>, our open source blog to see what we are up 
-to, and then check out L<nytimes.com> for the latest news!
+Please visit L<http://open.nytimes.com>, our open source blog to see what we are up to, L<http://code.nytimes.com> to see some of our open projects and then 
+check out L<htt://nytimes.com> for the latest news!
 
 =head1 DESCRIPTION
 
@@ -464,7 +464,7 @@ See: L<Devel::NYTProf> for how the profiler works.
 Numerous parameters can be set to modify the behavior of 
 C<Devel::NYTProf::Reader>.  The following methods are provided:
 
-=over
+=over 4
 
 =item $reporter->outputDir( $output_directory );
 
@@ -576,11 +576,11 @@ the work is done.
 
 =item $reporter->getFileStats( );
 
-When called after calling C<$reporter->report()>, will return a hash containing
-the cumulative totals for each file.
+When called after calling C<$reporter-E<gt>report()>, will return a hash containing the cumulative totals for each file.
 
-C<my $stats = $reporter->getStats();>
-C<$stats->{FILENAME}->{time}; # might hold 0.25, the total runtime of this file>
+ my $stats = $reporter->getStats();
+ $stats->{FILENAME}->{time}; # might hold 0.25, the total runtime of this file>>
+
 Fields are time, calls, time/call, html-safe.
 
 =item Devel::NYTProf::Reader::calculate_sd( @stats );
@@ -607,8 +607,8 @@ was created. You should not need to use this.
 
 Implemented in XS. This function tell does the actual parsing of the database.
 It's fairly complicated and you're better off letting 
-L<Devel::NYTProf::Reader->new()> invoke it for you. The return value is a series
-of nested hash refs and array refs containing the parsed data.
+L<<Devel::NYTProf::Reader->new()>> invoke it for you. The return value is a
+series of nested hash refs and array refs containing the parsed data.
 
 =back
 
@@ -623,7 +623,7 @@ L<nytprofcsv>.  They are probably all that you will need and provide an
 excellent jumping point into writing your own custom reports.
 
 You'll need to install and run L<Devel::NYTProf> before you can use anything 
-that implements this module... but this is easy (see L<SYNOPSIS>)
+that implements this module... but this is easy (see L<"SYNOPSIS">)
 
 =head1 AUTHOR
 
