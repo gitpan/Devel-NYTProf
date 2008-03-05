@@ -6,12 +6,11 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ###########################################################
-use 5.008006;
+use 5.008001;
 use warnings;
 use strict;
 use ExtUtils::MakeMaker;
 use Config;
-use Data::Dumper;
 
 # --- Discover how much of stdio is implemented
 
@@ -129,14 +128,15 @@ WriteMakefile(
     NAME              => 'Devel::NYTProf',
     VERSION_FROM      => 'lib/Devel/NYTProf.pm', # finds $VERSION
     PREREQ_PM         => {
-    	  'Test::Exception' => 0.26,
-    	  'Sub::Uplevel'    => 0.18, # a missing test::exception prereq
     	  'Getopt::Long'    => 0,
     	}, # e.g., Module::Name => 1.1
     ($] >= 5.005 ?     ## Add these new keywords supported since 5.005
       (ABSTRACT_FROM  => 'lib/Devel/NYTProf.pm', # retrieve abstract from module
        AUTHOR         => 'Adam Kaplan <akaplan@>') : ()),
     LIBS              => [''], # e.g., '-lm'
+    EXE_FILES					=> [ 'bin/nytprofhtml', 'bin/nytprofcsv' ],
+    MAN1PODS					=> { 'bin/nytprofhtml' => '$(INST_MAN1DIR)/nytprofhtml.1',
+													'bin/nytprofcsv' => '$(INST_MAN1DIR)/nytprofcsv.1' },
     DEFINE            => $DEFINE, # e.g., '-DHAVE_SOMETHING'
     												# e.g., '-I. -I/usr/include/other'
     INC               => "-I. -I$INCLUDE", # e.g., '-I. -I/usr/include/other'
