@@ -13,7 +13,7 @@ use Carp;
 use Getopt::Long;
 use Devel::NYTProf::Reader;
 
-our $VERSION = 0.01;
+our $VERSION = 1.00;
 
 # These control the limits for what the script will consider ok to severe times
 # specified in standard deviations from the mean time

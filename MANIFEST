@@ -39,4 +39,7 @@ t/test09.x
 t/test10.p
 t/test10.v
 t/test10.x
+t/test11.p
+t/test11.v
+t/test11.x
 t/xx_pod_coverage.t

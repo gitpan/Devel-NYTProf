@@ -1,5 +1,20 @@
 Revision history for Perl extension Devel::NYTProf.
 
+0.03  Thu Mar 6 09:12:00 2008
+	- Fixed a VERY tricky bug some people had encountered. Scalar references to 
+			code that is evaled at runtime will cause divide-by-zero error IF the
+			reference was declared in a BEGIN {...} and used outside of a BEGIN. 
+			(The debugger/profiler can't see what happens in a BEGIN)
+	- Added test case for above issue as test11
+	- Fixed (i hope) the OSX segfault when using a re-malloc'd pointer that was 
+			once freed.
+	- Changed XS to compile cleanly with -Wall.
+	- Adopted versioning scheme: modules/files start at 1.0 and the distro will
+			continue from 0.0, thus making mixed versions less confusing.
+	- Enabled the debugging switch so that NYTProf can be used in the form
+			perl -MDevel::NYTProf code.pl (BUT this is ALPHA quality -- may bork)
+	- Minor cleanup to Makefile.PL
+
 0.02  Wed Mar 5 14:20:00 2008
 	- fixed a bunch of minor problems with the distribution that caused cpan
 		warnings and also cause the exe scripts to not be installed

@@ -6,7 +6,7 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ###########################################################
-use 5.008001;
+use 5.006000;
 use warnings;
 use strict;
 use ExtUtils::MakeMaker;
@@ -132,7 +132,7 @@ WriteMakefile(
     	}, # e.g., Module::Name => 1.1
     ($] >= 5.005 ?     ## Add these new keywords supported since 5.005
       (ABSTRACT_FROM  => 'lib/Devel/NYTProf.pm', # retrieve abstract from module
-       AUTHOR         => 'Adam Kaplan <akaplan@>') : ()),
+       AUTHOR         => 'Adam Kaplan <akaplan@cpan.org>') : ()),
     LIBS              => [''], # e.g., '-lm'
     EXE_FILES					=> [ 'bin/nytprofhtml', 'bin/nytprofcsv' ],
     MAN1PODS					=> { 'bin/nytprofhtml' => '$(INST_MAN1DIR)/nytprofhtml.1',
@@ -140,7 +140,8 @@ WriteMakefile(
     DEFINE            => $DEFINE, # e.g., '-DHAVE_SOMETHING'
     												# e.g., '-I. -I/usr/include/other'
     INC               => "-I. -I$INCLUDE", # e.g., '-I. -I/usr/include/other'
-		clean							=> { FILES	=> "nytprof.out profiler t/nytprof.out t/profiler" },
+		clean							=> { 
+									FILES	=> "nytprof.out profiler t/nytprof.out t/profiler" },
 		test							=> { TESTS => 'test.pl' },
 	# Un-comment this if you add C files to link with later:
     # OBJECT            => '$(O_FILES)', # link all the C files too

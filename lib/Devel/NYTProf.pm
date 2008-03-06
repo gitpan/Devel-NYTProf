@@ -9,13 +9,14 @@
 package Devel::NYTProf;
 
 BEGIN {
-	our $VERSION = '0.01';
+	our $VERSION = '1.03';
 }
 
 package DB;
 
 BEGIN {
 	# disable debugging
+	$^P=0x322;
 	$^P=0x0;
 
 	require XSLoader;

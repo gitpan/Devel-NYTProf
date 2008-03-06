@@ -31,7 +31,7 @@
 typedef struct hash_entry {
 	unsigned int id;
 	void* next_entry;
-	unsigned char* key;
+	char* key;
 } Hash_entry;
 
 typedef struct hash_table {
@@ -51,7 +51,6 @@ static FILE* in;
 static pid_t last_pid;
 static unsigned int bufsiz = BUFSIZ;
 static char* out_buffer;
-static bool flushed = 0;
 static bool forkok = 0;
 static bool usecputime = 0;
 
@@ -94,7 +93,9 @@ IV   getTicksPerSec();
 void addline(pTHX_ unsigned int, float, const char*);
 HV* process(const char*);
 
-/**** functions for Devel::NYTProf ****/
+/////////////////////////////////////
+// Devel::NYTProf Functions        //
+/////////////////////////////////////
 
 /**
  * Set file lock
@@ -143,12 +144,12 @@ print_header() {
  * An implementation of the djb2 hash function by Dan Bernstein.
  */
 unsigned long
-hash (unsigned char* _str) {
-	unsigned char* str = _str;
+hash (char* _str) {
+	char* str = _str;
 	unsigned long hash = 5381;
 	int c;
 
-	while (c = *str++) {
+	while ((c = *str++)) {
 		hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
 	}
 	return hash;
@@ -330,6 +331,7 @@ DB(pTHX) {
 		output_int(last_executed_file);
 		output_int(last_executed_line);
 		output_int(elapsed);
+		//printf("Profiled line %d in '%s' as %u ticks\n", line, file, elapsed);
 
 		if (forkok) {
 			unlock_file();
@@ -413,6 +415,10 @@ open_file(bool forked) {
 		}
 	}
 }
+
+//////////////////////////////////////
+// Shared Reader,NYTProf Functions  //
+//////////////////////////////////////
 
 /**
  * Populate runtime values from environment, the running script or use defaults
@@ -499,7 +505,9 @@ init(pTHX) {
 	}
 }
 
-/**** functions for Devel::NYTProf::Reader ****/
+//////////////////////////////////////
+// Devel::NYTProf::Reader Functions //
+//////////////////////////////////////
 
 /**
  * reader specific runtime initialization
@@ -547,7 +555,7 @@ DEBUG_print_stats(pTHX) {
 	printf("$hash = {\n");
 	while(NULL != (line_hv_rv = hv_iternextsv(profile, filename, &name_len))) {
 		HV* line_hv = (HV*)SvRV(line_hv_rv);
-		int numlines = hv_iterinit(line_hv);
+		hv_iterinit(line_hv);
 		printf ("  '%s' => {\n", *filename);
 		while(NULL != (cur_av_rv = hv_iternextsv(line_hv, linenum, &linenum_len))) {
 			AV* cur_av = (AV*)SvRV(cur_av_rv);
@@ -591,8 +599,8 @@ addline(pTHX_ unsigned int line, float time, const char* _file) {
 	strcpy(file, _file);
 
 	bool eval_mode = 0;
-	int eline;
-	float etime;
+	int eline = 0;
+	float etime = 0;
 
 	if(0 == strncmp(file, "(eval", 5)) {
 		// its an eval! 'line' is _in_ the eval. File and line number in 'file'
@@ -601,18 +609,26 @@ addline(pTHX_ unsigned int line, float time, const char* _file) {
 		char* start = strchr(file, '[');
 		char* end = strrchr(file, ':');
 		size_t substr_len = end - start - 1;
-		char* buf = (char*)malloc(sizeof(char)*substr_len);
-		buf[substr_len] = '\0';
-		memcpy(buf, start + sizeof(char), substr_len);
-		free(file);
+
 		// real file name
-		file = buf;
+    char* old_file = file;
+    file = (char*)malloc(sizeof(char)*substr_len);
+    if (NULL == file) {
+      Perl_croak(aTHX_ "malloc error");
+    }
+		file[substr_len] = '\0';
+		memcpy(file, start + sizeof(char), substr_len);
+    free(old_file);
+
 		// line number in eval block
 		eline = line;
+
 		// line number in _file_
 		line = atoi(end + sizeof(char));
+
 		// time for this line in the eval block
 		etime = time;
+
 		// execution time for the file line will be added seperately later
 		time = 0;	
 
@@ -777,7 +793,6 @@ process(const char *file) {
 	while(EOF != (c = fgetc(in))) {
 		input_line++;
 
-		int ok;
 		switch (c) {
 			case '+':
 				file_num = read_int();
@@ -802,8 +817,7 @@ process(const char *file) {
 				file_num = read_int();
 
 				if (NULL == fgets(text, 1024, in)) {
-					sprintf(error, "File format error: '%s' in file declaration'", 
-									file, file_num);
+					sprintf(error, "File format error: '%s' in file declaration'", file);
 					Perl_croak(aTHX_ error);
 				}
 
@@ -843,6 +857,10 @@ process(const char *file) {
 	//DEBUG_print_stats(aTHX);
 	return profile;
 }
+
+/////////////////////////////////////
+// Perl XS Code Below Here         //
+/////////////////////////////////////
 
 MODULE = Devel::NYTProf		PACKAGE = Devel::NYTProf		
 PROTOTYPES: DISABLE
