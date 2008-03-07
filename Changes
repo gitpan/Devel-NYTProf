@@ -1,5 +1,8 @@
 Revision history for Perl extension Devel::NYTProf.
 
+0.05  Fri Mar 7 10:29:00 2008
+	- Fixed borked tarball from 0.04. Identical to 0.04.
+
 0.04  Fri Mar 7 10:19:00 2008
 	- Changed XS code to compile clean with -ansi and -pedantic
 	- Removed `cont' on file argument to process due to XS error in Perl 5.6
