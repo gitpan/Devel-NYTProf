@@ -39,10 +39,16 @@ sub search_paths {
 	}
 }
 
+my $cpp =  $Config{cpp};
+if (!defined $cpp || 0 == length($cpp)) {
+	print "Warning: cpp not found in your perl config.  Falling back to `cat'";
+	$cpp = 'cat';
+}
+
 my $fpurge;
 sub search_files {
 	if (defined $stdio_dir) {
-		open(STDIOH, "$stdio_dir/stdio.h");
+		open(STDIOH, "$cpp $stdio_dir/stdio.h |");
 		while (<STDIOH>) {
 			if (m/(_{0,2}fpurge)\s*\(/go) {
 				$fpurge = $1;
@@ -56,7 +62,7 @@ sub search_files {
 	return if (defined $fpurge);
 
 	if (defined $stdio_ext_dir) {
-		open(STDIOEH, "$stdio_ext_dir/stdio_ext.h");
+		open(STDIOEH, "$cpp $stdio_ext_dir/stdio_ext.h |");
 		while (<STDIOEH>) {
 			if (m/(_{0,2}fpurge)\s*\(/go) {
 				$fpurge = $1;
