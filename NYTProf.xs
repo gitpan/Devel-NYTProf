@@ -25,6 +25,10 @@
 #warning "Not using _fpurge() -- There may be a preformance penalty."
 #endif
 
+#if !defined(OutCopFILE)
+#define OutCopFILE CopFILE
+#endif
+
 /* Hash table definitions */
 #define MAX_HASH_SIZE 512
 
@@ -289,6 +293,9 @@ DB(pTHX) {
 	IV line;
 	char *file;
 	unsigned int elapsed;
+#if (PERL_VERSION < 8) || ((PERL_VERSION == 8) && (PERL_SUBVERSION < 8))
+	PERL_CONTEXT *cx; /* up here per ANSI C rules */
+#endif
 
 	if (usecputime) {
 		times(&end_ctime);
@@ -309,7 +316,7 @@ DB(pTHX) {
 	}
 
 #if (PERL_VERSION < 8) || ((PERL_VERSION == 8) && (PERL_SUBVERSION < 8))
-	PERL_CONTEXT *cx = cxstack + cxstack_ix;
+	cx = cxstack + cxstack_ix;
 	file = OutCopFILE(cx->blk_oldcop);
 	line = CopLINE(cx->blk_oldcop);
 #else

@@ -14,14 +14,13 @@ use Carp;
 use vars qw/$VERSION/;
 
 BEGIN {
-	our $VERSION = '1.04'; # must match NYTProf.pm b/c dumb MakeMaker problems
+	our $VERSION = '1.04'; # must match NYTProf.pm b/c dumb MakeMaker
 
 	require XSLoader;
 	XSLoader::load('Devel::NYTProf', $Devel::NYTProf::Reader::VERSION);
 
 	# Provides Devel::NYTProf::Reader::process();
 }
-
 
 # These control the limits for what the script will consider ok to severe times
 # specified in standard deviations from the mean time

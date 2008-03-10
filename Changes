@@ -1,5 +1,9 @@
 Revision history for Perl extension Devel::NYTProf.
 
+0.06  Mon Mar 10 12:00:00 2008
+	- Added #define to fix missing linkage for OutCopFile (Perl <5.8.0 fix)
+	- Added test12, basic do script test
+
 0.05  Fri Mar 7 10:29:00 2008
 	- Fixed borked tarball from 0.04. Identical to 0.04.
 
