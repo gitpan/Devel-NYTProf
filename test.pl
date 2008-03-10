@@ -13,7 +13,7 @@ use ExtUtils::testlib;
 use Benchmark;
 use Getopt::Long;
 use Config;
-use Test::More tests => 27;
+use Test::More tests => 29;
 use_ok('Devel::NYTProf::Reader');
 
 my %opts;
