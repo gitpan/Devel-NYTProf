@@ -6,7 +6,7 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ###########################################################
-use 5.008000;
+use 5.006000;
 use warnings;
 use strict;
 use ExtUtils::MakeMaker;
