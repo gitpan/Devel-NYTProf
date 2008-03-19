@@ -9,14 +9,15 @@
 package Devel::NYTProf;
 
 BEGIN {
-	our $VERSION = '1.04'; # increment with XS changes too
+	our $VERSION = '0.09'; # increment with XS changes too
 }
 
 package DB;
 
 BEGIN {
+	# load debug symbols
+	$^P=0x1;
 	# disable debugging
-	$^P=0x322;
 	$^P=0x0;
 
 	require XSLoader;
@@ -28,7 +29,6 @@ BEGIN {
 		*DB = sub { goto &_DB }
 	}
 
-	# Preloaded methods go here.
 	init();
 
 	# enable debugging

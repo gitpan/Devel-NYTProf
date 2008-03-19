@@ -14,7 +14,7 @@ use Carp;
 use vars qw/$VERSION/;
 
 BEGIN {
-	our $VERSION = '1.04'; # must match NYTProf.pm b/c dumb MakeMaker
+	our $VERSION = '0.09'; # must match NYTProf.pm b/c dumb MakeMaker
 
 	require XSLoader;
 	XSLoader::load('Devel::NYTProf', $Devel::NYTProf::Reader::VERSION);
@@ -217,7 +217,6 @@ sub report {
         # as a result, if the variable is expanded outside of the BEGIN, we'll
         # see the original BEGIN line, but it won't have any calls or times
         # associated. This will cause a divide by zero error.
-        # TODO: extract and handle the eval'd code
         $a->[1] = 1;
       }
 

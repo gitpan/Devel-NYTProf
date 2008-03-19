@@ -13,7 +13,7 @@ use ExtUtils::testlib;
 use Benchmark;
 use Getopt::Long;
 use Config;
-use Test::More tests => 29;
+use Test::More tests => 34;
 use_ok('Devel::NYTProf::Reader');
 
 my %opts;
@@ -125,8 +125,16 @@ sub verify_report {
 
 
 	# parse/check
-	$test =~ /^(\w+)\.x$/;
-	open(IN, "profiler/$1.p.csv") or die "Unable to open temp file: $1.p.csv";
+  my $infile;
+  { local ($1, $2);
+	$test =~ /^(\w+\.(\w+\.)?)x$/;
+  $infile = $1;
+  if (defined $2) {
+  } else {
+    $infile .= "p.";
+  }
+  }
+	open(IN, "profiler/${infile}csv") or die "Can't open test file: ${infile}csv";
 	my @got = <IN>;
 	close IN;
 

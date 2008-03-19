@@ -1,5 +1,13 @@
 Revision history for Perl extension Devel::NYTProf.
 
+0.09  Mon Mar 19 13:05:00 2008
+	- Fixed broken CPAN version numbering
+	- Implemented malloc() fix by Tim Bunce (tim.bunce@gmail.[nospam]com
+	- Wrote a better eval test, now covers all uses ("", perlcode, {...})
+	- Fixed AutoSplit file source problem
+	- Wrote AutoSplit/AutoLoader tests (test14)
+  - Bugs fixed (hopefully)  33889, 34234, 33991, 33878
+
 0.08  Mon Mar 10 17:35:00 2008
 0.07  Mon Mar 10 12:00:00 2008
 0.06  Mon Mar 10 12:00:00 2008

@@ -610,7 +610,8 @@ DEBUG_print_stats(pTHX) {
 void
 addline(pTHX_ unsigned int line, float time, const char* _file) {
 
-	char* file = (char*)malloc(sizeof(char)*strlen(_file) + 1);
+	char* file; /* = (char*)malloc(sizeof(char)*strlen(_file) + 1);*/
+	int file_len = 0;
 	/* used for evals */
 	bool eval_mode = 0;
 	int eline = 0;
@@ -623,25 +624,22 @@ addline(pTHX_ unsigned int line, float time, const char* _file) {
 	SV** line_av_ref;
 	AV* line_av;
 
-	strcpy(file, _file);
-
-	if(0 == strncmp(file, "(eval", 5)) {
-		char* start = strchr(file, '[');
-		char* end = strrchr(file, ':');
-		size_t substr_len = end - start - 1;
-		/* real file name */
-    char* old_file = file;
-
+	if (0 != strncmp(_file, "(eval", 5)) {
+		file = (char *)_file;
+		file_len = strlen(file);
+	}
+	else {
 		/* its an eval! 'line' is _in_ the eval. File and line number in 'file' */
+		char* start = strchr(_file, '[');
+		char* end = strrchr(_file, ':');
+		if (!start || !end) {
+			warn("Ignoring invalid filename syntax '%s'\n", _file);
+			return;
+		}
+
 		eval_mode = 1;
-		
-    file = (char*)malloc(sizeof(char)*substr_len);
-    if (NULL == file) {
-      Perl_croak(aTHX_ "malloc error");
-    }
-		file[substr_len] = '\0';
-		memcpy(file, start + sizeof(char), substr_len);
-    free(old_file);
+		file = ++start;
+		file_len = end - start;
 
 		/* line number in eval block */
 		eline = line;
@@ -659,15 +657,21 @@ addline(pTHX_ unsigned int line, float time, const char* _file) {
 						file, line, time, eline, etime); */
 	}
 
-	file_hv_ref = hv_fetch(profile, file, strlen(file), 0);
+	/* AutoLoader adds some information to Perl's internal file name that we have
+   to remove or else the file path will be borked */
+	if (')' == file[file_len - 1]) {
+		char* new_end = strstr(file, " (autosplit ");
+		file_len = new_end - file;
+	}
+
+	file_hv_ref = hv_fetch(profile, file, file_len, 0);
 	
 	if (NULL == file_hv_ref) {
 		file_hv = newHV();
-		hv_store(profile, file, strlen(file), newRV_noinc((SV*)file_hv), 0);
+		hv_store(profile, file, file_len, newRV_noinc((SV*)file_hv), 0);
 	} else {
 		file_hv = (HV*)SvRV(*file_hv_ref);
 	}
-	free(file);
 
 	sprintf(line_str, "%u", line);
 	line_av_ref = hv_fetch(file_hv, line_str, strlen(line_str), 0);
@@ -844,8 +848,9 @@ process(char *file) {
 				addline(aTHX_ line_num, (float)elapsed / ticks_per_sec, 
 								SvPVX(*file_name_sv));
 
-				/*printf("Profiled line %u in file %u as %us\n", 
-								line_num, file_num,A  elapsed); */
+				/* printf("Profiled line %u in file %u as %us: %s\n", 
+								line_num, file_num,  elapsed, SvPVX(*file_name_sv));
+				*/
 				break;
 			}
 			case '@':
