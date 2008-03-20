@@ -12,6 +12,13 @@ use strict;
 use ExtUtils::MakeMaker;
 use Config;
 
+# --- Bail out on Windows
+if ($^O eq 'MSWin32') {
+	print "This module does not support Windows because of NYTProf.xs.\n"
+				."Feel free to port it and submit a patch to akaplan\@cpan.org\n";
+	die "No support for OS";
+}
+
 # --- Discover how much of stdio is implemented
 
 print "Looking for stdio.h and stdio_ext.h\n";

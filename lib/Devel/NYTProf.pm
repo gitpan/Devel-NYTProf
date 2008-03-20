@@ -9,7 +9,7 @@
 package Devel::NYTProf;
 
 BEGIN {
-	our $VERSION = '0.09'; # increment with XS changes too
+	our $VERSION = '1.10'; # increment with XS changes too
 }
 
 package DB;

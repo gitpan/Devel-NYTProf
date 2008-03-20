@@ -14,7 +14,7 @@ use Carp;
 use vars qw/$VERSION/;
 
 BEGIN {
-	our $VERSION = '0.09'; # must match NYTProf.pm b/c dumb MakeMaker
+	our $VERSION = '1.10'; # must match NYTProf.pm b/c dumb MakeMaker
 
 	require XSLoader;
 	XSLoader::load('Devel::NYTProf', $Devel::NYTProf::Reader::VERSION);

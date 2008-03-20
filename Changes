@@ -1,6 +1,10 @@
 Revision history for Perl extension Devel::NYTProf.
 
-0.09  Mon Mar 19 13:05:00 2008
+1.10  Web Mar 19 21:02:00 2008
+  - Another CPAN versioning fix. Hopefully the last!!!
+  - Added Makefile.pl check to report unsupported OS on Win32
+
+0.09  Wed Mar 19 13:05:00 2008
 	- Fixed broken CPAN version numbering
 	- Implemented malloc() fix by Tim Bunce (tim.bunce@gmail.[nospam]com
 	- Wrote a better eval test, now covers all uses ("", perlcode, {...})
@@ -9,14 +13,11 @@ Revision history for Perl extension Devel::NYTProf.
   - Bugs fixed (hopefully)  33889, 34234, 33991, 33878
 
 0.08  Mon Mar 10 17:35:00 2008
-0.07  Mon Mar 10 12:00:00 2008
-0.06  Mon Mar 10 12:00:00 2008
 	- Added #define to fix missing linkage for OutCopFile (Perl <5.8.0 fix)
 	- Added test12, basic do script test
 	- Moved min version to 5.6.0 again (another attempt)
 
 0.05  Fri Mar 7 10:29:00 2008
-0.04  Fri Mar 7 10:19:00 2008
 	- Changed XS code to compile clean with -ansi and -pedantic
 	- Removed `cont' on file argument to process due to XS error in Perl 5.6
 	- Added code to Makefile.PL so that header sources are run through the C 

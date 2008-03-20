@@ -1,9 +1,14 @@
 --- #YAML:1.0
 name:                Devel-NYTProf
-version:             0.09
-abstract:            Perl line profiler with advanced reporting
-license:             perl
-generated_by:        ExtUtils::MakeMaker version 6.17
+version:             1.10
+abstract:            line-by-line code profiler and report generator
+license:             ~
+author:              
+    - Adam Kaplan <akaplan@cpan.org>
+generated_by:        ExtUtils::MakeMaker version 6.42
 distribution_type:   module
 requires:     
-    Getopt::Long:         0
+    Getopt::Long:                  0
+meta-spec:
+    url:     http://module-build.sourceforge.net/META-spec-v1.3.html
+    version: 1.3
