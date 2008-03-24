@@ -140,6 +140,7 @@ if ($Config::Config{d_gettimeod}) {
 WriteMakefile(
     NAME              => 'Devel::NYTProf',
     VERSION_FROM      => 'lib/Devel/NYTProf.pm', # finds $VERSION
+    LICENSE						=> 'perl',
     PREREQ_PM         => {
     	  'Getopt::Long'    => 0,
     	}, # e.g., Module::Name => 1.1

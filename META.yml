@@ -1,8 +1,8 @@
 --- #YAML:1.0
 name:                Devel-NYTProf
-version:             1.10
+version:             1.11
 abstract:            line-by-line code profiler and report generator
-license:             ~
+license:             perl
 author:              
     - Adam Kaplan <akaplan@cpan.org>
 generated_by:        ExtUtils::MakeMaker version 6.42
