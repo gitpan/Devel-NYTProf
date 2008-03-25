@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                Devel-NYTProf
-version:             1.11
+version:             1.12
 abstract:            line-by-line code profiler and report generator
 license:             perl
 author:              
