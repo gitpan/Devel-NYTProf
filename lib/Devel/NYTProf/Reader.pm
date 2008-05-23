@@ -7,7 +7,7 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ###########################################################
-## $Id: Reader.pm 102 2008-05-23 18:52:27Z adkapx $
+## $Id: Reader.pm 105 2008-05-23 19:18:37Z adkapx $
 ###########################################################
 package Devel::NYTProf::Reader;
 
@@ -18,6 +18,7 @@ use Config;
 
 BEGIN {
 	require Devel::NYTProf::ModuleVersion;
+	our $VERSION = '1.14'; # needed, above doesn't work with MM/CPAN/PAUSE yet..
 	require XSLoader;
 	XSLoader::load('Devel::NYTProf', $Devel::NYTProf::ModuleVersion::VERSION);
 
