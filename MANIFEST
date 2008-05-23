@@ -60,3 +60,4 @@ t/test15.p
 t/test15.v
 t/test15.x
 t/xx_pod_coverage.t
+META.yml                                 Module meta-data (added by MakeMaker)

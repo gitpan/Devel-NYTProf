@@ -1,3 +1,4 @@
+# vim: ts=2 sw=2 sts=0 noexpandtab:
 ##########################################################
 ## This script is part of the Devel::NYTProf distribution
 ##
@@ -5,6 +6,8 @@
 ## at the bottom of this file, or by going to:
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
+###########################################################
+# $Id: Makefile.PL 32 2008-03-26 18:13:36Z adkapx $
 ###########################################################
 use 5.006000;
 use warnings;
@@ -137,10 +140,12 @@ if ($Config::Config{d_gettimeod}) {
 
 # See lib/ExtUtils/MakeMaker.pm for details of how to influence
 # the contents of the Makefile that is written.
+my %mm_opts;
+$mm_opts{LICENSE} = 'perl' if $ExtUtils::MakeMaker::VERSION >= 6.3002;
+
 WriteMakefile(
     NAME              => 'Devel::NYTProf',
-    VERSION_FROM      => 'lib/Devel/NYTProf.pm', # finds $VERSION
-    LICENSE						=> 'perl',
+    VERSION_FROM      => 'lib/Devel/NYTProf/ModuleVersion.pm', # finds $VERSION
     PREREQ_PM         => {
     	  'Getopt::Long'    => 0,
     	}, # e.g., Module::Name => 1.1
@@ -158,6 +163,7 @@ WriteMakefile(
 									FILES	=> "nytprof.out profiler t/nytprof.out t/profiler "
 														."t/auto" },
 		test							=> { TESTS => 'test.pl' },
-	# Un-comment this if you add C files to link with later:
-    # OBJECT            => '$(O_FILES)', # link all the C files too
+		%mm_opts,
 );
+
+# vim:ts=2:sw=2
