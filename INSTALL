@@ -1,5 +1,5 @@
 # vim: ts=2 sw=2 sts=0 noexpandtab:
-# $Id$
+# $Id: INSTALL 203 2008-07-02 16:09:18Z adkapx $
 
 Devel::NYTProf Installation Notes
 =================================

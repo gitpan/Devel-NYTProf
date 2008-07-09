@@ -4,166 +4,228 @@
 ##
 ## Copyright, contact and other information can be found
 ## at the bottom of this file, or by going to:
-## http://search.cpan.org/~akaplan/Devel-NYTProf
+## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-# $Id: Makefile.PL 32 2008-03-26 18:13:36Z adkapx $
+# $Id: Makefile.PL 288 2008-07-09 19:54:59Z tim.bunce $
 ###########################################################
 use 5.006000;
 use warnings;
 use strict;
+
 use ExtUtils::MakeMaker;
+use Getopt::Long;
 use Config;
+
+my $is_developer = (-d '.svn');
 
 # --- Bail out on Windows
 if ($^O eq 'MSWin32') {
-	print "This module does not support Windows because of NYTProf.xs.\n"
-				."Feel free to port it and submit a patch to akaplan\@cpan.org\n";
-	die "No support for OS";
+	print "This module does not currently support Windows.\n"
+				."Please help us port it - contact us at develnytprof-dev\@googlegroups.com\n";
+	die "No support for OS" if $ENV{AUTOMATED_TESTING}; # keep cpan-testers happy
 }
+
+# --- Options
+GetOptions(
+	'g!'  => \my $opt_g,
+	'pg!' => \my $opt_pg,
+) or exit 1;
 
 # --- Discover how much of stdio is implemented
 
-print "Looking for stdio.h and stdio_ext.h\n";
+my $cpp =  $Config{cpp} || do {
+	warn "Warning: cpp not found in your perl config.  Falling back to 'cat'\n";
+	'cat';
+};
+
+print "Looking for header files and functions...\n";
 my $INCLUDE;
-my $stdio_dir;
-my $stdio_ext_dir;
-
-sub search_paths {
-	my $dir = shift;
-	my @dirs = split /:/, $dir;
-	foreach (@dirs) {
-		opendir(DIR, $_) or "Unable to open $_\n" and next;
-
-		while(my $file = readdir(DIR)) {
-			if ($file =~ m/^stdio\.h$/) {
-				$stdio_dir = $_ unless defined $stdio_dir;
-			} elsif ($file =~ m/^stdio_ext\.h$/) {
-				$stdio_ext_dir = $_ unless defined $stdio_ext_dir;
-			}
-			last if (defined $stdio_dir && defined $stdio_ext_dir);
-		}
-
-		closedir(DIR);
-		last if (defined $stdio_dir && defined $stdio_ext_dir);
-	}
-}
-
-my $cpp =  $Config{cpp};
-if (!defined $cpp || 0 == length($cpp)) {
-	print "Warning: cpp not found in your perl config.  Falling back to `cat'";
-	$cpp = 'cat';
-}
-
 my $fpurge;
-sub search_files {
-	if (defined $stdio_dir) {
-		open(STDIOH, "$cpp $stdio_dir/stdio.h |");
-		while (<STDIOH>) {
-			if (m/(_{0,2}fpurge)\s*\(/go) {
-				$fpurge = $1;
-				$stdio_ext_dir = undef;
-				last;
-			}
-		}
-		close STDIOH;
-	}
+my $fpurge_h_file = '';
+my $clock_gettime;
 
-	return if (defined $fpurge);
+my $h_files;
+my @h_dirs;
+push @h_dirs, split /:/, $ENV{INCLUDE} if $ENV{INCLUDE};
+push @h_dirs, split ' ', $Config{libsdirs};
+push @h_dirs, qw(/include /usr/include /usr/local/include);
+@h_dirs = grep { -d $_ } @h_dirs;
 
-	if (defined $stdio_ext_dir) {
-		open(STDIOEH, "$cpp $stdio_ext_dir/stdio_ext.h |");
-		while (<STDIOEH>) {
-			if (m/(_{0,2}fpurge)\s*\(/go) {
-				$fpurge = $1;
-				$stdio_dir = undef;
-				last;
-			}
-		}
-		close STDIOEH;
-	}
-}
+SEARCH: {
 
-# verify
-sub verify {
-	if (defined ($fpurge)) {
-		if (defined $stdio_ext_dir) {
-			print "Found $fpurge in $stdio_ext_dir/stdio_ext.h\n";
-			$INCLUDE = $stdio_ext_dir;
-		} else {
-			print "Found $fpurge in $stdio_dir/stdio.h\n";
-			$INCLUDE = $stdio_dir;
-		}
-		return 1;
-	}
-	undef;
-}
+	$h_files = find_h_files(@h_dirs);
 
-if (defined $ENV{INCLUDE}) {
-  search_paths($ENV{INCLUDE});
-} else {
-  search_paths('/include:/usr/include:/usr/local/include');
-}
-search_files();
+	# search for clock_gettime
+	$clock_gettime = search_h_file('time.h', qr/(clock_gettime)\s*\(/)
+		and print "Found $clock_gettime in time.h\n";
 
-while(!verify) {
-	print<<EOD;
-		Unable to find an fpurge function in your INCLUDE path 
-		files. fpurge isn't required, but will result in MUCH
-		faster profiling if your code may fork.  If it normally 
-		found in stdio_ext.h, and sometimes in stdio.h.  Try 
-		using `find' or `locate' to discover where these files
-		reside.  Enter paths to include in the search here, 
-		seperated by ':' (or leave it blank to not use fpurge 
-		at all)
-
-EOD
-		my $pathstr = prompt("Additional header search paths:", "");
-		if (length $pathstr) {
-			search_paths($pathstr);
-			search_files();
-		} else {
+	# search for fpurge
+	my @stdio_h_files = qw(stdio.h stdio_ext.h);
+	for my $h (@stdio_h_files) {
+		if ($fpurge = search_h_file($h, qr/(_{0,2}fpurge)\s*\(/)) {
+			my $dir = $h_files->{$h};
+			print "Found $fpurge in $dir/$h\n";
+			$fpurge_h_file = $h;
+			$INCLUDE .= "-I$dir ";
 			last;
 		}
+	}
+
+  if (!$fpurge) {
+		print "\nWarning: Unable to find an fpurge function in your header files.\n";
+		print "I looked for @stdio_h_files in @h_dirs\n";
+		print join "\n",
+			"The fpurge function isn't required, but if you profile code that",
+			"calls fork() you may get corrupt profile data without it.",
+			"If it normally found in stdio_ext.h, and sometimes in stdio.h.",
+			"Try using 'find' or 'locate' to discover where these files reside.",
+			"Enter paths to search here, seperated by ':' (or just press return to not use fpurge)",
+			"\n";
+
+		my $pathstr = prompt("Additional header paths to search for fpurge:", "");
+		if ($pathstr) {
+			my @new = split /:/, $pathstr;
+			print "Adding '$_' for search path\n" for @new;
+			-d $_ or warn "$_ does not exist\n" for @new;
+			push @h_dirs, @new;
+			redo SEARCH;
+		}
+		print "\n";
+	}
 }
 
-$INCLUDE = $stdio_dir if defined $stdio_dir;
-$INCLUDE = $stdio_ext_dir if defined $stdio_ext_dir;
-my $DEFINE = '-DHAS'.uc($fpurge);
-$DEFINE .= ' -DHAS_STDIO_EXT_H' if defined $stdio_ext_dir;
 
-# ---
-
-if ($Config::Config{d_gettimeod}) {
-    $DEFINE .= ' -D_HAS_GETTIMEOFDAY';
-}
+my @LIBS = ();
+push @LIBS, "-lrt" if $clock_gettime;
 
 # See lib/ExtUtils/MakeMaker.pm for details of how to influence
 # the contents of the Makefile that is written.
 my %mm_opts;
+
+$mm_opts{DEFINE} .= '-DHAS'.uc($fpurge) if $fpurge;
+$mm_opts{DEFINE} .= ' -DHAS'.uc($clock_gettime) if $clock_gettime;
+$mm_opts{DEFINE} .= ' -DHAS_STDIO_EXT_H' if $fpurge_h_file eq 'stdio_ext.h';
+
 $mm_opts{LICENSE} = 'perl' if $ExtUtils::MakeMaker::VERSION >= 6.3002;
+$mm_opts{OPTIMIZE} = '-g'  if $opt_g;
+$mm_opts{CCFLAGS}  = "-pg" if $opt_pg;
+
+if (my $gccversion = $Config{gccversion}) {     # ask gcc to be more pedantic
+    print "Your perl was compiled with gcc (version $Config{gccversion}), okay.\n";
+    $gccversion =~ s/[^\d\.]//g; # just a number please
+    $mm_opts{DEFINE} .= ' -W -Wall -Wpointer-arith -Wbad-function-cast';
+    $mm_opts{DEFINE} .= ' -Wno-comment -Wno-sign-compare -Wno-cast-qual';
+    $mm_opts{DEFINE} .= ' -Wmissing-noreturn -Wno-unused-parameter' if $gccversion ge "3.0";
+    if ($is_developer && $opt_g) {
+        $mm_opts{DEFINE} .= ' -DPERL_GCC_PEDANTIC -ansi -pedantic' if $gccversion ge "3.0";
+        $mm_opts{DEFINE} .= ' -Wdisabled-optimization -Wformat'    if $gccversion ge "3.0";
+        $mm_opts{DEFINE} .= ' -Wmissing-prototypes';
+    }
+}
+
 
 WriteMakefile(
     NAME              => 'Devel::NYTProf',
-    VERSION_FROM      => 'lib/Devel/NYTProf/ModuleVersion.pm', # finds $VERSION
+    VERSION_FROM      => 'lib/Devel/NYTProf/Core.pm', # finds $VERSION
+    ABSTRACT_FROM     => 'lib/Devel/NYTProf.pm', # retrieve abstract from module
+    AUTHOR            => 'Adam Kaplan <akaplan@cpan.org>, Tim Bunce <timb@cpan.org>',
     PREREQ_PM         => {
+    	  'List::Util'      => 0,
+    	  'Test::More'      => 0,
+    	  'XSLoader'        => 0,
     	  'Getopt::Long'    => 0,
-    	}, # e.g., Module::Name => 1.1
-    ($] >= 5.005 ?     ## Add these new keywords supported since 5.005
-      (ABSTRACT_FROM  => 'lib/Devel/NYTProf.pm', # retrieve abstract from module
-       AUTHOR         => 'Adam Kaplan <akaplan@cpan.org>') : ()),
-    LIBS              => [''], # e.g., '-lm'
+    	},
+    LIBS              => \@LIBS,
     EXE_FILES					=> [ 'bin/nytprofhtml', 'bin/nytprofcsv' ],
     MAN1PODS					=> { 'bin/nytprofhtml' => '$(INST_MAN1DIR)/nytprofhtml.1',
 													'bin/nytprofcsv' => '$(INST_MAN1DIR)/nytprofcsv.1' },
-    DEFINE            => $DEFINE, # e.g., '-DHAVE_SOMETHING'
-    												# e.g., '-I. -I/usr/include/other'
-    INC               => "-I. -I$INCLUDE", # e.g., '-I. -I/usr/include/other'
-		clean							=> { 
-									FILES	=> "nytprof.out profiler t/nytprof.out t/profiler "
-														."t/auto" },
-		test							=> { TESTS => 'test.pl' },
-		%mm_opts,
+    INC               => $INCLUDE,
+    clean             => { 
+        FILES => "t/nytprof_t.out nytprof t/nytprof.out t/*.outdir t/test*.*.new t/auto"
+    },
+    dist  => {
+        DIST_DEFAULT=> 'clean distcheck disttest tardist',
+        PREOP => '$(MAKE) -f Makefile.old distdir',
+        COMPRESS => 'gzip -v9', SUFFIX => 'gz',
+    },
+    %mm_opts,
 );
 
-# vim:ts=2:sw=2
+exit 0;
+
+# --- Utility functions ---
+
+
+sub find_h_files {
+	my @dirs = @_;
+	my %h_files;
+	foreach my $dir (@dirs) {
+		next unless $dir;
+		opendir(DIR, $dir)
+			or next; # silently ignore missing directories
+
+		while (my $file = readdir(DIR)) {
+			next unless $file =~ /\.h$/;
+			$h_files{$file} ||= $dir; # record first found
+		}
+	}
+	close DIR;
+	return \%h_files;
+}
+
+sub search_h_file {
+	my ($h_file, $regex) = @_;
+	my $dir = $h_files->{$h_file}
+		or return undef;
+	open H, "$cpp $dir/$h_file |";
+	while (<H>) {
+		return $1 if m/$regex/;
+	}
+	close H;
+	return undef
+}
+
+
+
+
+# --- MakeMaker overrides ---
+
+package MY;
+
+# add some extra utility targets to the make file
+sub post_constants {
+    q{
+svnmanifest::
+	svn list -R .@HEAD | sort | grep -v '/$$' > MANIFEST
+	svn diff MANIFEST
+
+checkkeywords:
+	$(RM_RF) blib
+	find .  \( -name .svn -prune -or -name t -prune -or -name \*.pm -or -name \*.PL -or -name \*.pl \) -type f \
+			-exec bash -c '[ "$$(svn pg svn:keywords {})" != "Id Revision Date" ] && echo svn propset svn:keywords \"Id Revision Date\" {}' \;
+
+checkpod:
+	$(RM_RF) blib
+	find . -type f \( -name .svn -prune -o -name \*.pm -o -name \*.PL -o -name \*.pl \) \
+			-exec podchecker {} \; 2>&1 | grep -v "pod syntax OK"
+}
+}
+
+sub dynamic {
+	my $make = shift->SUPER::dynamic(@_);
+	$make .= join "\n",
+		'# Copy extension to where XSLoader looks to avoid fallback to DynaLoader',
+		'# See t/test14.p for more details',
+		'XSL_DEST_DIR = $(INST_LIB)/$(PARENT_NAME)/auto/$(FULLEXT)',
+		'XSL_DEST = $(XSL_DEST_DIR)/$(DLBASE).$(DLEXT)',
+		'',
+		'dynamic :: $(INST_DYNAMIC)',
+		"\t".'$(NOECHO) $(MKPATH) $(XSL_DEST_DIR)',
+		"\t".'$(CP) $(INST_DYNAMIC) $(XSL_DEST)',
+		'';
+	return $make;
+}
+
+
+# vim:ts=2:sw=2:sts=0:noexpandtab

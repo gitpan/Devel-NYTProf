@@ -5,162 +5,257 @@
 ##
 ## Copyright, contact and other information can be found
 ## at the bottom of this file, or by going to:
-## http://search.cpan.org/~akaplan/Devel-NYTProf
+## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: test.pl 32 2008-03-26 18:13:36Z adkapx $
+## $Id: test.pl 288 2008-07-09 19:54:59Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
+
+use Carp;
 use ExtUtils::testlib;
-use Benchmark;
 use Getopt::Long;
 use Config;
-use Test::More tests => 36;
-use_ok('Devel::NYTProf::Reader');
+use Test::More;
+use Data::Dumper;
+
+use Devel::NYTProf::Reader;
+use Devel::NYTProf::Util qw(strip_prefix_from_paths);
+
+$|=1;
 
 # skip these tests when the provided condition is true
 my %SKIP_TESTS = (
-	'test06' => ($] < 5.008) ? 1 : 0,
-	'test15' => ($] >= 5.008) ? 1 : 0,
+	'test06' => ($] >= 5.008) ? 0 : "needs perl >= 5.8",
+	'test15' => ($] <  5.008) ? 0 : "needs perl < 5.8",
+	'test16' => ($] >=  5.010) ? 0 : "needs perl >= 5.10",
 );
 
-my %opts;
-GetOptions(\%opts, qw/p=s I=s v/);
+my %opts = (
+	profperlopts => '-d:NYTProf',
+	html => $ENV{NYTPROF_TEST_HTML},
+);
+GetOptions(\%opts,
+	qw/p=s I=s v|verbose d|debug html open profperlopts=s/
+) or exit 1;
+
+$opts{v} ||= $opts{d};
 
 my $opt_perl = $opts{p};
 my $opt_include = $opts{I};
+my $profile_datafile = 'nytprof_t.out'; # non-default to test override works
+
+# note some env vars that might impact the tests
+$ENV{$_} && warn "$_=$ENV{$_}\n"
+	for qw(PERL5DB PERL5OPT PERL_UNICODE PERLIO);
+
+if ($ENV{NYTPROF}) { # avoid external interference
+	warn "Existing NYTPROF env var value ($ENV{NYTPROF}) ignored for tests. Use NYTPROF_TEST env var if need be.\n";
+	$ENV{NYTPROF} = '';
+}
+
+# options the user wants to override when running tests
+my %NYTPROF_TEST = map { split /=/, $_, 2 } split /:/, $ENV{NYTPROF_TEST}||'';
+# but we'll force a specific test data file
+$NYTPROF_TEST{file} = $profile_datafile;
 
 chdir( 't' ) if -d 't';
-my @tests = @ARGV ? @ARGV : sort <*.p *.v *.x>;  # glob-sort, for OS/2
+
+my $tests_per_extn = { p => 1, rdt => 1, x => 3 };
+
+s:^t/:: for @ARGV; # allow args to use t/ prefix
+# *.p   = perl code to profile
+# *.rdt = result tsv data dump to verify
+# *.x   = result csv dump to verify (should change to .rcv)
+my @tests = @ARGV ? @ARGV : sort <*.p *.rdt *.x>;  # glob-sort, for OS/2
+
+plan tests => 1 + number_of_tests(@tests) * 2;
 
 my $path_sep = $Config{path_sep} || ':';
 if( -d '../blib' ){
 	unshift @INC, '../blib/arch', '../blib/lib';
 }
-my $fprofcsv = './bin/nytprofcsv';
-if( -d '../bin' ) {
-	$fprofcsv = ".$fprofcsv";
-}
+my $bindir = (grep { -d } qw(./bin ../bin))[0]; 
+my $nytprofcsv  = "$bindir/nytprofcsv";
+my $nytprofhtml = "$bindir/nytprofhtml";
 
 my $perl5lib = $opt_include || join( $path_sep, @INC );
 my $perl = $opt_perl || $^X;
+# turn ./perl into ../perl, because of chdir(t) above.
+$perl = ".$perl" if $perl =~ m|^\./|;
 
-if( $opts{v} ){
+if($opts{v} ){
 	print "tests: @tests\n";
 	print "perl: $perl\n";
 	print "perl5lib: $perl5lib\n";
-	print "fprofcvs: $fprofcsv\n";
+	print "nytprofcvs: $nytprofcsv\n";
 }
-if( $perl =~ m|^\./| ) {
-	# turn ./perl into ../perl, because of chdir(t) above.
-	$perl = ".$perl";
+
+ok(-x $nytprofcsv, "Where's nytprofcsv?");
+
+# run all tests in various configurations
+for my $use_db_sub (0,1) {
+	run_all_tests( {
+		use_db_sub => $use_db_sub,
+	} );
 }
-#ok(-f $perl, "Where's Perl?");
-ok(-x $fprofcsv, "Where's fprofcsv?");
 
-can_ok('Devel::NYTProf::Reader', 'process');
+sub run_all_tests {
+	my ($env) = @_;
+	print "Running tests with options: { @{[ %$env ]} }\n";
+	for my $test (@tests) {
+		run_test($test, $env)
+	}
+}
 
-$|=1;
-foreach my $test (@tests) {
-	#print $test . '.'x (20 - length $test);
-	$test =~ /(\w+)\.(\w)$/;
+sub run_test {
+	my ($test, $env) = @_;
 	
-		if ($2 eq 'p') {
-			profile($test);
-		} elsif($2 eq 'v') {
-			SKIP: {
-        skip "Tests incompatible with your perl version", 1, 
-              if (defined($SKIP_TESTS{$1}) and $SKIP_TESTS{$1});
-        verify_result($test);
-      }
-		} elsif($2 eq 'x') {
-			SKIP: {
-        skip "Tests incompatible with your perl version", 1, 
-              if (defined($SKIP_TESTS{$1}) and $SKIP_TESTS{$1});
-        verify_report($test);
-		  }
+	my %env = (%$env, %NYTPROF_TEST);
+	local $ENV{NYTPROF} = join ":", map { "$_=$env{$_}" } sort keys %env;
+
+	#print $test . '.'x (20 - length $test);
+	$test =~ / (.+?) \. (?:(\d)\.)? (\w+) $/x or do {
+		warn "Can't parse test filename '$test'";
+		return;
+	};
+	my ($basename, $fork_seqn, $type) = ($1, $2||0, $3);
+
+	SKIP: {
+		skip "$basename: $SKIP_TESTS{$basename}", number_of_tests($test)
+			if $SKIP_TESTS{$basename};
+
+		my $test_datafile = (profile_datafiles($profile_datafile))[ $fork_seqn ];
+
+		if ($type eq 'p') {
+			unlink_old_profile_datafiles($profile_datafile);
+			profile($test, $profile_datafile);
 		}
+		elsif ($type eq 'rdt') {
+			verify_data($test, $test_datafile);
+		}
+		elsif ($type eq 'x') {
+			my $outdir = "$basename.outdir";
+			mkdir $outdir or die "mkdir($outdir): $!" unless -d $outdir;
+			unlink <$outdir/*>;
+
+			verify_csv_report($test, $test_datafile, $outdir);
+
+			if ($opts{html}) {
+				run_command("$perl $nytprofhtml --file=$profile_datafile --out=$outdir");
+				run_command("open $outdir/*.html")
+					if $opts{open}; # possibly only useful on OS X
+			}
+		}
+		else {
+			warn "Unrecognized extension '$type' on test file '$test'\n"
+				unless $type eq 'new' or $type eq 'outdir'; # handy for "test.pl t/test01.*"
+		}
+	}
 }
+
+exit 0;
+
+sub run_command {
+  my ($cmd) = @_;
+  print "NYTPROF=$ENV{NYTPROF}\n" if $opts{v} && $ENV{NYTPROF};
+  local $ENV{PERL5LIB} = $perl5lib;
+  open(RV, "$cmd |") or die "Can't execute $cmd: $!\n";
+  my @results = <RV>;
+  my $ok = close RV;
+	warn "Error status $? from $cmd\n" if not $ok;
+  if ($opts{v}) {
+    print "$cmd\n";
+    print @results;
+    print "\n";
+  }
+  return $ok;
+}
+
 
 sub profile {
-	my $test = shift;
-	my @results;
-	local $ENV{PERL5LIB} = $perl5lib;
-	
-	if ($test eq "test04.p") {
-		$ENV{NYTPROF} = "allowfork";	
-	} else {
-		$ENV{NYTPROF} = "";	
-	}
+	my ($test, $profile_datafile) = @_;
 
-	my $t_start = new Benchmark;
-	open(RV, "$perl -d:NYTProf $test |") or warn "$- can't run $!\n";
-	@results = <RV>;
-	close RV;
-	my $t_total = timediff( new Benchmark, $t_start );
-
-	if ( $opts{v} ) {
-		print "\n";
-		print @results;
-	}
-	#print timestr( $t_total, 'nop' ), "\n";
+	my $cmd = "$perl $opts{profperlopts} $test";
+	ok run_command($cmd), "$test should run ok";
 }
 
-sub verify_result {
-	my $test = shift;
-	no warnings;
-  my $hash = Devel::NYTProf::Reader::process();
-	use warnings;
 
-  # remove times unless specifically testing times
-  foreach my $outer (keys %$hash) {
-		pop_times($hash->{$outer});
+sub verify_data {
+	my ($test, $profile_datafile) = @_;
+
+	my $profile = eval { Devel::NYTProf::Data->new( { filename => $profile_datafile }) };
+	if ($@) {
+		diag($@);
+		fail($test);
+		return;
 	}
 
-	my $expected;
-	{
-		local $/ = undef;
-		open(TEST, $test) or die "Unable to open test $test: $!\n";
-		my $contents = <TEST>; #slurp
-		close TEST;
-		eval $contents;
-	}
-	is_deeply($hash, $expected, $test);
+	$profile->normalize_variables;
+	dump_profile_to_file($profile, "$test.new");
+	my @got      = slurp_file("$test.new");
+	my @expected = slurp_file($test);
+
+	is_deeply(\@got, \@expected, $test)
+		? unlink("$test.new")
+		: diff_files($test, "$test.new");
 }
 
-sub verify_report {
-	my $test = shift;
 
-	local $ENV{PERL5LIB} = $perl5lib;
-	open(RV, "$perl $fprofcsv |") or die "fprofcvs can't run $!\n";
-	my $results = <RV>;
-	close RV;
-	if ($opts{v}) {
-		print <RV>;
-		print "\n";
-	}
+sub dump_data_to_file {
+	my ($profile, $file) = @_;
+	open my $fh, ">", $file or croak "Can't open $file: $!";
+	local $Data::Dumper::Indent = 1;
+	local $Data::Dumper::Sortkeys = 1;
+	print $fh Data::Dumper->Dump([$profile],['expected']);
+	return;
+}
 
 
-	# parse/check
-  my $infile;
-  { local ($1, $2);
-	$test =~ /^(\w+\.(\w+\.)?)x$/;
-  $infile = $1;
-  if (defined $2) {
-  } else {
-    $infile .= "p.";
-  }
-  }
-	open(IN, "profiler/${infile}csv") or die "Can't open test file: ${infile}csv";
-	my @got = <IN>;
-	close IN;
+sub dump_profile_to_file {
+	my ($profile, $file) = @_;
+	open my $fh, ">", $file or croak "Can't open $file: $!";
+	$profile->dump_profile_data( {
+		filehandle => $fh,
+		separator  => "\t",
+	} );
+	return;
+}
 
-	open(EXP, $test) or die "Unable to open testing file t/$test\n";
-	my @expected = <EXP>;
-	close EXP;
 
-	if ($opts{v}) {
+sub diff_files {
+	# we don't care if this fails, it's just an aid to debug test failures
+	my @opts = split / /, $ENV{NYTPROF_DIFF_OPTS}||''; # e.g. '-y'
+	@opts = ('-u') unless @opts;
+	system("diff", @opts, @_);
+}
+
+
+sub verify_csv_report {
+	my ($test, $profile_datafile, $outdir) = @_;
+
+	# generate and parse/check csv report
+
+	# determine the name of the generated csv file
+	my $csvfile = $test;
+	# fork tests will still report using the original script name
+	$csvfile =~ s/\.\d\./.0./;
+
+	# foo.p  => foo.p.csv  is tested by foo.x
+	# foo.pm => foo.pm.csv is tested by foo.pm.x
+	$csvfile =~ s/\.x//;
+	$csvfile .= ".p" unless $csvfile =~ /\.p/;
+	$csvfile = "$outdir/${csvfile}-line.csv";
+	unlink $csvfile;
+
+	my $cmd = "$perl $nytprofcsv --file=$profile_datafile --out=$outdir";
+	ok run_command($cmd), "generate csv ok";
+
+	my @got      = slurp_file($csvfile);
+	my @expected = slurp_file($test);
+
+	if ($opts{d}) {
 		print "GOT:\n";
 		print @got;
 		print "EXPECTED:\n";
@@ -175,6 +270,7 @@ sub verify_report {
     }
   }
  
+	my @accuracy_errors;
 	$index = 0;
 	my $limit = scalar(@got)-1;
 	while ($index < $limit) {
@@ -190,25 +286,34 @@ sub verify_report {
 		my $c0 = $2;
 		my $tc0 = $3;
 
-		if (0 != $expected[$index] =~ s/^\|([0-9.]+)\|(.*)/0$2/o) {
-			# Test times. expected to be within 200ms
-			ok(abs($1 - $t0) < 0.2, "Time accuracy - $test line $index");
+		if (defined $expected[$index]
+		   and 0 != $expected[$index] =~ s/^\|([0-9.]+)\|(.*)/0$2/
+		   and $c0 # protect against div-by-0 in some error situations
+		) {
+			push @accuracy_errors, "$test line $index: got $t0 expected ~$1 for time"
+				if abs($1 - $t0) > 0.2; # Test times. expected to be within 200ms
 			my $tc = $t0 / $c0;
-			ok(abs($tc - $tc0) < 0.2, "Time/Call accuracy - $test line $index");
+			push @accuracy_errors, "$test line $index: got $tc0 expected ~$tc for time/calls"
+				if abs($tc - $tc0) > 0.00002; # expected to be very close (rounding errors only)
 		}
 
 		push @got, $_;
 		$index++;
 	}
 
-	if ($opts{v}) {
+	if ($opts{d}) {
 		print "TRANSFORMED TO:\n";
 		print @got;
 		print "\n";
 	}
 
-	is_deeply(\@got, \@expected, $test);
+	is_deeply(\@got, \@expected, $test) or do {
+		spit_file("$test.new", join("", @got));
+		diff_files($test, "$test.new");
+	};
+	is(join("\n",@accuracy_errors), '', $test);
 }
+
 
 sub pop_times {
 	my $hash = shift||return;
@@ -218,3 +323,53 @@ sub pop_times {
 		pop_times($hash->{$key}->[1]);
 	}
 }
+
+
+sub number_of_tests {
+	my $total_tests = 0;
+	for (@_) {
+		next unless m/\.(\w+)$/;
+		my $tests = $tests_per_extn->{$1};
+		warn "Unknown test type '$1' for test file '$_'\n" if not defined $tests;
+		$total_tests += $tests if $tests;
+	}
+	return $total_tests;
+}
+
+
+sub slurp_file { # individual lines in list context, entire file in scalar context
+	my ($file) = @_;
+	open my $fh, "<", $file or croak "Can't open $file: $!";
+	return <$fh> if wantarray;
+	local $/ = undef; # slurp;
+	return <$fh>;
+}
+
+
+sub spit_file {
+	my ($file, $content) = @_;
+	open my $fh, ">", $file or croak "Can't open $file: $!";
+	print $fh $content;
+	close $fh or die "Error closing $file: $!";
+}
+
+
+sub profile_datafiles {
+	my ($filename) = @_;
+	croak "No filename specified" unless $filename;
+	my @profile_datafiles = glob("$filename*");
+	# sort to ensure datafile without pid suffix is first
+	@profile_datafiles = sort @profile_datafiles;
+	return @profile_datafiles; # count in scalar context
+}
+
+sub unlink_old_profile_datafiles {
+	my ($filename) = @_;
+	my @profile_datafiles = profile_datafiles($filename);
+	warn "Unlinking old @profile_datafiles\n"
+		if @profile_datafiles and $opts{v};
+	1 while unlink @profile_datafiles;
+}
+
+
+# vim:ts=2:sw=2

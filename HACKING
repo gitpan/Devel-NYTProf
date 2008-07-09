@@ -1,119 +1,72 @@
 # vim: ts=2 sw=2 sts=0 noexpandtab:
-# $Id$
+# $Id: HACKING 283 2008-07-09 14:46:50Z tim.bunce $
 
 HACKING Devel::NYTProf
 ======================
 
-The New York Times and I encourage hacking Devel::NYTProf!
+We encourage hacking Devel::NYTProf!
 
 OBTAINING THE CURRENT RELEASE
 -----------------------------
-The current offial release can be obtained by two methods.
-
-The CPAN Page (Preferred):
-http://search.cpan.org/~akaplan/Devel-NYTProf/
-
-The Google Code page:
-http://code.google.com/p/perl-devel-nytprof/downloads/list
+The current offial release can be obtained from CPAN
+http://search.cpan.org/dist/Devel-NYTProf/
 
 OBTAINING THE LATEST DEVELOPMENT CODE
 -------------------------------------
-You can grab the head of the latest trunk code from the Google Code repository:
+You can grab the head of the latest trunk code from the Google Code repository, see
 http://code.google.com/p/perl-devel-nytprof/source/checkout
-
-or directly via SVN:
-
-svn checkout http://perl-devel-nytprof.googlecode.com/svn/trunk/ perl-devel-nytprof-read-only
 
 CONTRIBUTING
 ------------
-Small patches are accepted via email (akaplan@nytimes.com) or Google Group post.
+Please work with the latest code from the repository - see above.
 
-Larger changes will need SVN write-access.  You can obtain this by emailing
-Adam (akaplan@nytimes.com).  You'll need to have a Google account first, so go
-make one first.  Include the username in your request for access.  After access
-is obtained, you can use this command:
+Small patches can be uploaded via the issue tracker at
+http://code.google.com/p/perl-devel-nytprof/issues/list
 
-svn checkout https://perl-devel-nytprof.googlecode.com/svn/trunk/ perl-devel-nytprof --username YOUR_USERNAME
+For larger changes please talk to us first via the mailing list at
+http://code.google.com/p/perl-devel-nytprof/source/checkout
 
-COMPILING
----------
-When developing, use 'make' and ensure that NO warnings are output except
-for those occuring in perl "XS_blah_blah" functions.
-
-Change line 37 of Makefile from:
-
-CCCDLFLAGS = -fPIC
-
-to:
-
-CCCDLFLAGS = -fPIC -pedantic -Wall -ansi
+When developing, please ensure that no new compiler warnings are output.
 
 TESTING
 -------
-You MUST write test cases for you changes. All tests that are dropped into the
-"t" folder and added to MANIFEST will be executed.  The testing system is
-customized for this module becuse debuggers are not that easy to test.  The
-system still uses Test::Harness and Test::More, so it should behave just like
-any other perl modules 'make test'.
+You MUST write test cases for your changes. All tests that are dropped into the
+"t" folder will be executed. (Remember to add them to MANIFEST.)  The testing system is
+customized for this module because profilers are not that easy to test.
+The system still uses Test::Harness and Test::More, so it should behave just
+like any other perl modules 'make test'.
 
 Writing tests is easy!
 
-1) design a perl script that will trigger the new behavior/feature that you
-   want to test. Name the file 't/test##.p'
+1) Design a perl script that will trigger the new behavior/feature that you
+   want to test. Name the file 't/test##-description.p'
 
-2) create the 'control' file for the debugger output.  This file contains a
-   perl fragment that is eval'd.  See any t/*.v file for an example, but
-   basically it should be a hash of: line_number => [ times_executed ].
-   Time data and statistics are stripped out. They aren't reliable metrics
-   across systems.  If you are testing an eval, then you'll need to make an
-   anonymous hash that hash the lines IN the eval that were executed. The format
-   is the same. Examples are in t/test13.v, but it looks like this:
+2) Create an empty 'reference' file for the test.
+   Name the file 't/test##-description.rdt'
+   When the test is run you'll get an error and a diff and you'll
+   find a t/test##-description.rdt.new file waiting for you.
+   If, and only if, the contents of that file are correct, then rename
+   it to t/test##-description.rdt and you're done!
+   Of course working out if the contents are correct can be
+   non-trivial, but at least you don't have to write the file :)
 
-	 $expected = {
-			'test00.p' => {
-				4 => [ 3 ],
-				19 => [ 1, { 1 => [ 1 ] } ],
-				20 => [ 2, { 1 => [ 1 ], 2 => [ 100 ] } ],
-			}
-	 };
-
-	 This hash is for the files "t/test00.p"
-	 Line 4 is executed 3 times
-	 Line 19 is executed 1 time and is an eval
-	      The first line of the eval is executed 1 time
-	 Line 20 is executed 1 time and is also eval
-	      The first line of the eval is executed 1 time
-	      The second line of the eval is executed 100 times
-	
-	 Evals in the debugger are strange, and you may need to do some exploring if
-	 you manage to create a strange eval.  If code in an eval fails during test,
-	 subsequent lines INSIDE the eval are reported as having NEVER executed!
-
-3) Create a corresponding CSV output file.  This is EASY! The file will be
-	 compared against the output of bin/nytprofcsv on your test file.  It tests
-	 the output generator code.  Everything except number of calls should be set
-	 to 0.  Times are ignored, but there is a way to override that. Look through
-	 the test files to find some examples of that. Files are named t/test00.x
-
-	 Note: This is a very easy step! Just run "make test".  The scripts will fail
-	 when trying to verify the csv file, but the file that it generated can be
-	 copy-pasted from t/profiler/blah.p.csv.  You'll need to verify it of course!
-
-4) Test! run 'make test' and your new paried .p,.x & .v files will be tested
+3) Create a corresponding CSV output file if appropriate.
+   You can use the same trick of creating an empty file, but this
+   time with a .x suffix: t/test##-description.x
+	 You still need to verify the .x.new file of course!
 
 Note:  While writing a test, it is helpful to be able to run it directly, 
 			without the test harness.  This allows you to view more output stdout and 
 			stderr.  Fortunately, its easy to do:
 
-			PERL5LIB=blib/lib:blib/arch perl -d:NYTProf t/test01.p
+			perl -Mblib -MDevel::NYTProf t/test01.p
 
-			The output will be in ./nytprof. You can then also run
-			the csv manually:
+			The output will be in the ./nytprof.out file.
+			You can then also run the csv manually:
 
-			PERL5LIB=blib/lib:blib/arch perl bin/nytprofcsv
+			perl -Mblib bin/nytprofcsv
 
-			The final file will be in ./profiler/test01.p.csv
+			The final file will be in ./nytprof/test01.p.csv
 
 Remember, testing is VERY VERY important!  Within a day or two of releasing
 code, the CPAN testers will test the release on pretty much every major platform
@@ -136,3 +89,229 @@ http://groups.google.com/group/develnytprof-dev
 
 NYTimes Open Code Blog:
 http://open.nytimes.com/
+
+TODO (unsorted)
+----
+
+Fix Reader
+- not document methods with a leading underscore
+- to have consistent_naming_style notMixedCamelCase (fixed?)
+- to be fully OO (ie not document non-OO interfaces)
+- to be subclassable
+- to provide a subclass to manage generating CSV
+- to provide a subclass to manage generating HTML
+Then rework bin/ntyprof* to use the new subclasses
+Ideally end up with a single nytprof command.
+
+Add (very) basic nytprofhtml test (ie it runs and produces output)
+
+Rework option parsing so options can be implemented in perl, accessed from
+perl, and stored in data file.
+
+Write tests for new functionality.
+
+Write up change notes
+
+Write, clean-up documentation
+
+Currently the cost of calling the sub goes to the caller (good)
+but the cost of copying the result goes to the method (poor).
+Overriding pp_leavesub may allow more accurate measurements by avoiding return
+value processing overheads accumulating on last statement in sub.
+
+Similarly, the cost of retesting the loop condition is accounted
+for by the last statement executed each time round the loop.
+Overriding relevant ops may enable better accounting.
+
+Add way for program being profiled to switch output to a new profile file.
+Perhaps via enable_profile($optional_new_filename)
+See http://search.cpan.org/dist/Devel-Profile/ for use case.
+
+Add @INC to data file so reports can be made more readable by removing
+(possibly very long) library paths where appropriate.
+
+Add time to begin and end pid markers in data file.
+
+Add marker with timestamp for phases BEGIN, CHECK, INIT, END
+(could combine with pid marker)
+
+Add size and mtime of fid to data file.
+
+Intercept all opcodes that may fork and run perl code in the child
+	ie fork, open, entersub (ie xs), others?
+	and fflush before executing the op (so fpurge isn't strictly required)
+  and reinit_if_forked() afterwards
+	add option to force reinit_if_forked check per stmt just-in-case
+
+Add way to merge profile data. Merging could be done in perl.
+
+Add constants to Data.pm for the array indexes
+0=time_spent
+1=exe_count
+2=eval_line_data
+
+Add method to remove data (like sub_fid_lines) relating to specific files
+so that the .rdt tests aren't affected by variations between versions of library modules.
+
+Support profiling programs which use threads:
+	- move all relevant globals into a structure
+	- add lock around output to file
+
+Add functions to read & write strings to the profile data file that uses an
+integer length prefix.  Replace all current newline-terminated strings with the
+new code, so we're safe from embedded newlines and can also store multi-line strings.
+
+Support optionally generating a compressed data file (using popen("zip -c > $file"))
+
+Support optionally saving eval strings (from @{"_<$filename"}, see perldoc perldebguts)
+Should always save the first eval string at each distinct eval (fid:line)
+and require an option to save them all (which could make the data file very large).
+
+Add % of total time to index page
+Remove bottom stats.
+
+Use clock_gettime(CLOCK_MONOTONIC) if available, else clock_gettime(CLOCK_REALTIME).
+Those calls are cheaper than gettimeofday and can give nanosecond resolution.
+
+nytprofhtml: output list of subs as a table and include timings aggregated from
+the line ranges. (Won't be accurate for overlapping subs, such as anonymous
+subs, but those can be detetected and a note added.)
+
+The whole reporting framework needs a rewrite to use a single 'thin' command
+line and classes for the Model (lines, files, subs), View (html, csv etc),
+and Controller (composing views to form reports).
+
+Add timing to sub calls by using save stack to trigger end of timing measurement?
+
+Add resolution of __ANON__ sub names (eg imported 'constants') where possible.
+
+Trim leading @INC portion from filename in __ANON__[/very/long/path/...]
+in report output. (Keep full path in link/tooltip/title as it may be ambiguous when shortened).
+
+Explain what's shown in html reports, ie say it's elapsed realtime.
+
+Use 'Statements' or 'Stmts' instead of Calls in reports.
+
+Only warn "No file line range data for sub' once per sub.
+Add hint that it may be XS.
+Could also note fact that it is XS in pp_entersub_profiler
+
+Currently the line of only last BEGIN (or 'use') in the file are recorded.
+Rename Foo::BEGIN subs to Foo::BEGIN[file:line]
+(which matches the style used for Foo::__AUTO__[file:line])
+Probably need to record or output the line range when the BEGIN 'sub' is entered.
+
+Record $AUTOLOAD when AUTOLOAD() called
+Perhaps as ...::AUTOLOAD[$AUTOLOAD]
+
+Refactor this HACKING file!
+
+Add docs for new options
+
+Add docs for use_db_sub and explain pros & cons. Especially that opcode
+redirection can't profile code that was loaded before NYTProf because
+it only affects code that is *compiled* after it takes effect.
+(Unless we want to traverse the existing compiled code and edit the ops in place :-)
+
+Would be good if DB::DB sub wasn't defined when use_db_sub is false
+so the profiler could be used to profile debuggers etc.
+
+Add file format backwards compatibility tests.
+
+Add tests for evals in regex: s/.../ ...perl code... /e
+
+Add tests for -block and -sub csv reports.
+
+Add tests with various kinds of blocks (if, do, etc) and loops.
+
+Add links to -$level html reports to ease switching between them.
+
+Set options via import so perl -d:NYTProf=... works. Very handy. May need
+alternative option syntax. Also perl gives special meaning to 't' option
+(threads) so we should reserve the same for eventual thread support.
+
+Add help option which would print a summary of the options and exit
+
+Add mechanism to specify options inside the .p file, such as
+# NYTPROF=...
+
+Add mechanism to specify inside the .p file that NYTProf
+should not be loaded via the command line. That's needed to test
+behaviors in environments where perl is init'd first. Such as mod_perl.
+Then we can test things like not having the sub line range for some subs.
+
+NYTProf.xs takes two time measurements per statement in order to hide the
+overheads and avoid 'noise' in the results due to stdio flushing at
+unpredictable moments. The subroutine inclusive timing currently has no way to
+compensate for the same overheads. That can be fixed  as follows... The
+statement profile code could measure the overhead time (by subtracting the two
+times it takes) and accumulate it into a global. When a sub is entered
+the inclusive timing code can take a copy of the current cumulative overhead.
+When the subroutine exits the code can subtract the difference between the
+original cumulative overhead and the current one.
+
+Talking that further, the same approach may be able to provide *exclusive*
+subroutine times. That would make NYTProf an even better sub-level profiler
+and, when line-level profiling is disabled, the fastest profiler by far.
+
+Add way to tell if were returning from the outermost scope, ie we're
+in mod_perl and we're exiting a handler back to mod_perl. So any wait time
+before the next statement shouldn't be counted.
+Otherwise a some return, typically from a DESTROY, gets all the time spent
+waiting for the next request. Which is inappropriate and confusing.
+
+Add top-n statements to file reports between sub table and line table.
+
+Pure css tooltips, with a :before or :after with content:, may let us add help notes to the
+counts column to describe what the count is actually a count of, without
+bloating the html.
+http://meyerweb.com/eric/css/edge/popups/demo.html
+http://www.communitymx.com/content/article.cfm?page=4&cid=4E2C0
+http://www.kollermedia.at/archive/2008/03/24/easy-css-tooltip/
+The tricky/clever/new idea is that by nesting a span inside another and using
+the :before or :after on the inner one the text of the popup can reside in css
+and not html. Mind you, I've not seen anyone do this so I may be crazy :)
+
+The data file includes the information mapping a line-level live to the
+corresponding block-level and sub-level lines. This should be added to the data
+structure. It would enable a much richer visualization of which lines have
+contributed to the 'rolled up' counts. That's especially tricky to work out
+with the block level view.
+
+Following on from that I have a totally crazy idea that the browsers css engine
+could be used to highlight the corresponding rollup line when hovering over a
+source line, and/or the opposite. Needs lots of thought, but it's an interesting idea.
+
+test14 depends on the AutoLoad module looking like version 5.60, the
+version included with Perl 5.8.8.  Perl 5.8.9 and Perl 5.10.0 have
+a more recent version.  Users can also now update AutoLoader from CPAN.
+We need to skip test14 if using a different version of AutoLoader, and
+make the tests a bit smarter with differing AutoLoader versions.  Steve
+is looking into this.
+
+Investigate and fix "Unable to determine line number" cases. Here's one:
+$ NYTPROF=begin=1:blocks=1:trace=1 perl  -d:NYTProf -Mstrict -e 1
+...
+New fid  1 (after  0:1   ): -e /Users/timbo/perl/mods/nytprof-trunk/-e
+New fid  2 (after  1:3   ): /usr/local/perl58-i/lib/5.8.6/strict.pm 
+at 3: EVAL in different file (-e, /usr/local/perl58-i/lib/5.8.6/strict.pm) at /usr/local/perl58-i/lib/5.8.6/strict.pm line 3.
+at 5: EVAL in different file (-e, /usr/local/perl58-i/lib/5.8.6/strict.pm) at /usr/local/perl58-i/lib/5.8.6/strict.pm line 5.
+at 25: EVAL in different file (-e, /usr/local/perl58-i/lib/5.8.6/strict.pm) at /usr/local/perl58-i/lib/5.8.6/strict.pm line 25.
+at 37: EVAL in different file (-e, /usr/local/perl58-i/lib/5.8.6/strict.pm) at /usr/local/perl58-i/lib/5.8.6/strict.pm line 37.
+Unable to determine line number in -e.
+Unable to determine line number in -e.
+
+Add way for use to ask for pid to be embedded into the data file name
+so that using PERL5OPT=-d:NYTProf and running multiple scripts
+won't overwrite the same profile file each time. (Could also add way to embed
+basename($0) into the filename)
+
+Add option to disable statement based profiling, so you're left with subroutine
+inclusive timing. That's *really* fast and would be handy for a quick check on
+performance of a large application. It's also generates no i/o till the end
+so may be useful for long running apps that would otherwise generate a huge data file.
+
+Add tooltip to sub names where we can't provide a link because the sub is in XS.
+
+Add a 'permalink' icon (eg infinity symbol) to the right of lines defining subs
+to make it easer to email/IM links to particular places in the code.
