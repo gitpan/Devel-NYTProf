@@ -1,5 +1,5 @@
 # vim: ts=2 sw=2 sts=0 noexpandtab:
-# $Id: HACKING 283 2008-07-09 14:46:50Z tim.bunce $
+# $Id: HACKING 292 2008-07-10 17:07:00Z tim.bunce $
 
 HACKING Devel::NYTProf
 ======================
@@ -315,3 +315,6 @@ Add tooltip to sub names where we can't provide a link because the sub is in XS.
 
 Add a 'permalink' icon (eg infinity symbol) to the right of lines defining subs
 to make it easer to email/IM links to particular places in the code.
+
+Change from tracing via warn() to use our own function that, at least initially,
+calls warn() while temporarily disabling the __WARN__ hook.

@@ -8,7 +8,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: test.pl 288 2008-07-09 19:54:59Z tim.bunce $
+## $Id: test.pl 292 2008-07-10 17:07:00Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -70,7 +70,10 @@ s:^t/:: for @ARGV; # allow args to use t/ prefix
 # *.x   = result csv dump to verify (should change to .rcv)
 my @tests = @ARGV ? @ARGV : sort <*.p *.rdt *.x>;  # glob-sort, for OS/2
 
-plan tests => 1 + number_of_tests(@tests) * 2;
+my @test_opt_leave = (1, 0);
+my @test_opt_use_db_sub = (0, 1);
+
+plan tests => 1 + number_of_tests(@tests) * @test_opt_leave * @test_opt_use_db_sub;
 
 my $path_sep = $Config{path_sep} || ':';
 if( -d '../blib' ){
@@ -95,10 +98,13 @@ if($opts{v} ){
 ok(-x $nytprofcsv, "Where's nytprofcsv?");
 
 # run all tests in various configurations
-for my $use_db_sub (0,1) {
-	run_all_tests( {
-		use_db_sub => $use_db_sub,
-	} );
+for my $leave (@test_opt_leave) {
+	for my $use_db_sub (@test_opt_use_db_sub) {
+		run_all_tests( {
+			leave => $leave,
+			use_db_sub => $use_db_sub,
+		} );
+	}
 }
 
 sub run_all_tests {
@@ -161,16 +167,18 @@ sub run_command {
   my ($cmd) = @_;
   print "NYTPROF=$ENV{NYTPROF}\n" if $opts{v} && $ENV{NYTPROF};
   local $ENV{PERL5LIB} = $perl5lib;
-  open(RV, "$cmd |") or die "Can't execute $cmd: $!\n";
-  my @results = <RV>;
-  my $ok = close RV;
+	my $ok;
+	if ($opts{v}) {
+		print "$cmd\n";
+		$ok = (system($cmd) == 0);
+	}
+	else {
+		open(RV, "$cmd |") or die "Can't execute $cmd: $!\n";
+		my @results = <RV>;
+		$ok = close RV;
+	}
 	warn "Error status $? from $cmd\n" if not $ok;
-  if ($opts{v}) {
-    print "$cmd\n";
-    print @results;
-    print "\n";
-  }
-  return $ok;
+	return $ok;
 }
 
 

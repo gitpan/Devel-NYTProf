@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 289 2008-07-09 20:50:02Z tim.bunce $
+## $Id: NYTProf.pm 292 2008-07-10 17:07:00Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
@@ -89,6 +89,7 @@ Devel::NYTProf is a powerful feature-rich perl source code profiler.
  * Performs per-subroutine statement profiling for overview
  * Performs per-block profiling (the first profiler to do so)
  * Performs inclusive timing of subroutines, per calling location
+ * Accounts correctly for time spent after calls return
  * Can profile compile-time activity or just run-time
  * Uses novel techniques for efficient profiling
  * Very fast - the fastest line-profiler for perl
@@ -151,14 +152,36 @@ Set to 0 to disable the determination of block and subroutine location per state
 This makes the profiler about 50% faster (as of July 2008) but you loose some
 valuable information. The extra cost is likely to be reduced in later versions
 anyway, as little optimization has been done on that part of the code.
-The profiler is fast enough that you should rarely feel
-the need to disable features to get more speed.
+The profiler is fast enough that you shouldn't need to do this.
+
+=item leave=0
+
+Set to 0 to disable the extra work done to allocate times accurately when
+returning into the middle of statement. For example leaving a subroutine
+and returning into the middle of statement, or re-evaluting a loop condition.
+
+Normally line-based profilers measure the time between starting one 'statement'
+and starting the next. So when a subroutine call returns, the time spent
+copying the return value and evaluating and remaining expressions in the
+calling statement, get incorrectly allocated to the last statement executed in
+the subroutine. Similarly for loop conditions.
+
+This feature also ensures that in embedded environments, such as mod_perl,
+the last statement executed doesn't accumulate the time spent 'outside perl'.
+
+NYTProf is the only line-level profiler to measure these times correctly.
+The profiler is fast enough that you shouldn't need to disable this feature.
+
 
 =item use_db_sub=1
 
 Set to 1 to enable use of the traditional DB::DB() subroutine to perform
 profiling, instead of the faster 'opcode redirection' technique that's used by
-default.
+default. It also disables some extra mechanisms that help ensure more accurate
+results for things like the last statements in subroutines.
+
+If you find a use, or need, for use_db_sub=1 then please let us know,
+otherise this vestige of old slower ways is likely to be removed.
 
 =item usecputime=1
 
