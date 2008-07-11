@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 292 2008-07-10 17:07:00Z tim.bunce $
+ * $Id: NYTProf.xs 299 2008-07-11 09:43:48Z tim.bunce $
  * ************************************************************************
  */
 #define PERL_NO_GET_CONTEXT		/* we want efficiency */
@@ -862,14 +862,13 @@ DB_leave(pTHX_ OP *op)
 	 */
 	fputc('-', out);
 
-	if (trace_level >= 1) {
-		warn("left %u:%u via %s back to %s at %u:%u (b%u s%u)%s",
+	if (trace_level >= 4) {
+		warn("left %u:%u via %s back to %s at %u:%u (b%u s%u) - discounting next statement%s\n",
 			prev_last_executed_fid, prev_last_executed_line,
 			OP_NAME_safe(PL_op), OP_NAME_safe(op),
 			last_executed_fid, last_executed_line, last_block_line, last_sub_line,
 			(op) ? "" : ", LEAVING PERL"
 		);
-		warn("Wrote dis-count for next measurement\n");
 	}
 }
 
@@ -1596,8 +1595,8 @@ load_profile_data_from_stream() {
 	AV* fid_line_time_av = newAV();
 	AV* fid_block_time_av = NULL;
 	AV* fid_sub_time_av = NULL;
-	HV* sub_subinfo_hv = NULL;
-	HV* sub_callers_hv = NULL;
+	HV* sub_subinfo_hv = newHV();
+	HV* sub_callers_hv = newHV();
 
 	av_extend(fid_fileinfo_av, 64);  /* grow it up front. */
 	av_extend(fid_line_time_av, 64);
@@ -1748,8 +1747,6 @@ load_profile_data_from_stream() {
 				if (trace_level >= 3)
 				    warn("Sub %.*s fid %u lines %u..%u\n",
 							(int)strlen(text)-1, text, fid, first_line, last_line);
-				if (!sub_subinfo_hv)
-					sub_subinfo_hv = newHV();
 				av = lookup_subinfo_av(aTHX_ text, strlen(text)-1, sub_subinfo_hv);
 				sv_setuv(*av_fetch(av, 0, 1), fid);
 				sv_setuv(*av_fetch(av, 1, 1), first_line);
@@ -1775,12 +1772,8 @@ load_profile_data_from_stream() {
 				    warn("Sub %.*s called by fid %u line %u: count %d\n",
 							(int)strlen(text)-1, text, fid, line, count);
 
-				if (!sub_subinfo_hv)
-					sub_subinfo_hv = newHV();
 				subinfo_av = lookup_subinfo_av(aTHX_ text, strlen(text)-1, sub_subinfo_hv);
 
-				if (!sub_callers_hv)
-					sub_callers_hv = newHV();
 				/* { 'pkg::sub' => { fid => { line => [ count, incl_time ] } } } */
 				sv = *hv_fetch(sub_callers_hv, text, strlen(text)-1, 1);
 				if (!SvROK(sv))		/* autoviv */
@@ -1893,10 +1886,8 @@ load_profile_data_from_stream() {
 		hv_stores(profile_hv, "fid_sub_time",    newRV_noinc((SV*)fid_sub_time_av)); 
 		hv_stores(profile_modes, "fid_sub_time", newSVpvf("sub"));
 	}
-	if (sub_subinfo_hv)
-		hv_stores(profile_hv, "sub_subinfo",    newRV_noinc((SV*)sub_subinfo_hv)); 
-	if (sub_callers_hv)
-		hv_stores(profile_hv, "sub_caller",     newRV_noinc((SV*)sub_callers_hv)); 
+	hv_stores(profile_hv, "sub_subinfo",      newRV_noinc((SV*)sub_subinfo_hv)); 
+	hv_stores(profile_hv, "sub_caller",       newRV_noinc((SV*)sub_callers_hv)); 
 	hv_stores(profile_hv, "profile_modes",    newRV_noinc((SV*)profile_modes));
 	return profile_hv;
 }

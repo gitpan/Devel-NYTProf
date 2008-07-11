@@ -8,7 +8,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: test.pl 295 2008-07-10 19:47:50Z tim.bunce $
+## $Id: test.pl 307 2008-07-11 13:39:46Z steve.peters $
 ###########################################################
 use warnings;
 use strict;
@@ -30,6 +30,7 @@ my %SKIP_TESTS = (
 	'test06' => ($] >= 5.008) ? 0 : "needs perl >= 5.8",
 	'test15' => ($] <  5.008) ? 0 : "needs perl < 5.8",
 	'test16' => ($] >=  5.010) ? 0 : "needs perl >= 5.10",
+	'test30-fork' => ($^O ne 'cygwin') ? 0 : "test fails on Cygwin - missing fpurge",
 );
 
 my %opts = (

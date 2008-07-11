@@ -6,10 +6,6 @@ demo/demo-code.pl
 demo/demo-run.pl
 demo/README
 HACKING
-images/header_fill.png
-images/header_text.png
-images/left_header_cap.png
-images/right_header_cap.png
 INSTALL
 lib/Devel/NYTProf/Apache.pm
 lib/Devel/NYTProf/Core.pm
@@ -85,4 +81,5 @@ t/test50-disable.x
 t/test60-subname.p
 t/test60-subname.rdt
 t/test90-stress.p
+typemap
 META.yml                                 Module meta-data (added by MakeMaker)

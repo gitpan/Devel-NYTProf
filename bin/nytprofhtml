@@ -7,7 +7,7 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ##########################################################
-# $Id: nytprofhtml 279 2008-07-08 19:33:49Z tim.bunce $
+# $Id: nytprofhtml 305 2008-07-11 12:33:59Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -16,7 +16,12 @@ use Getopt::Long;
 use List::Util qw(sum);
 use Devel::NYTProf::Reader;
 use Devel::NYTProf::Core;
-use Devel::NYTProf::Util qw(fmt_float calculate_median_absolute_deviation);
+use Devel::NYTProf::Util qw(
+	fmt_float
+	calculate_median_absolute_deviation
+	get_abs_paths_alternation_regex
+	html_safe_filename
+);
 
 our $VERSION = 1.02;
 
@@ -105,44 +110,79 @@ after the profiler database was generated. The database might be out of sync, yo
 
 
 sub subroutine_table {
-  my ($profile, $filestr) = @_;
+  my ($profile, $filestr, $max_subs) = @_;
 
   my $subs_in_file = $profile->subs_defined_in_file( $filestr, 0 );
   return "" unless $subs_in_file && %$subs_in_file;
 
+	my $inc_path_regex = get_abs_paths_alternation_regex([$profile->inc], qr/^|\[/);
+
   my @subs = sort {
-    $b->{incl_time} <=> $a->{incl_time} or
-    $a->{subname}   cmp $b->{subname}
+    $b->incl_time <=> $a->incl_time or
+    $a->subname   cmp $b->subname
   } values %$subs_in_file;
 
-  # XXX would be nice to color code these according to the overall time spent in the sub
-  my $sub_links = qq{<table border=1 cellpadding=0>
+	my $dev_incl_time = calculate_median_absolute_deviation(
+		[ map { $_->incl_time } @subs ]
+	);
+	my $dev_calls = calculate_median_absolute_deviation(
+		[ map { $_->calls } @subs ]
+	);
+
+	my @subs_to_show = ($max_subs) ? splice @subs, 0, $max_subs : @subs;
+	my $qualifier = (@subs > @subs_to_show) ? "Top $max_subs " : "";
+
+  my $sub_links;
+
+  $sub_links .= qq{<table border=1 cellpadding=0>
+		<caption>${qualifier}Subroutines &mdash; ordered by inclusive time then name</caption>
     <tr><th>Calls</th><th>Inclusive<br />Time</th><th colspan=2 class="left_indent_header">Subroutine</th></tr>
   };
 
-	my $dev_incl_time = calculate_median_absolute_deviation(
-		[ map { $_->{incl_time} } @subs ]
-	);
-	my $dev_calls = calculate_median_absolute_deviation(
-		[ map { $_->{calls} } @subs ]
-	);
-
 	my @rows;
-	for my $sub (@subs) {
+	for my $sub (@subs_to_show) {
 		$sub_links .= "<tr>";
+
 		# calls
-		$sub_links .= determine_severity(undef, $sub->{calls} || 0, $dev_calls);
+		$sub_links .= determine_severity(undef, $sub->calls || 0, $dev_calls);
+
 		# incl_time
-		$sub_links .= determine_severity(undef, $sub->{incl_time} || 0, $dev_incl_time);
+		$sub_links .= determine_severity(undef, $sub->incl_time || 0, $dev_incl_time);
+
 		# package and subname
-		my $subname = $sub->{subname};
+		my $subname = $sub->subname;
 		# remove own filename from eg __ANON__[(eval 3)[/long/path/name.pm:99]:53]
 		# XXX doesn't work right because $filestr isn't full filename
 		$subname =~ s/\Q$filestr\E:(\d+)/:$1/g;
 		my ($pkg, $subr) = ($subname =~ /^(.*::)(.*?)$/) ? ($1,$2) : ('',$subname);
 		$sub_links .= sprintf qq{<td class="sub_pkg">%s</td>}, $pkg;
-		$sub_links .= sprintf(qq{<td class="sub_sub"><a href="#%d">%s</a></td>},
-			$sub->{first_line}, $subr);
+
+		$subr =~ s/$inc_path_regex//; # for __ANON__[/very/long/path...]
+		my $first_line = $sub->first_line;
+		my $fileinfo = $sub->fileinfo;
+		if ($fileinfo and my ($outer_fileinfo, $outer_line) = $fileinfo->outer) { # eval
+			$fileinfo   = $outer_fileinfo;
+			$first_line = $outer_line;
+		}
+		$sub_links .= sprintf(qq{<td class="sub_sub"><a href="%s-line.html#%s">%s</a></td>},
+			$fileinfo ? html_safe_filename($fileinfo->filename_without_inc) : "",
+			$first_line || 'UNKNOWN', $subr);
+
+		# callers
+		my $callers = $sub->callers;
+		my $callers_html;
+		if ($callers && %$callers) {
+			# { fid => { line => [ count, incl_time ] } } }
+			my $total_callers = sum(map { scalar keys %$_ } values %$callers);
+			$callers_html = sprintf qq{<td>%d locations in %d files</td>},
+				$total_callers, scalar keys %$callers;
+		}
+		else {
+			$callers_html = sprintf qq{<td>&nbsp;</td>}, $pkg;
+		}
+		# XXX not worth showing till the callers method can merge eval fids together
+		$sub_links .= $callers_html if 0;
+
 		$sub_links .= "<tr>\n";
 	}
   $sub_links .= "</table>\n";
@@ -162,7 +202,11 @@ $reporter->set_param('datastart', sub {
     };
 });
 
-$reporter->set_param('footer', '</table></div></body></html>');
+$reporter->set_param('footer', sub {
+	my ($profile, $filestr) = @_;
+	my $footer = get_footer($profile);
+	return "</table></div>$footer</body></html>";
+});
 
 $reporter->set_param('linestart', {
     func => sub { my ($value, $linenum, $linesrc) = @_;
@@ -181,8 +225,9 @@ $reporter->set_param('column4', {
       my ($value, $linenum, $linesrc, $profile, $subs, $calls) = @_;
 
       my @prologue;
+			# for each of the subs defined on this line, who called them
       for my $sub_info (@$subs) {
-        my $callers = $sub_info->{callers};
+        my $callers = $sub_info->callers;
         next unless $callers && %$callers;
 
         my @callers;
@@ -191,10 +236,10 @@ $reporter->set_param('column4', {
             for keys %$fid_line_info;
         }
         my $total_calls = sum(map { $_->[2] } @callers);
-				my $avg_per_call = fmt_float($sub_info->{incl_time} / $total_calls);
+				my $avg_per_call = fmt_float($sub_info->incl_time / $total_calls);
 
         push @prologue, sprintf "# spent %ss within %s which was called%s:",
-            fmt_float($sub_info->{incl_time}), $sub_info->{subname},
+            fmt_float($sub_info->incl_time), $sub_info->subname,
             ($total_calls <= 1) ? ""
 							: " $total_calls times, avg ${avg_per_call}s/call";
 
@@ -218,10 +263,11 @@ $reporter->set_param('column4', {
 						$avg_time;
         }
       }
-      my $prologue = join("\n",@prologue);
-      $prologue = sprintf qq{<div class="calls">%s</div>}, $prologue
-        if $prologue;
+      my $prologue = '';
+      $prologue = sprintf qq{<div class="calls">%s</div>}, join("\n",@prologue)
+        if @prologue;
 
+			# give details of each of the subs called by this line
       my $epilogue = '';
       if (%$calls) {
 				my @calls_to = sort {
@@ -265,12 +311,10 @@ $reporter->add_regexp('<', '&lt;');
 $reporter->add_regexp('>', '&gt;');
 
 # generate the files
-$reporter->report({
-		level_additional => sub {
-			my ($profile, $level) = @_;
-			output_level_indexpage($reporter, $level, "index-$level.html");
-		},
-});
+$reporter->report();
+
+output_subs_indexpage($reporter, "index-subs.html");
+output_indexpage($reporter, "index.html");
 
 # output a css file too (optional, but good for pretty pages)
 $reporter->_output_additional('style.css', [ <DATA> ]);
@@ -279,10 +323,31 @@ $reporter->_output_additional('style.css', [ <DATA> ]);
 # SUBROUTINES
 #
 
+# output an html indexing page or subroutines
+sub output_subs_indexpage {
+	my ($r, $filename) = @_;
+	my $profile = $reporter->{profile};
+	
+	open (OUT, '>', "$opt{out}/$filename")
+		or croak "Unable to open file $opt{out}/$filename: $!";
+
+	print OUT get_html_header();
+	print OUT get_header(profile => $profile, title => "Performance Profile Subroutine Index");
+	print OUT qq{<div class="body_content"><br/>};
+
+	# Show top subs across all files
+	print OUT subroutine_table($profile, 0, 0);
+
+	my $footer = get_footer($profile);
+	print OUT "</div>$footer</body></html>";
+	close OUT;
+}
+
+
 # output an html indexing page with some information to help navigate potential
 # large numbers of profiled files. Optional, recommended
-sub output_level_indexpage {
-	my ($r, $level, $filename) = @_;
+sub output_indexpage {
+	my ($r, $filename) = @_;
 	my $profile = $reporter->{profile};
 	
 	my $stats = $r->get_file_stats();
@@ -295,7 +360,7 @@ sub output_level_indexpage {
 	# Calculate the mean and deviation using a good generic formula.
   # Note: Using Median Absolute Deviation because it is fairly resistant to 
   # the extreme values likely to be found in code and therefore provides better
-  # resolution
+  # resolution. See http://en.wikipedia.org/wiki/Median_absolute_deviation
 	my $dev_time = calculate_median_absolute_deviation(
 		[ map { $_->{'time'} } values %$stats ]
 	);
@@ -305,66 +370,84 @@ sub output_level_indexpage {
 
 
 	###
-	my $profile_level_buttons = get_level_buttons($profile->get_profile_levels, $filename, $level);
-
 	open (OUT, '>', "$opt{out}/$filename")
 		or croak "Unable to open file $opt{out}/$filename: $!";
 
 	print OUT get_html_header();
-	my $subhead = qq{&emsp;&emsp;$profile_level_buttons<br />
-		For ${ \($profile->{attribute}{application}) }
-	};
-	print OUT get_header(profile => $profile, title => "Performance Profile Index", subtitle => $subhead);
+	print OUT get_header(profile => $profile, title => "Performance Profile Index");
 	print OUT qq{
 		<div class="body_content"><br/>
-		Jump to a file: &nbsp;<select>
 	};
 
-	# generate name-sorted select options for namespace groupings
-	foreach (sort keys %$stats) {
-		my $safe = $stats->{$_}->{html_safe};
-		print OUT "<option onClick=location.href=('#$safe');>$_</option>\n"
-				if $safe;
+	# generate name-sorted select options for files, if there are many
+	if (keys %$stats > 30) {
+		print OUT qq{Jump to a file: &nbsp;<select>};
+		foreach (sort keys %$stats) {
+			my $safe = $stats->{$_}->{html_safe};
+			print OUT "<option onClick=location.href=('#$safe');>$_</option>\n"
+					if $safe;
+		}
+		print OUT "</select><br/><br/>\n";
 	}
-	print OUT "</select><br/><br/>\n";
+
+	# Show top subs across all files
+	# (keep it less than a page so users can see the file table)
+	print OUT subroutine_table($profile, 0, 15);
+	print OUT sprintf qq{<div class="table_footer">
+		For more information see the <a href="%s">full list of %d subroutines</a>.
+		</div>
+	}, "index-subs.html", scalar keys %{$profile->{sub_subinfo}};
 
 	# generate time-sorted sections for files
-	print OUT "<table border=1 cellspacing=0>";
+	print OUT qq{
+		<table border=1 cellspacing=0>
+		<caption>Source Code Files &mdash; ordered by exclusive time then name</caption>
+	};
 	print OUT "<tr class='index'><th>Stmts</th><th>Time</th>"
-						."<th>Avg.</th><th>File</th></tr>";
+						."<th>Avg.</th><th>Reports</th><th>Source File</th></tr>";
+
+	my $inc_path_regex = get_abs_paths_alternation_regex([$profile->inc], qr/^|\[/);
 
 	my $allTimes = 0; # for stats table at the bottom only
 	my $allCalls = 0; # for stats table at the bottom only
 
-	foreach (sort { $b->{'time'} <=> $a->{'time'} } values %$stats) {
-		my $safe = $_->{html_safe};
+	foreach my $filestats (sort { $b->{'time'} <=> $a->{'time'} } values %$stats) {
 		print OUT  "<tr class='index'>";
+		print OUT "<td class='n'>$filestats->{calls}</td>";
+		print OUT determine_severity('time', $filestats->{'time'}, $dev_time);
+		print OUT determine_severity('time/call', $filestats->{'time/call'}, $dev_avgt);
 
-		my $html_time = determine_severity('time', $_->{'time'}, $dev_time);
-		my $html_calltime = determine_severity('time/call', $_->{'time/call'}, $dev_avgt);
-
-		print OUT "<td class='n'>$_->{calls}</td>"
-							."$html_time"
-							."$html_calltime\n";
-		print OUT  "<td><a name='$safe' href='$safe.html'>$_->{filename}</a></td>";
+		my $safe = $filestats->{html_safe};
+		#print OUT  "<td><a name='$safe' href='$safe.html'>$filestats->{filename}</a></td>";
+		my $rep_links = join '&emsp;&bull;&emsp;', map {
+			my $level_html_safe = $filestats->{$_}->{html_safe};
+			($level_html_safe)
+				? sprintf(qq{<a href="%s.html">%s</a>}, $level_html_safe, $_)
+				: ()
+		} qw(line block sub);
+		print OUT  "<td>$rep_links</td>";
+		(my $shortname = $filestats->{filename}) =~ s/$inc_path_regex//;
+		print OUT  "<td>$shortname</td>";
 		print OUT  "</tr>\n";
 
 		# stats collection
-		$allTimes += $_->{'time'}; 
-		$allCalls += $_->{calls};
+		$allTimes += $filestats->{'time'}; 
+		$allCalls += $filestats->{calls};
 	}
 	my $stats_fmt = qq{<tr class="index"><td class="n">%s</td><td class="n">%s</td><td class="n">%s</td><td style="font-style: italic">%s</td></tr>};
 	print OUT sprintf $stats_fmt,
 		fmt_float($allCalls), fmt_float($allTimes), '', "Total";
 	print OUT sprintf $stats_fmt,
-		int(fmt_float($allCalls/keys %$stats)), fmt_float($allTimes/keys %$stats), '', "Average";
+		int(fmt_float($allCalls/keys %$stats)), fmt_float($allTimes/keys %$stats), '', "Average"
+		if %$stats; # avoid divide by zero
 	print OUT sprintf $stats_fmt,
 		'', fmt_float($dev_time->[1]), fmt_float($dev_avgt->[1]), "Median";
 	print OUT sprintf $stats_fmt,
 		'', fmt_float($dev_time->[0]), fmt_float($dev_avgt->[0]), "Deviation";
 	print OUT '</table><br/><br/>';
 
-	print OUT "</div></body></html>";
+	my $footer = get_footer($profile);
+	print OUT "</div>$footer</body></html>";
 	close OUT;
 }
 
@@ -415,9 +498,8 @@ usage: [perl] nytprofhtml [opts]
  --lib,         -l         Add a path to the beginning of \@INC
  --help,        -h         Print this message
 
-This script of part of the Devel::NYTProf::Reader package by Adam J Kaplan.
-Copyright 2008 Adam J Kaplan, http://search.cpan.org/~akaplan, Released under
-the same terms as Perl itself.
+This script of part of the Devel::NYTProf distribution.
+See http://search.cpan.org/dist/Devel-NYTProf/ for details and copyright.
 END
 }
 
@@ -446,6 +528,18 @@ sub get_level_buttons {
   return qq{<span>&laquo;&emsp;$html&emsp;&raquo;</span>};
 }
 
+
+sub get_footer {
+	my ($profile) = @_;
+	my $version = $Devel::NYTProf::Core::VERSION;
+	return qq{<div class="footer">Report produced by the
+		<a href="http://search.cpan.org/dist/Devel-NYTProf/">NYTProf $version</a>
+		Perl profiler, developed by
+		<a href="http://www.linkedin.com/in/timbunce">Tim Bunce</a> and
+		<a href="http://code.nytimes.com">Adam Kaplan</a>.
+		</div>
+	};
+}
 
 # returns the generic header string.  Here only to make the code more readable.
 sub get_html_header {
@@ -476,6 +570,7 @@ sub get_header {
 	my ($profile, 			$head1, 			$head2, 				 $right1, 			$right2, 					$mode) = 
 		 ($args{profile}, $args{title}, $args{subtitle}, $args{title2}, $args{subtitle2}, $args{mode});
 
+  $head2  ||= qq{<br />For ${ \($profile->{attribute}{application}) }};
 	$right1 ||= "&nbsp;";
 	$right2 ||= "Run on ${ \scalar localtime($profile->{attribute}{basetime}) }<br />Reported on ".localtime(time);
 
@@ -583,9 +678,19 @@ body { font-family: sans-serif; margin: 0px; }
 	font-size: 0.75em;
 }
 
+.footer,
+.footer > a:link,
+.footer > a:visited {
+	color: #cccccc;
+	text-decoration: none;
+}
+.footer { margin: 8px; }
+
 table { 
 	border-collapse: collapse; 
 	border-spacing: 0px; 
+	margin-top: 20px;
+	margin-botom: 20px;
 }
 tr { 
 	text-align : center;
@@ -600,6 +705,20 @@ td {
 	border: solid 1px #cccccc; 
 	padding: 0em 0.4em 0em 0.4em;
 }
+caption {
+	background-color: #dddddd;
+	text-align: left;
+	text-wrap: none;
+	white-space: pre;
+	padding: 0.4em;
+}
+
+.table_footer { color: grey; }
+.table_footer > a:link,
+.table_footer > a:visited,
+{ color: grey;
+	text-decoration: none;
+}
 
 .index { text-align: left; }
 
@@ -607,7 +726,7 @@ td {
   font-style: italic;
 }
 
-/* subrouting dispatch table */
+/* subroutine dispatch table */
 td.sub_pkg {
   text-align: right;
   padding-right: 0;
@@ -638,23 +757,6 @@ a.sub_sub:active {
   color: blue;
   text-decoration: none;
 }
-
-/* XXX
- * Can be removed if images are not used
-div#top_header {
-	width: 100%;
-	background-image: url("../../images/header_fill.png");
-}
-img#top_header_left {
-	float: left;
-}
-img#top_header_text {
-	float: left;
-}
-img#top_header_right {
-	float: right;
-}
-*/
 
 /* source code */
 th.left_indent_header {
@@ -728,53 +830,51 @@ __END__
 
 =head1 NAME
 
-nytprofhtml - L<Devel::NYTProf::Reader> HTML format implementation
+nytprofhtml - Generate reports from Devel::NYTProf data
 
 =head1 SYNOPSIS
 
- $ nytprofhtml [-h] [-d] [-o <output directory>] [-f <input file>]
+Typical usage:
 
- perl -d:NYTProf some_perl_app.pl
- nytprofhtml
+ $ perl -d:NYTProf some_perl_app.pl
+
+ $ nytprofhtml
  Generating HTML Output...
 
-=head1 HISTORY
+ $ open nytprof/index.html
 
-A bit of history and a shameless plug...
+Options synopsis:
 
-NYTProf stands for 'New York Times Profiler'. Indeed, this module was developed
-by The New York Times Co. to help our developers quickly identify bottlenecks in
-large Perl applications.  The NY Times loves Perl and we hope the community will benefit from our work as much as we have from theirs.
-
-Please visit L<http://open.nytimes.com>, our open source blog to see what we are up to, L<http://code.nytimes.com> to see some of our open projects and then 
-check out L<htt://nytimes.com> for the latest news!
+ $ nytprofhtml [-h] [-d] [-o <output directory>] [-f <input file>]
 
 =head1 DESCRIPTION
 
-C<nytprofhtml> is a script that utilizes L<Devel::NYTProf::Reader> to
-create colorful HTMl formatted reports from L<Devel::NYTProf> output.
+Devel::NYTProf is a powerful feature-rich perl source code profiler.
+See L<Devel::NYTProf> for details.
+
+C<nytprofhtml> generates html a set of html reports from the data collected by
+L<Devel::NYTProf>.
 
 The reports include dynamic runtime analysis wherein each line and each file
 is analyzed based on the preformance of the other lines and files.  As a
 result, you can quickly find the slowest module and the slowest line in a 
 module.  Slowness is measured in three ways: total calls, total time and
-average time per call.  Analysis is based on absolute deviations from the 
-median.
+average time per call.
+
+Coloring is based on absolute deviations from the median.
+See L<http://en.wikipedia.org/wiki/Median_absolute_deviation> for more details.
 
 That might sound complicated, but in reality you can just run the command and
 enjoy your report!
 
-Note: You'll need to run your app through L<Devel::NYTProf> debugger first 
-
 =head1 COMMAND-LINE OPTIONS
-
-These are the command line options understood by C<nytprofhtml>
 
 =over 4
 
 =item -f, --file <filename>
 
-Specifies the location of the input file. Default: nytprof.out
+Specifies the location of the file generated by L<Devel::NYTProf>.
+Default: ./nytprof.out
 
 =item -o, --out <dir>
 
@@ -782,11 +882,12 @@ Where to place the generated report. Default: ./nytprof/
 
 =item -d, --delete
 
-Purge any existing database located at whatever -o (above) is set to
+Purge any existing report at whatever -o (above) is set to
 
 =item -l, --lib <dir>
 
-Add a path to the beginning of @INC
+Add a path to the beginning of @INC to help nytprofhtml find the source files
+used by the code. Should not be needed in practice.
 
 =item -h, --help
 
@@ -804,19 +905,78 @@ Print the help message
 
 =back
 
+=head1 HISTORY
+
+A bit of history and a shameless plug...
+
+NYTProf stands for 'New York Times Profiler'. Indeed, this module was initially
+developed from Devel::FastProf by The New York Times Co. to help our developers
+quickly identify bottlenecks in large Perl applications.  The NY Times loves
+Perl and we hope the community will benefit from our work as much as we have
+from theirs.
+
+Please visit L<http://open.nytimes.com>, our open source blog to see what we
+are up to, L<http://code.nytimes.com> to see some of our open projects and then
+check out L<http://nytimes.com> for the latest news!
+
+=head2 Background
+
+Subroutine-level profilers:
+
+  Devel::DProf        | 1995-10-31 | ILYAZ
+  Devel::AutoProfiler | 2002-04-07 | GSLONDON
+  Devel::Profiler     | 2002-05-20 | SAMTREGAR
+  Devel::Profile      | 2003-04-13 | JAW
+  Devel::DProfLB      | 2006-05-11 | JAW
+  Devel::WxProf       | 2008-04-14 | MKUTTER
+
+Statement-level profilers:
+
+  Devel::SmallProf    | 1997-07-30 | ASHTED
+  Devel::FastProf     | 2005-09-20 | SALVA
+  Devel::NYTProf      | 2008-03-04 | AKAPLAN
+  Devel::Profit       | 2008-05-19 | LBROCARD
+
+Devel::NYTProf is a (now distant) fork of Devel::FastProf, which was itself an
+evolution of Devel::SmallProf.
+
+Adam Kaplan took Devel::FastProf and added html report generation (based on
+Devel::Cover) and a test suite - a tricky thing to do for a profiler.
+Meanwhile Tim Bunce had been extending Devel::FastProf to add novel
+per-sub and per-block timing, plus subroutine caller tracking.
+
+When Devel::NYTProf was released Tim switched to working on Devel::NYTProf
+because the html report would be a good way to show the extra profile data, and
+the test suite made development much easier and safer.
+
+Then he went a little crazy and added a slew of new features, in addition to
+per-sub and per-block timing and subroutine caller tracking. These included the
+'opcode interception' method of profiling, ultra-fast and robust inclusive
+subroutine timing, doubling performance, plus major changes to html reporting
+to display all the extra profile call and timing data in richly annotated and
+cross-linked reports.
+
+Steve Peters came on board along the way with patches for portability and to
+keep NYTProf working with the latest development perl versions.
+
+Adam's work is sponsored by The New York Times Co. L<http://open.nytimes.com>.
+Tim's work was partly sponsored by Shopzilla. L<http://www.shopzilla.com>.
+
 =head1 SEE ALSO
 
 Mailing list and discussion at L<http://groups.google.com/group/develnytprof-dev>
 
 Public SVN Repository and hacking instructions at L<http://code.google.com/p/perl-devel-nytprof/>
 
-L<Devel::NYTProf>
-L<Devel::NYTProf::Reader>
+L<Devel::NYTProf>,
+L<Devel::NYTProf::Reader>,
 L<nytprofcsv>
 
 =head1 AUTHOR
 
-Adam Kaplan, akaplan at nytimes dotcom
+B<Adam Kaplan>, C<< <akaplan at nytimes.com> >>.
+B<Tim Bunce>, L<http://www.tim.bunce.name> and L<http://blog.timbunce.org>.
+B<Steve Peters>, C<< <steve at fisharerojo.org> >>.
 
 =head1 COPYRIGHT AND LICENSE
 

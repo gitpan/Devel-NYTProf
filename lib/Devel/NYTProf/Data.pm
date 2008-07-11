@@ -7,7 +7,7 @@
 # http://search.cpan.org/~akaplan/Devel-NYTProf
 #
 ###########################################################
-# $Id: Data.pm 293 2008-07-10 18:05:43Z tim.bunce $
+# $Id: Data.pm 310 2008-07-11 18:24:47Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -67,17 +67,71 @@ sub new {
 	my $profile = load_profile_data_from_file($file);
 	bless $profile => $class;
 
-	# add link to profile so fidinfo objects be more useful
-	# XXX circular ref
-	$_ and $_->[7] = $profile for @{ $profile->{fid_fileinfo} };
+	my $fid_fileinfo = $profile->{fid_fileinfo};
+	my $sub_subinfo  = $profile->{sub_subinfo};
+	my $sub_caller   = $profile->{sub_caller};
+
+	# add profile ref so fidinfo & subinfo objects
+	# XXX circular ref, add weaken
+	$_ and $_->[7] = $profile for @$fid_fileinfo;
+	       $_->[7] = $profile for values %$sub_subinfo;
 
 	# bless fid_fileinfo data
 	(my $fid_class = $class) =~ s/\w+$/ProfFile/;
-	$_ and bless $_ => $fid_class for @{ $profile->{fid_fileinfo} };
+	$_ and bless $_ => $fid_class for @$fid_fileinfo;
 
 	# bless sub_subinfo data
 	(my $sub_class = $class) =~ s/\w+$/ProfSub/;
-	$_ and bless $_ => $sub_class for values %{ $profile->{sub_subinfo} };
+	$_ and bless $_ => $sub_class for values %$sub_subinfo;
+
+	my %anon_eval_subs_merged;
+	while ( my ($subname, $subinfo) = each %$sub_subinfo ) {
+		# add subname into sub_subinfo
+		$subinfo->[6] = $subname;
+		if ($subname =~ s/(::__ANON__\[\(\w*eval) \d+\)/$1 0)/) {
+			# sub names like "PPI::Node::	__ANON__[(eval 286)[PPI/Node.pm:642]:4]"
+			# aren't very useful, so we merge them by changing the eval to 0
+			my $oldname = $subinfo->[6];
+			delete $sub_subinfo->{$oldname}; # delete old name
+			if (my $newinfo = $sub_subinfo->{$subname}) {
+				$newinfo->merge_in($subinfo);
+			}
+			else {
+				# is first to change, so just move ref to new name
+				$sub_subinfo->{$subname} = $subinfo;
+				$subinfo->[6] = $subname;
+			}
+
+			# delete sub_caller info and merge into new name
+			my $old_caller_info = delete $sub_caller->{$oldname};
+			# { 'pkg::sub' => { fid => { line => [ count, incl_time ] } } } */
+			if (my $newinfo = $sub_caller->{$subname}) {
+				# iterate over old and merge info new
+				while ( my ($fid, $line_hash) = each %$old_caller_info ) {
+					my $new_line_hash = $newinfo->{$fid};
+					if (!$new_line_hash) {
+						$newinfo->{$fid} = $line_hash;
+						next;
+					}
+					# merge lines in %$line_hash into %$new_line_hash
+					while ( my ($line, $line_info) = each %$line_hash ) {
+						my $new_line_info = $new_line_hash->{$line};
+						if (!$new_line_info) {
+							$new_line_hash->{$line} = $line_info;
+							next;
+						}
+						# merge @$line_info into @$new_line_info
+						$new_line_info->[0] += $line_info->[0];
+						$new_line_info->[1] += $line_info->[1];
+					}
+					
+				}
+			}
+			else {
+				$sub_caller->{$subname} = $old_caller_info;
+			}
+		}
+	}
 
 	return $profile;
 }
@@ -92,6 +146,7 @@ sub fileinfo_of {
 	my $self = shift;
 	my $arg = shift;
 	return $arg if ref $arg and $arg->isa('Devel::NYTProf::ProfFile');
+	$arg = $self->resolve_fid($arg);
 	return $self->{fid_fileinfo}[ $arg ];
 }
 
@@ -387,6 +442,8 @@ sub normalize_variables {
 		for my $subname (keys %$info) {
 			(my $newname = $subname) =~ s/$eval_regex/(${1}eval 0)/g;
 			next if $newname eq $subname;
+			# XXX should merge instead
+			warn "Discarded previous $newname info" if $info->{$newname};
 			$info->{$newname} = delete $info->{$subname};
 		}
 	}
@@ -439,73 +496,45 @@ in a source file.  The $file argument can be an integer file id (fid) or a file 
 Returns undef if the profile contains no C<sub_caller> data for the $file.
 
 The keys are fully qualifies subroutine names and the corresponding value is a
-hash reference containing information about the subroutine.
+hash reference containing L<Devel::NYTProf::ProfSub> objects..
 
 If $include_lines is true then the hash also contains integer keys
 corresponding to the first line of the subroutine. The corresponding value is a
 reference to an array. The array contains a hash ref for each of the
-subroutines defined on that line.
-
-For example, if the file 'foo.pl' defines one subroutine, called pkg1::foo, on
-lines 42 thru 49, then $profile->subs_defined_in_file( 'foo.pl', 1 ) would return:
-
-	{
-		'pkg1::foo' => {
-			subname => 'pkg1::foo',
-			fid => 7,
-			first_line => 42,
-			last_line => 49,
-			calls => 726,
-			incl_time => 2e-03,
-			callers => { ... },
-		},
-		42 => [ <ref to same hash as above> ]
-	}
-
-The C<callers> item is a ref to a hash that describes locations from which the
-subroutine was called. For example:
-
-  callers => {
-		3 => {       # calls from fid 3
-				12 => 1, # sub was called from fid 3, line 12, 1 time.
-				16 => 1,
-				3 => 2,
-		},
-		8 => { ... }
-	}
+subroutines defined on that line, typically just one.
 
 =cut
 
 sub subs_defined_in_file {
 	my ($self, $fid, $incl_lines) = @_;
-
 	$fid = $self->resolve_fid($fid);
+	$incl_lines ||= 0;
+
+	my $cache_key = "_cache:subs_defined_in_file:$fid:$incl_lines";
+	return $self->{$cache_key} if $self->{$cache_key};
+
 	my $sub_subinfo = $self->{sub_subinfo}
 		or return;
 
 	my %subs;
 	while ( my ($sub, $subinfo) = each %$sub_subinfo) {
-		my ($subfid, $first, $last, $calls, $incl_time) = @$subinfo;
-		next if !$subfid || $subfid != $fid;
-		$subs{ $sub } = {
-			subname => $sub,
-			fid => $subfid,
-			first_line => $first,
-			last_line => $last,
-			incl_time => $incl_time || 0,
-			calls => $calls || 0,
-			callers => $self->{sub_caller}->{$sub},
-		};
+		if ($fid) {
+			my $subfid = $subinfo->fid or next;
+			next unless $subfid == $fid;
+		}
+		$subs{ $sub } = $subinfo;
 	}
 
 	if ($incl_lines) { # add in the first-line-number keys
+		croak "Can't include line numbers without a fid" unless $fid;
 		for (values %subs) {
-			next unless defined(my $first_line = $_->{first_line});
+			next unless defined(my $first_line = $_->first_line);
 			push @{ $subs{ $first_line } }, $_;
 		}
 	}
 
-	return \%subs;
+	$self->{$cache_key} = \%subs;
+	return $self->{$cache_key};
 }
 
 
@@ -518,13 +547,15 @@ sub subs_defined_in_file {
 
 sub subname_at_file_line {
 	my ($self, $fid, $line) = @_;
-	# XXX could be done more efficiently
+
 	my $subs = $self->subs_defined_in_file($fid, 0);
+
+	# XXX could be done more efficiently
 	my @subname;
 	for my $sub_info (values %$subs) {
-		next if $sub_info->{first_line} > $line
-				 or $sub_info->{last_line}  < $line;
-		push @subname, $sub_info->{subname};
+		next if $sub_info->first_line > $line
+				 or $sub_info->last_line  < $line;
+		push @subname, $sub_info->subname;
 	}
 	@subname = sort { length($a) <=> length($b) } @subname;
 	return @subname if wantarray;
@@ -616,6 +647,7 @@ then that corresponding fid is returned.
 
 sub resolve_fid {
 	my ($self, $file) = @_;
+	Carp::confess("No file specified") unless defined $file;
 	my $resolve_fid_cache = $self->_filename_to_fid;
 
 	# exact match
@@ -711,8 +743,11 @@ sub profile    { shift->[7] }
 
 sub outer {
 	my $self = shift;
-	my $fid = shift->eval_fid or return undef;
-	return $self->profile->fileinfo_of($fid);
+	my $fid = $self->eval_fid
+		or return;
+	my $fileinfo = $self->profile->fileinfo_of($fid);
+	return $fileinfo unless wantarray;
+	return ($fileinfo, $self->eval_line);
 }
 
 
@@ -720,12 +755,10 @@ sub outer {
 # when loading the file
 sub filename_without_inc {
 	my $self = shift;
-	my $f = [ $self->[0] ];
-	# XXX @INC here should use the INC in the profiled code
-	strip_prefix_from_paths( \@INC, $f );
+	my $f = [ $self->filename ];
+	strip_prefix_from_paths( [ $self->profile->inc ], $f );
 	return $f->[0];
 }
-
 
 sub _values_for_dump {
 	my $self = shift;
@@ -746,6 +779,40 @@ sub first_line   { shift->[1] }
 sub last_line    { shift->[2] }
 sub calls        { shift->[3] }
 sub incl_time    { shift->[4] }
+sub spare5       { shift->[5] }
+sub subname      { shift->[6] }
+sub profile      { shift->[7] }
+
+sub fileinfo {
+	my $self = shift;
+	my $fid = $self->fid
+		or return undef; # sub not have a known fid
+	$self->profile->fileinfo_of($fid);
+}
+
+sub merge_in {
+	my $self = shift;
+	my $newinfo = shift;
+	$self->[3] += $newinfo->[3]; # calls
+	$self->[4] += $newinfo->[4]; # calls
+	return;
+}
+
+sub _values_for_dump {
+	my $self = shift;
+	my @values = @{$self}[0..4];
+	return \@values;
+}
+
+sub callers {
+	my $self = shift;
+	# { fid => { line => [ count, incl_time ] } } }
+	my $callers = $self->profile->{sub_caller}->{$self->subname}
+		or return undef;
+	# XXX should 'collapse' data for calls from eval fids
+	# (with an option to not collapse)
+	return $callers;
+}
 
 } # end of package
 

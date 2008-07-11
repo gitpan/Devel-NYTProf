@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 292 2008-07-10 17:07:00Z tim.bunce $
+## $Id: NYTProf.pm 297 2008-07-10 23:05:08Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
@@ -236,7 +236,10 @@ For example, the Readonly module croaks with an "Invalid tie" when profiled with
 perl versions before 5.8.8. That's because it's explicitly checking for certain
 values from caller().  We're not quite sure what the cause is yet.
 
-=head2 
+=head2 Subroutine exclusive time is not (currently) available
+
+Time spent within a subroutine, exclusive of time spent in any subroutines it
+calls, it not currently avalable. It's planned to be added soon.
 
 =head2 Windows
 
@@ -244,8 +247,7 @@ Currently there's no support for Windows.
 
 =head1 BUGS
 
-Some eval tests may fail on perl 5.6.x. It is safe for 'force install' and
-ignore this.
+Possibly.
 
 =head1 SEE ALSO
 
@@ -293,27 +295,27 @@ check out L<http://nytimes.com> for the latest news!
 
 Subroutine-level profilers:
 
-  Devel::DProf        | 1995-10-31| ILYAZ
-  Devel::AutoProfiler | 2002-04-07| GSLONDON
-  Devel::Profiler     | 2002-05-20| SAMTREGAR
-  Devel::Profile      | 2003-04-13| JAW
-  Devel::DProfLB      | 2006-05-11| JAW
-  Devel::WxProf       | 2008-04-14| MKUTTER
+  Devel::DProf        | 1995-10-31 | ILYAZ
+  Devel::AutoProfiler | 2002-04-07 | GSLONDON
+  Devel::Profiler     | 2002-05-20 | SAMTREGAR
+  Devel::Profile      | 2003-04-13 | JAW
+  Devel::DProfLB      | 2006-05-11 | JAW
+  Devel::WxProf       | 2008-04-14 | MKUTTER
 
 Statement-level profilers:
 
-  Devel::SmallProf    | 1997-07-30| ASHTED
-  Devel::FastProf     | 2005-09-20| SALVA
-  Devel::NYTProf      | 2008-03-04| AKAPLAN
-  Devel::Profit       | 2008-05-19| LBROCARD
+  Devel::SmallProf    | 1997-07-30 | ASHTED
+  Devel::FastProf     | 2005-09-20 | SALVA
+  Devel::NYTProf      | 2008-03-04 | AKAPLAN
+  Devel::Profit       | 2008-05-19 | LBROCARD
 
 Devel::NYTProf is a (now distant) fork of Devel::FastProf, which was itself an
 evolution of Devel::SmallProf.
 
 Adam Kaplan took Devel::FastProf and added html report generation (based on
-Devel::Cover) and a test suite - a tricky think to do for a profiler.
-Meanwhile Tim Bunce had been extending Devel::FastProf to add per-sub and
-per-block timing, plus subroutine caller tracking.
+Devel::Cover) and a test suite - a tricky thing to do for a profiler.
+Meanwhile Tim Bunce had been extending Devel::FastProf to add novel
+per-sub and per-block timing, plus subroutine caller tracking.
 
 When Devel::NYTProf was released Tim switched to working on Devel::NYTProf
 because the html report would be a good way to show the extra profile data, and

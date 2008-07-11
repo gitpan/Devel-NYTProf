@@ -7,7 +7,7 @@
 # http://search.cpan.org/~akaplan/Devel-NYTProf
 #
 ###########################################################
-# $Id: Util.pm 287 2008-07-09 19:10:02Z tim.bunce $
+# $Id: Util.pm 305 2008-07-11 12:33:59Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Util;
 
@@ -38,22 +38,24 @@ use List::Util qw(sum);
 use UNIVERSAL qw( isa can VERSION );
 
 our @EXPORT_OK = qw(
-	strip_prefix_from_paths
 	fmt_float
+	strip_prefix_from_paths
 	calculate_median_absolute_deviation
 	get_alternation_regex
 	get_abs_paths_alternation_regex
+	html_safe_filename
 );
 
 
 sub get_alternation_regex {
-	my ($strings) = @_;
+	my ($strings, $suffix_regex) = @_;
+	$suffix_regex = '' unless defined $suffix_regex;
 
 	# sort longest string first
 	my @strings = sort { length $b <=> length $a } @$strings;
 
 	# build string regex for each string
-	my $regex = join "|", map { quotemeta $_ } @strings;
+	my $regex = join "|", map { quotemeta($_) . $suffix_regex } @strings;
 
 	return qr/(?:$regex)/;
 }
@@ -72,7 +74,7 @@ sub get_abs_paths_alternation_regex {
     $_ = ($_ eq '.') ? $cwd : "$cwd/$_";
   }
 
-	return get_alternation_regex(\@inc);
+	return get_alternation_regex(\@inc, '/?');
 }
 
 # edit @$paths in-place to remove specified absolute path prefixes
@@ -87,7 +89,7 @@ sub strip_prefix_from_paths {
 	my $inc_regex = get_abs_paths_alternation_regex(\@inc);
 
 	# anchor at start, capture anchor, soak up any /'s at end
-	$inc_regex = qr{($anchor)$inc_regex/*};
+	$inc_regex = qr{($anchor)$inc_regex};
 
 	# strip off prefix using regex, skip any empty/undef paths
 	if (UNIVERSAL::isa($paths, 'ARRAY')) {
@@ -147,6 +149,13 @@ sub calculate_median_absolute_deviation {
 	return [ $sum / scalar @$values, $median ];
 }
 
+
+sub html_safe_filename {
+	my ($fname) = @_;
+	$fname =~ s{ ^[/\\] }{}x;    # remove leading / or \
+	$fname =~ s{  [/\\] }{-}xg;  # replace / and \ with html safe -
+	return $fname;
+}
 
 1;
 
