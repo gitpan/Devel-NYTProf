@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 299 2008-07-11 09:43:48Z tim.bunce $
+ * $Id: NYTProf.xs 316 2008-07-12 13:07:07Z tim.bunce $
  * ************************************************************************
  */
 #define PERL_NO_GET_CONTEXT		/* we want efficiency */
@@ -52,12 +52,16 @@
 
 #ifdef HASFPURGE
 #define FPURGE(file) fpurge(file)
+#define HAS_FPURGE_BOOL 1
 #elif defined(HAS_FPURGE)
 #define FPURGE(file) _fpurge(file)
+#define HAS_FPURGE_BOOL 1
 #elif defined(HAS__FPURGE)
 #define FPURGE(file) __fpurge(file)
+#define HAS_FPURGE_BOOL 1
 #else
 #define FPURGE(file)
+#define HAS_FPURGE_BOOL 0
 #warning "No fpurge function found -- risk of corrupted profile when forking"
 #endif
 
@@ -1898,6 +1902,17 @@ load_profile_data_from_stream() {
 
 MODULE = Devel::NYTProf		PACKAGE = Devel::NYTProf		
 PROTOTYPES: DISABLE
+
+I32
+constant()
+	PROTOTYPE:
+	ALIAS:
+		HAS_FPURGE = HAS_FPURGE_BOOL
+	CODE:
+	RETVAL = ix;                         
+	OUTPUT:
+	RETVAL
+
 
 MODULE = Devel::NYTProf		PACKAGE = DB
 PROTOTYPES: DISABLE 

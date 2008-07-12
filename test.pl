@@ -8,7 +8,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: test.pl 307 2008-07-11 13:39:46Z steve.peters $
+## $Id: test.pl 316 2008-07-12 13:07:07Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -95,6 +95,9 @@ if($opts{v} ){
 	print "perl5lib: $perl5lib\n";
 	print "nytprofcvs: $nytprofcsv\n";
 }
+
+diag("Note: fpurge function not found, so fork test may fail")
+	unless Devel::NYTProf::HAS_FPURGE();
 
 ok(-x $nytprofcsv, "Where's nytprofcsv?");
 

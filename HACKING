@@ -1,5 +1,5 @@
 # vim: ts=2 sw=2 sts=0 noexpandtab:
-# $Id: HACKING 296 2008-07-10 22:08:26Z tim.bunce $
+# $Id: HACKING 313 2008-07-12 11:41:52Z tim.bunce $
 
 HACKING Devel::NYTProf
 ======================
@@ -320,3 +320,6 @@ Change from tracing via warn() to use our own function that, at least initially,
 calls warn() while temporarily disabling the __WARN__ hook.
 
 Profile and optimize report generation
+
+Add title/tooltip to inclusive times (ie subroutine times) showing the percentage
+of the total runtime it represents.

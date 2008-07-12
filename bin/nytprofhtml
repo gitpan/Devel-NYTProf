@@ -7,7 +7,7 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ##########################################################
-# $Id: nytprofhtml 305 2008-07-11 12:33:59Z tim.bunce $
+# $Id: nytprofhtml 317 2008-07-12 22:32:01Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -197,7 +197,7 @@ $reporter->set_param('datastart', sub {
 
     return qq{$sub_links<br>
       <table border=1 cellpadding=0>
-      <tr><th>Line</th><th>Stmts.</th><th>Time</th><th>Avg.</th><th class="left_indent_header">Code</th>
+      <tr><th>Line</th><th>Stmts.</th><th>Exclusive<br />Time</th><th>Avg.</th><th class="left_indent_header">Code</th>
       </tr>\n
     };
 });
@@ -223,6 +223,11 @@ $reporter->set_param('linestart', {
 $reporter->set_param('column4', {
     func => sub {
       my ($value, $linenum, $linesrc, $profile, $subs, $calls) = @_;
+
+			$linesrc =~ s/&/&amp;/g;
+			$linesrc =~ s/</&lt;/g;
+			$linesrc =~ s/>/&gt;/g;
+			$linesrc =~ s/\t/        /g;
 
       my @prologue;
 			# for each of the subs defined on this line, who called them
@@ -306,18 +311,15 @@ $reporter->set_param('lineend', {start => "</tr>\n"});
 
 # set output options
 $reporter->set_param('suffix', '.html');
-$reporter->add_regexp('\t', ' 'x8);
-$reporter->add_regexp('<', '&lt;');
-$reporter->add_regexp('>', '&gt;');
+
+# output a css file too (optional, but good for pretty pages)
+$reporter->_output_additional('style.css', [ <DATA> ]);
 
 # generate the files
 $reporter->report();
 
 output_subs_indexpage($reporter, "index-subs.html");
 output_indexpage($reporter, "index.html");
-
-# output a css file too (optional, but good for pretty pages)
-$reporter->_output_additional('style.css', [ <DATA> ]);
 
 #
 # SUBROUTINES
@@ -381,13 +383,13 @@ sub output_indexpage {
 
 	# generate name-sorted select options for files, if there are many
 	if (keys %$stats > 30) {
-		print OUT qq{Jump to a file: &nbsp;<select>};
+		print OUT qq{<form name="jump"><select name="file" onChange="location.href=document.jump.file.value;">\n};
+		printf OUT qq{<option disabled>%s</option>\n}, "Jump to file...";
 		foreach (sort keys %$stats) {
-			my $safe = $stats->{$_}->{html_safe};
-			print OUT "<option onClick=location.href=('#$safe');>$_</option>\n"
-					if $safe;
+			my $fid = $profile->resolve_fid($_) or warn "Can't find fid for $_";
+			printf OUT qq{<option value="#f%s">%s</option>\n}, $fid, $_;
 		}
-		print OUT "</select><br/><br/>\n";
+		print OUT "</select><form><br/>\n";
 	}
 
 	# Show top subs across all files
@@ -403,7 +405,7 @@ sub output_indexpage {
 		<table border=1 cellspacing=0>
 		<caption>Source Code Files &mdash; ordered by exclusive time then name</caption>
 	};
-	print OUT "<tr class='index'><th>Stmts</th><th>Time</th>"
+	print OUT "<tr class='index'><th>Stmts</th><th>Exclusive<br />Time</th>"
 						."<th>Avg.</th><th>Reports</th><th>Source File</th></tr>";
 
 	my $inc_path_regex = get_abs_paths_alternation_regex([$profile->inc], qr/^|\[/);
@@ -412,22 +414,23 @@ sub output_indexpage {
 	my $allCalls = 0; # for stats table at the bottom only
 
 	foreach my $filestats (sort { $b->{'time'} <=> $a->{'time'} } values %$stats) {
-		print OUT  "<tr class='index'>";
+		print OUT  qq{<tr class="index">};
 		print OUT "<td class='n'>$filestats->{calls}</td>";
-		print OUT determine_severity('time', $filestats->{'time'}, $dev_time);
+		print OUT determine_severity('time',      $filestats->{'time'},      $dev_time);
 		print OUT determine_severity('time/call', $filestats->{'time/call'}, $dev_avgt);
 
-		my $safe = $filestats->{html_safe};
-		#print OUT  "<td><a name='$safe' href='$safe.html'>$filestats->{filename}</a></td>";
-		my $rep_links = join '&emsp;&bull;&emsp;', map {
+		my $rep_links = join '&nbsp;&bull;&nbsp;', map {
 			my $level_html_safe = $filestats->{$_}->{html_safe};
 			($level_html_safe)
 				? sprintf(qq{<a href="%s.html">%s</a>}, $level_html_safe, $_)
 				: ()
 		} qw(line block sub);
 		print OUT  "<td>$rep_links</td>";
-		(my $shortname = $filestats->{filename}) =~ s/$inc_path_regex//;
-		print OUT  "<td>$shortname</td>";
+
+		my $filename = $filestats->{filename};
+		my $fid = $profile->resolve_fid($filename) or warn "Can't find fid for $_";
+		(my $shortname = $filename) =~ s/$inc_path_regex//;
+		print OUT  sprintf q{<td><a name="f%s" title="%s">%s</a></td>}, $fid, $filename, $shortname;
 		print OUT  "</tr>\n";
 
 		# stats collection
@@ -878,11 +881,11 @@ Default: ./nytprof.out
 
 =item -o, --out <dir>
 
-Where to place the generated report. Default: ./nytprof/
+The directory in which to place the generated report files. Default: ./nytprof/
 
 =item -d, --delete
 
-Purge any existing report at whatever -o (above) is set to
+Purge any existing contents of the report output directory.
 
 =item -l, --lib <dir>
 
@@ -897,13 +900,10 @@ Print the help message
 
 =head1 SAMPLE OUTPUT
 
-=over 4
+You can see a complete report for a large application (over 200 files and 2000 subroutines) at
+L<http://idisk.mac.com/tim.bunce-Public/perl/NYTProf/nytprof-perlcritic-20080812/index.html>
 
-=item L<http://adkap.com/images/Screenshot-XML-LibXML.pm.png>
-
-=item L<http://adkap.com/images/Screenshot-Profile-Index.png>
-
-=back
+The report was generated by profiling L<perlcritic> 1.088 checking it's own source code.
 
 =head1 HISTORY
 
