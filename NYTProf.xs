@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 316 2008-07-12 13:07:07Z tim.bunce $
+ * $Id: NYTProf.xs 320 2008-07-13 10:00:48Z tim.bunce $
  * ************************************************************************
  */
 #define PERL_NO_GET_CONTEXT		/* we want efficiency */
@@ -40,6 +40,9 @@
 #define PL_curcop_nytprof PL_curcop
 #endif
 
+#ifndef OP_NAME	/* for perl 5.6 */
+#define OP_NAME "<?>"
+#endif
 #define OP_NAME_safe(op) ((op) ? OP_NAME(op) : "NULL")
 
 #include <sys/time.h>
@@ -1641,7 +1644,7 @@ load_profile_data_from_stream() {
 				filename_sv = *av_fetch(fid_fileinfo_av, file_num, 1);
 				if (!SvROK(filename_sv)) {
 					if (!SvOK(filename_sv)) { /* only warn once */
-						warn("File id %u used but not defined", file_num);
+						warn("Fid %u used but not defined", file_num);
 						sv_setsv(filename_sv, &PL_sv_no);
 					}
 				}
@@ -1717,11 +1720,11 @@ load_profile_data_from_stream() {
 				}
 
 				if (av_exists(fid_fileinfo_av, file_num)) {
-						av = (AV *)SvRV(*av_fetch(fid_fileinfo_av,file_num,1));
-						if (strnNE(SvPV_nolen(*av_fetch(av, file_num, 0)), text, strlen(text)-1)) {
-							warn("File id %d redefined from %s to %s", file_num,
-										SvPV_nolen(AvARRAY(fid_fileinfo_av)[file_num]), text);
-						}
+						/* should never happen, perhaps file is corrupt */
+						AV *old_av = (AV *)SvRV(*av_fetch(fid_fileinfo_av, file_num, 1));
+						SV *old_name = *av_fetch(old_av, 0, 1);
+						warn("Fid %d redefined from %s to %s", file_num,
+									SvPV_nolen(old_name), text);
 				}
 
 				/* [ name, eval_file_num, eval_line_num, fid, flags, size, mtime, ... ] 
