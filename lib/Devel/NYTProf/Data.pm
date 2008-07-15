@@ -7,7 +7,7 @@
 # http://search.cpan.org/~akaplan/Devel-NYTProf
 #
 ###########################################################
-# $Id: Data.pm 323 2008-07-15 04:47:19Z tim.bunce $
+# $Id: Data.pm 325 2008-07-15 14:07:25Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -48,6 +48,8 @@ use Scalar::Util qw(blessed);
 
 use Devel::NYTProf::Core;
 use Devel::NYTProf::Util qw(strip_prefix_from_paths get_abs_paths_alternation_regex);
+
+our $VERSION = '2.01';
 
 my $trace = 0;
 

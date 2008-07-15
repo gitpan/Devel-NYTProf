@@ -7,9 +7,11 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: Reader.pm 323 2008-07-15 04:47:19Z tim.bunce $
+## $Id: Reader.pm 325 2008-07-15 14:07:25Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Reader;
+
+our $VERSION = '2.01';
 
 use warnings;
 use strict;
