@@ -7,7 +7,7 @@
 # http://search.cpan.org/~akaplan/Devel-NYTProf
 #
 ###########################################################
-# $Id: Data.pm 315 2008-07-12 12:30:32Z tim.bunce $
+# $Id: Data.pm 323 2008-07-15 04:47:19Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -32,6 +32,9 @@ Access to the data should be via methods in this class to avoid breaking
 encapsulation (and thus breaking your code when the data structures change in
 future versions).
 
+XXX Currently the documentation is out of date as this module is evolving
+rapidly.
+
 =head1 METHODS
 
 =cut
@@ -51,7 +54,7 @@ my $trace = 0;
 =head2 new
 
 	$profile = Devel::NYTProf::Data->new( { filename => 'nytprof.out' } );
-  
+
 Reads the specified file containing profile data written by L<Devel::NYTProf>,
 aggregates the contents, and returns the results as a blessed data structure.
 
@@ -239,7 +242,7 @@ separarate the elements of the path.
   sub_caller	main::foo	1	11	1
   sub_subinfo	main::bar	[ 1 6 8 762 2e-06 ]
   sub_subinfo	main::foo	[ 1 1 4 793 1.5e-06 ]
-  
+
 This format is especially useful for grep'ing and diff'ing.
 
 =cut
@@ -835,7 +838,8 @@ B<Steve Peters>, C<< <steve at fisharerojo.org> >>
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (C) 2008 by Adam Kaplan and The New York Times Company.
+ Copyright (C) 2008 by Adam Kaplan and The New York Times Company.
+ Copyright (C) 2008 by Tim Bunce, Ireland.
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.8.8 or,

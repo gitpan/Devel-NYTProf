@@ -7,7 +7,7 @@
 # http://search.cpan.org/~akaplan/Devel-NYTProf
 #
 ###########################################################
-# $Id: Util.pm 305 2008-07-11 12:33:59Z tim.bunce $
+# $Id: Util.pm 323 2008-07-15 04:47:19Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Util;
 
@@ -22,6 +22,8 @@ Devel::NYTProf::Util - general utility functions for L<Devel::NYTProf>
 =head1 DESCRIPTION
 
 Contains general utility functions for L<Devel::NYTProf>
+
+B<Note:> The documentation for this module is currently incomplete and out of date.
 
 =head1 FUNCTIONS
 
@@ -163,7 +165,7 @@ __END__
 
 =head1 SEE ALSO
 
-L<Devel::NYTProf>
+L<Devel::NYTProf> and L<Devel::NYTProf::Data>
 
 =head1 AUTHOR
 
@@ -173,7 +175,7 @@ B<Steve Peters>, C<< <steve at fisharerojo.org> >>
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (C) 2008 by Tim Bunce, Ireland.
+Copyright (c) 2008 by Tim Bunce, Ireland.
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.8.8 or,

@@ -7,14 +7,14 @@
 # http://search.cpan.org/~akaplan/Devel-NYTProf
 #
 ###########################################################
-# $Id: Core.pm 288 2008-07-09 19:54:59Z tim.bunce $
+# $Id: Core.pm 322 2008-07-15 04:33:35Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Core;
 
 
 use XSLoader;
 
-our $VERSION = '1.90'; # increment with XS changes too
+our $VERSION = '2.00'; # increment with XS changes too
 
 XSLoader::load('Devel::NYTProf', $VERSION);
 
