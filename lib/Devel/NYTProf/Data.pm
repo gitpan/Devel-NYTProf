@@ -7,7 +7,7 @@
 # http://search.cpan.org/~akaplan/Devel-NYTProf
 #
 ###########################################################
-# $Id: Data.pm 325 2008-07-15 14:07:25Z tim.bunce $
+# $Id: Data.pm 359 2008-07-24 16:22:39Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -49,7 +49,7 @@ use Scalar::Util qw(blessed);
 use Devel::NYTProf::Core;
 use Devel::NYTProf::Util qw(strip_prefix_from_paths get_abs_paths_alternation_regex);
 
-our $VERSION = '2.01';
+our $VERSION = '2.02';
 
 my $trace = 0;
 
@@ -89,6 +89,9 @@ sub new {
 	(my $sub_class = $class) =~ s/\w+$/ProfSub/;
 	$_ and bless $_ => $sub_class for values %$sub_subinfo;
 
+	# XXX merge evals - should become a method optionally called here
+	# (which uses other methods to do the work and those methods
+	# should also be called by Devel::NYTProf::ProfSub::callers())
 	my %anon_eval_subs_merged;
 	while ( my ($subname, $subinfo) = each %$sub_subinfo ) {
 		# add subname into sub_subinfo
@@ -384,7 +387,7 @@ The data normalized is:
  - basetime attribute: set to 0
  - xs_version attribute: set to 0
  - perl_version attribute: set to 0
- - subroutines: inclusive time set to 0
+ - subroutines: timings are set to 0
  - filenames: path prefixes matching absolute paths in @INC are removed
  - filenames: eval sequence numbers, like "(re_eval 2)" are changed to 0
  - calls remove_internal_data_of() for files loaded from absolute paths in @INC
@@ -398,6 +401,7 @@ sub normalize_variables {
 	$self->{attribute}{basetime} = 0;
 	$self->{attribute}{xs_version} = 0;
 	$self->{attribute}{perl_version} = 0;
+	$self->{attribute}{ticks_per_sec} = 0;
 
 	# remove_internal_data_of library files
 	# (the definition of which is quite vague at the moment)
@@ -426,12 +430,16 @@ sub normalize_variables {
 
 	# zero subroutine inclusive time
 	my $sub_subinfo = $self->{sub_subinfo};
-	$_->[4] = 0 for values %$sub_subinfo;
+	for (values %$sub_subinfo) {
+		$_->[4] = $_->[5] = 0;
+	}
 
 	# zero per-call-location subroutine inclusive time
-	# { 'pkg::sub' => { fid => { line => [ count, incl_time ] } } }
+	# { 'pkg::sub' => { fid => { line => [ count, incl_time, excl_time, ucpu, scpu ] } } }
 	my $sub_caller = $self->{sub_caller} || {};
-	$_->[1]=0 for map { values %$_ } map { values %$_ } values %$sub_caller;
+	for (map { values %$_ } map { values %$_ } values %$sub_caller) {
+		$_->[1] = $_->[2] = $_->[3] = $_->[4] = 0;
+	}
 
 	my $inc = [ @INC, '.' ];
 
@@ -778,14 +786,22 @@ sub _values_for_dump {
 {
 package Devel::NYTProf::ProfSub;	# sub_subinfo
 
+use List::Util qw(sum);
+
 sub fid          { shift->[0] }
 sub first_line   { shift->[1] }
 sub last_line    { shift->[2] }
 sub calls        { shift->[3] }
 sub incl_time    { shift->[4] }
-sub spare5       { shift->[5] }
+sub excl_time    { shift->[5] }
 sub subname      { shift->[6] }
 sub profile      { shift->[7] }
+
+sub is_xsub {
+	my $self = shift;
+	# XXX should test == 0 but some xsubs still have undef first_line etc
+	return (!$self->first_line && !$self->last_line);
+}
 
 sub fileinfo {
 	my $self = shift;
@@ -804,7 +820,7 @@ sub merge_in {
 
 sub _values_for_dump {
 	my $self = shift;
-	my @values = @{$self}[0..4];
+	my @values = @{$self}[0..5];
 	return \@values;
 }
 
@@ -816,6 +832,36 @@ sub callers {
 	# XXX should 'collapse' data for calls from eval fids
 	# (with an option to not collapse)
 	return $callers;
+}
+
+sub caller_fids {
+	my ($self, $merge_evals) = @_;
+	my $callers = $self->callers($merge_evals) || {};
+	my @fids = keys %$callers;
+	return @fids; # count in scalar context
+}
+
+sub caller_count {
+	my ($self, $merge_evals) = @_;
+	my $callers = $self->callers($merge_evals) || {};
+	# count of the number of distinct locations sub is called from
+	return sum(map { scalar keys %$_ } values %$callers );
+}
+
+sub caller_places {
+	my ($self, $merge_evals) = @_;
+	my $callers = $self->callers
+		or return 0;
+	# scalar: count of the number of distinct locations sub iss called from
+	# list: array of [ fid, line, @... ]
+	my @callers;
+	warn "caller_places in list context not implemented/tested yet";
+	while ( my ($fid, $lines) = each %$callers ) {
+		push @callers, map {
+			[ $fid, $_, @{ $lines->{$_} } ]
+		} keys %$lines;
+	}
+	return \@callers;
 }
 
 } # end of package

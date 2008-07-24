@@ -1,5 +1,5 @@
 # vim: ts=2 sw=2 sts=0 noexpandtab:
-# $Id: HACKING 313 2008-07-12 11:41:52Z tim.bunce $
+# $Id: HACKING 351 2008-07-22 17:39:55Z tim.bunce $
 
 HACKING Devel::NYTProf
 ======================
@@ -162,6 +162,10 @@ integer length prefix.  Replace all current newline-terminated strings with the
 new code, so we're safe from embedded newlines and can also store multi-line strings.
 
 Support optionally generating a compressed data file (using popen("zip -c > $file"))
+But the problem with that approach is that the zip would drain cpu time from
+the application in a way we can't predict or compensate for. It would be best to
+embed the zip library into NYTProf itself so the zip can happen in in the same
+process and we can measure and discount the cost. (Zip's >90%, by the way.)
 
 Support optionally saving eval strings (from @{"_<$filename"}, see perldoc perldebguts)
 Should always save the first eval string at each distinct eval (fid:line)
@@ -169,9 +173,6 @@ and require an option to save them all (which could make the data file very larg
 
 Add % of total time to index page
 Remove bottom stats.
-
-Use clock_gettime(CLOCK_MONOTONIC) if available, else clock_gettime(CLOCK_REALTIME).
-Those calls are cheaper than gettimeofday and can give nanosecond resolution.
 
 nytprofhtml: output list of subs as a table and include timings aggregated from
 the line ranges. (Won't be accurate for overlapping subs, such as anonymous
@@ -240,19 +241,14 @@ should not be loaded via the command line. That's needed to test
 behaviors in environments where perl is init'd first. Such as mod_perl.
 Then we can test things like not having the sub line range for some subs.
 
-NYTProf.xs takes two time measurements per statement in order to hide the
-overheads and avoid 'noise' in the results due to stdio flushing at
-unpredictable moments. The subroutine inclusive timing currently has no way to
-compensate for the same overheads. That can be fixed  as follows... The
-statement profile code could measure the overhead time (by subtracting the two
-times it takes) and accumulate it into a global. When a sub is entered
-the inclusive timing code can take a copy of the current cumulative overhead.
-When the subroutine exits the code can subtract the difference between the
-original cumulative overhead and the current one.
-
-Talking that further, the same approach may be able to provide *exclusive*
-subroutine times. That would make NYTProf an even better sub-level profiler
-and, when line-level profiling is disabled, the fastest profiler by far.
+It may be possible to calculate *exclusive* subroutine times like this:
+Whenever a sub inclusive time is calculated, increment a global by that amount.
+When a sub is entered record the current cumulative sub time.
+When a sub is left, subtract the different between the saved cumulative sub time
+and the current cumulative sub time from the inclusive sub time to give the
+exclusive sub time.
+That would make NYTProf an even better sub-level profiler and, when line-level
+profiling is disabled, the fastest sub profiler by far.
 
 Add way to tell if were returning from the outermost scope, ie we're
 in mod_perl and we're exiting a handler back to mod_perl. So any wait time
@@ -323,3 +319,31 @@ Profile and optimize report generation
 
 Add title/tooltip to inclusive times (ie subroutine times) showing the percentage
 of the total runtime it represents.
+
+Subroutines that recurse directly or indirectly, such as Error::try, show
+higher subroutine inclusive times because the time spent recuring is
+double-counted. Could add an extra attribute that measures time spent when
+recursing (based on CvDEPTH(cv)) wich would be 0 for subs that didn't recurse
+(a handy boolean) and could be subtracted from the inclusive time to get the
+'outer' inclusive time.
+
+The sub_caller information is currently one level deep. It would be good to
+make it two levels that. Especially because it would allow you to "see through"
+AUTOLOADs.
+
+Currently goto isn't noticed by the sub profiler. Need to intercept pp_goto.
+But that may be non-trivial. Could make it look like the statement that called
+the sub that called goto also called the sub that goto went to, or make it look
+like the goto &$sub made the call (but we'd then get the wrong inclusive time,
+probably).
+
+Slow builtins, eg those that make system calls or are otherwise expensive, like crypt,
+could be treated as calls to subroutines in the CORE:: namespace.
+
+Consider use of CLOCK_PROF for (higher-resolution?) cpu time measurement
+
+Need better handling of XS subs. Specifically we know all the places an xsub is
+called from but we've nowhere to write that information in the report.
+We could assign fids to subs based on matching the package name to the
+name of non-xsubs. Then add dummy lines to the report for each xsub.
+Could get_file_id(CvFILE(cv)), but the source file will be long gone.

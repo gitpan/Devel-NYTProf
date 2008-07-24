@@ -7,11 +7,11 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 325 2008-07-15 14:07:25Z tim.bunce $
+## $Id: NYTProf.pm 359 2008-07-24 16:22:39Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
-our $VERSION = '2.01';
+our $VERSION = '2.02';
 
 package	# hide the package from the PAUSE indexer
 	DB;
@@ -72,6 +72,7 @@ Devel::NYTProf is a powerful feature-rich perl source code profiler.
  * Performs inclusive timing of subroutines, per calling location
  * Can profile compile-time activity or just run-time
  * Uses novel techniques for efficient profiling
+ * Sub-microsecond (100ns) resolution on systems with clock_gettime()
  * Very fast - the fastest statement-profiler for perl
  * Handles applications that fork, with no performance cost
  * Immune from noise caused by profiling overheads and i/o
@@ -135,6 +136,10 @@ location that called the subroutine>.
 Subroutine entry is detected by intercepting the entersub opcode. Subroutine
 exit is detected via perl's internal save stack. The result is both extremely
 fast and very robust.
+
+Note that subroutines that recurse directly or indirectly, such as Error::try,
+will show higher subroutine inclusive times because the time spent recuring
+will be double-counted. That may change in future.
 
 =head2 Application Profiling
 
@@ -302,14 +307,19 @@ For example, the Readonly module croaks with an "Invalid tie" when profiled with
 perl versions before 5.8.8. That's because L<Readonly> explicitly checking for
 certain values from caller().  We're not quite sure what the cause is yet.
 
-=head2 Subroutine exclusive time is not (currently) available
+=head2 Calls made via operator overloading
 
-Time spent within a subroutine, exclusive of time spent in any subroutines it
-calls, it not currently avalable. It's planned to be added soon.
+Calls made via operator overloading are not noticed by the subroutine profiler.
+
+=head2 goto
+
+The C<goto &$sub;> isn't recognised as a subroutine call by the subroutine profiler.
 
 =head2 Windows
 
-Currently there's no support for Windows.
+Currently there's no support for Windows. Some work is being done on a port.
+If you'd be interested in helping us port to Windows then please get in touch
+with us.
 
 =head1 BUGS
 

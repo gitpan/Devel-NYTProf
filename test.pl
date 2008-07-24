@@ -8,7 +8,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: test.pl 322 2008-07-15 04:33:35Z tim.bunce $
+## $Id: test.pl 352 2008-07-22 19:08:20Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -30,7 +30,6 @@ my %SKIP_TESTS = (
 	'test06' => ($] >= 5.008) ? 0 : "needs perl >= 5.8",
 	'test15' => ($] <  5.008) ? 0 : "needs perl < 5.8",
 	'test16' => ($] >=  5.010) ? 0 : "needs perl >= 5.10",
-	'test30-fork' => ($^O ne 'cygwin') ? 0 : "test fails on Cygwin - missing fpurge",
 );
 
 my %opts = (
@@ -38,13 +37,15 @@ my %opts = (
 	html => $ENV{NYTPROF_TEST_HTML},
 );
 GetOptions(\%opts,
-	qw/p=s I=s v|verbose d|debug html open profperlopts=s/
+	qw/p=s I=s v|verbose d|debug html open profperlopts=s leave=i use_db_sub=i/
 ) or exit 1;
 
 $opts{v} ||= $opts{d};
 
 my $opt_perl = $opts{p};
 my $opt_include = $opts{I};
+my $opt_leave = $opts{leave};
+my $opt_use_db_sub = $opts{use_db_sub};
 my $profile_datafile = 'nytprof_t.out'; # non-default to test override works
 
 # note some env vars that might impact the tests
@@ -71,8 +72,8 @@ s:^t/:: for @ARGV; # allow args to use t/ prefix
 # *.x   = result csv dump to verify (should change to .rcv)
 my @tests = @ARGV ? @ARGV : sort <*.p *.rdt *.x>;  # glob-sort, for OS/2
 
-my @test_opt_leave = (1, 0);
-my @test_opt_use_db_sub = (0, 1);
+my @test_opt_leave      = (defined $opt_leave)      ? ($opt_leave)      : (1, 0);
+my @test_opt_use_db_sub = (defined $opt_use_db_sub) ? ($opt_use_db_sub) : (0, 1);
 
 plan tests => 1 + number_of_tests(@tests) * @test_opt_leave * @test_opt_use_db_sub;
 
@@ -95,9 +96,6 @@ if($opts{v} ){
 	print "perl5lib: $perl5lib\n";
 	print "nytprofcvs: $nytprofcsv\n";
 }
-
-diag("Note: fpurge function not found, so fork test may fail")
-	unless Devel::NYTProf::HAS_FPURGE();
 
 ok(-x $nytprofcsv, "Where's nytprofcsv?");
 

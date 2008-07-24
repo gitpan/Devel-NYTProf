@@ -7,7 +7,7 @@
 # http://search.cpan.org/~akaplan/Devel-NYTProf
 #
 ###########################################################
-# $Id: Util.pm 325 2008-07-15 14:07:25Z tim.bunce $
+# $Id: Util.pm 359 2008-07-24 16:22:39Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Util;
 
@@ -39,10 +39,11 @@ use Cwd qw(getcwd);
 use List::Util qw(sum);
 use UNIVERSAL qw( isa can VERSION );
 
-our $VERSION = '2.01';
+our $VERSION = '2.02';
 
 our @EXPORT_OK = qw(
 	fmt_float
+	fmt_incl_excl_time
 	strip_prefix_from_paths
 	calculate_median_absolute_deviation
 	get_alternation_regex
@@ -138,19 +139,30 @@ sub fmt_float {
 }
 
 
+sub fmt_incl_excl_time {
+	my ($incl, $excl) = @_;
+	my $diff = $incl - $excl;
+	return fmt_float($incl)."s" unless $diff;
+	return sprintf "%ss (%s+%s)", fmt_float($incl+$excl), fmt_float($excl), fmt_float($incl-$excl);
+}
+
+
 ## Given a ref to an array of numeric values
-## returns average distance from the median value, and the median.
-## Highly resistant to extremes
+## returns median distance from the median value, and the median value.
+## See http://en.wikipedia.org/wiki/Median_absolute_deviation
 sub calculate_median_absolute_deviation {
-	my $values = shift;
-	return [ 0, 0 ] if @$values == 0; # no data
+	my $values_ref = shift;
+	my ($ignore_zeros) = @_;
 
-	$values = [ sort { $a <=> $b } @$values ];
-	my $median = $values->[ int(scalar(@$values) / 2) ];
-	my $sum = 0;
-	$sum += abs($_ - $median) for @$values;
+	my @values = ($ignore_zeros) ? grep { $_ } @$values_ref : @$values_ref;
+	my $median_value = [ sort { $a <=> $b } @values ]->[ @values / 2 ];
 
-	return [ $sum / scalar @$values, $median ];
+	return [ 0, 0 ] if not defined $median_value; # no data
+
+	my @devi = map { abs($_ - $median_value) } @values;
+	my $median_devi = [ sort { $a <=> $b } @devi ]->[ @devi / 2 ];
+
+	return [ $median_devi, $median_value ];
 }
 
 

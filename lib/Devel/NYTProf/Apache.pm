@@ -7,7 +7,7 @@
 # http://search.cpan.org/~akaplan/Devel-NYTProf
 #
 ###########################################################
-# $Id: Apache.pm 323 2008-07-15 04:47:19Z tim.bunce $
+# $Id: Apache.pm 339 2008-07-17 01:06:50Z steve.peters $
 ###########################################################
 package Devel::NYTProf::Apache;
 
@@ -62,7 +62,7 @@ Devel::NYTProf::Apache - Profile mod_perl applications with Devel::NYTProf
 
 =head1 SYNOPSIS
 
-    # in you Apache config file with mod_perl installed
+    # in your Apache config file with mod_perl installed
     PerlPassEnv NYTPROF
     PerlModule Devel::NYTProf::Apache
 

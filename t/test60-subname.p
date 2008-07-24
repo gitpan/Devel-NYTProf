@@ -15,4 +15,11 @@ Socket->pack_sockaddr_un();
 @Subclass::ISA = qw(Socket);
 Subclass->pack_sockaddr_un();
 
+my $subname = "Socket::pack_sockaddr_un";
+&$subname("foo");
 
+# XXX currently goto isn't noticed by the profiler
+# it's as if the call never happened. This most frequently
+# affects AUTOLOAD subs.
+sub launch { goto &$subname }
+launch("foo");
