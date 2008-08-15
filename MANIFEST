@@ -1,3 +1,5 @@
+.indent.pro
+.perltidyrc
 benchmark.pl
 bin/nytprofcsv
 bin/nytprofhtml
@@ -66,9 +68,6 @@ t/test14.pm
 t/test14.pm.x
 t/test14.rdt
 t/test14.x
-t/test15.p
-t/test15.rdt
-t/test15.x
 t/test16.p
 t/test16.rdt
 t/test16.x
@@ -77,6 +76,12 @@ t/test30-fork.0.rdt
 t/test30-fork.0.x
 t/test30-fork.1.rdt
 t/test30-fork.1.x
+t/test40pmc.p
+t/test40pmc.pm
+t/test40pmc.pm.x
+t/test40pmc.pmc
+t/test40pmc.rdt
+t/test40pmc.x
 t/test50-disable.p
 t/test50-disable.rdt
 t/test50-disable.x

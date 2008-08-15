@@ -1,28 +1,28 @@
-# vim: ts=2 sw=2 sts=0 noexpandtab:
+# vim: ts=8 sw=4 expandtab:
 ##########################################################
 # This script is part of the Devel::NYTProf distribution
 #
 # Copyright, contact and other information can be found
 # at the bottom of this file, or by going to:
-# http://search.cpan.org/~akaplan/Devel-NYTProf
+# http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Core.pm 359 2008-07-24 16:22:39Z tim.bunce $
+# $Id: Core.pm 405 2008-08-15 13:10:58Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Core;
 
 
 use XSLoader;
 
-our $VERSION = '2.02'; # increment with XS changes too
+our $VERSION = '2.03';    # increment with XS changes too
 
 XSLoader::load('Devel::NYTProf', $VERSION);
 
 if (my $NYTPROF = $ENV{NYTPROF}) {
-	for my $optval (split /:/, $NYTPROF) {
-		my ($opt, $val) = split /=/, $optval, 2;
-		DB::set_option( $opt, $val );
-	}
+    for my $optval (split /:/, $NYTPROF) {
+        my ($opt, $val) = split /=/, $optval, 2;
+        DB::set_option($opt, $val);
+    }
 }
 
 1;
@@ -54,5 +54,3 @@ it under the same terms as Perl itself, either Perl version 5.8.8 or,
 at your option, any later version of Perl 5 you may have available.
 
 =cut
-
-# vim: ts=2 sw=2 sts=0 noexpandtab:

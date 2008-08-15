@@ -1,5 +1,6 @@
 attribute	application	test14.p
 attribute	basetime	0
+attribute	nv_size	0
 attribute	perl_version	0
 attribute	ticks_per_sec	0
 attribute	xs_version	0
@@ -10,10 +11,10 @@ fid_block_time	3	11	0	0
 fid_block_time	3	11	1	2
 fid_block_time	3	11	2	1	[ 0 1 ]
 fid_block_time	3	14	[ 0 1 ]
-fid_fileinfo	1	[ test14.p   1 0 0 0 ]
-fid_fileinfo	2	[ AutoLoader.pm   2 0 0 0 ]
-fid_fileinfo	3	[ test14.pm   3 0 0 0 ]
-fid_fileinfo	4	[ (eval 0)[test14.pm (autosplit into auto/test14/bar.al):11] 3 11 4 0 0 0 ]
+fid_fileinfo	1	[ test14.p   1 2 0 0 ]
+fid_fileinfo	2	[ AutoLoader.pm   2 2 0 0 ]
+fid_fileinfo	3	[ test14.pm   3 2 0 0 ]
+fid_fileinfo	4	[ (eval 0)[test14.pm (autosplit into auto/test14/bar.al):11] 3 11 4 2 0 0 ]
 fid_line_time	1	17	[ 0 1 ]
 fid_line_time	1	18	[ 0 1 ]
 fid_line_time	3	7	[ 0 1 ]

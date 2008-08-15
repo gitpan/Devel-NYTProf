@@ -1,5 +1,5 @@
 # vim: ts=2 sw=2 sts=0 noexpandtab:
-# $Id: HACKING 351 2008-07-22 17:39:55Z tim.bunce $
+# $Id: HACKING 403 2008-08-11 20:23:02Z tim.bunce $
 
 HACKING Devel::NYTProf
 ======================
@@ -110,19 +110,6 @@ perl, and stored in data file.
 
 Write tests for new functionality.
 
-Write up change notes
-
-Write, clean-up documentation
-
-Currently the cost of calling the sub goes to the caller (good)
-but the cost of copying the result goes to the method (poor).
-Overriding pp_leavesub may allow more accurate measurements by avoiding return
-value processing overheads accumulating on last statement in sub.
-
-Similarly, the cost of retesting the loop condition is accounted
-for by the last statement executed each time round the loop.
-Overriding relevant ops may enable better accounting.
-
 Add way for program being profiled to switch output to a new profile file.
 Perhaps via enable_profile($optional_new_filename)
 See http://search.cpan.org/dist/Devel-Profile/ for use case.
@@ -131,11 +118,11 @@ Add @INC to data file so reports can be made more readable by removing
 (possibly very long) library paths where appropriate.
 
 Add time to begin and end pid markers in data file.
-
 Add marker with timestamp for phases BEGIN, CHECK, INIT, END
 (could combine with pid marker)
 
-Add size and mtime of fid to data file.
+Add actual size and mtime of fid to data file. (Already in data file as zero,
+just needs the stat() call.)
 
 Intercept all opcodes that may fork and run perl code in the child
 	ie fork, open, entersub (ie xs), others?
@@ -146,9 +133,7 @@ Intercept all opcodes that may fork and run perl code in the child
 Add way to merge profile data. Merging could be done in perl.
 
 Add constants to Data.pm for the array indexes
-0=time_spent
-1=exe_count
-2=eval_line_data
+0=time_spent, 1=exe_count, 2=eval_line_data, etc
 
 Add method to remove data (like sub_fid_lines) relating to specific files
 so that the .rdt tests aren't affected by variations between versions of library modules.
@@ -156,10 +141,6 @@ so that the .rdt tests aren't affected by variations between versions of library
 Support profiling programs which use threads:
 	- move all relevant globals into a structure
 	- add lock around output to file
-
-Add functions to read & write strings to the profile data file that uses an
-integer length prefix.  Replace all current newline-terminated strings with the
-new code, so we're safe from embedded newlines and can also store multi-line strings.
 
 Support optionally generating a compressed data file (using popen("zip -c > $file"))
 But the problem with that approach is that the zip would drain cpu time from
@@ -171,18 +152,14 @@ Support optionally saving eval strings (from @{"_<$filename"}, see perldoc perld
 Should always save the first eval string at each distinct eval (fid:line)
 and require an option to save them all (which could make the data file very large).
 
-Add % of total time to index page
-Remove bottom stats.
-
-nytprofhtml: output list of subs as a table and include timings aggregated from
-the line ranges. (Won't be accurate for overlapping subs, such as anonymous
-subs, but those can be detetected and a note added.)
+Add % of total time to file table on index page.
+Add % of total time to exclusive time column in subs table as a tooltip.
+To do these we need accurate total time - based on sum of times between enable_profile()
+and disable_profile().
 
 The whole reporting framework needs a rewrite to use a single 'thin' command
 line and classes for the Model (lines, files, subs), View (html, csv etc),
 and Controller (composing views to form reports).
-
-Add timing to sub calls by using save stack to trigger end of timing measurement?
 
 Add resolution of __ANON__ sub names (eg imported 'constants') where possible.
 
@@ -190,12 +167,6 @@ Trim leading @INC portion from filename in __ANON__[/very/long/path/...]
 in report output. (Keep full path in link/tooltip/title as it may be ambiguous when shortened).
 
 Explain what's shown in html reports, ie say it's elapsed realtime.
-
-Use 'Statements' or 'Stmts' instead of Calls in reports.
-
-Only warn "No file line range data for sub' once per sub.
-Add hint that it may be XS.
-Could also note fact that it is XS in pp_entersub_profiler
 
 Currently the line of only last BEGIN (or 'use') in the file are recorded.
 Rename Foo::BEGIN subs to Foo::BEGIN[file:line]
@@ -207,16 +178,6 @@ Perhaps as ...::AUTOLOAD[$AUTOLOAD]
 
 Refactor this HACKING file!
 
-Add docs for new options
-
-Add docs for use_db_sub and explain pros & cons. Especially that opcode
-redirection can't profile code that was loaded before NYTProf because
-it only affects code that is *compiled* after it takes effect.
-(Unless we want to traverse the existing compiled code and edit the ops in place :-)
-
-Would be good if DB::DB sub wasn't defined when use_db_sub is false
-so the profiler could be used to profile debuggers etc.
-
 Add file format backwards compatibility tests.
 
 Add tests for evals in regex: s/.../ ...perl code... /e
@@ -225,11 +186,11 @@ Add tests for -block and -sub csv reports.
 
 Add tests with various kinds of blocks (if, do, etc) and loops.
 
-Add links to -$level html reports to ease switching between them.
-
 Set options via import so perl -d:NYTProf=... works. Very handy. May need
 alternative option syntax. Also perl gives special meaning to 't' option
 (threads) so we should reserve the same for eventual thread support.
+Problem with this is that the import() call happens late so
+limits the usefulness.
 
 Add help option which would print a summary of the options and exit
 
@@ -240,21 +201,6 @@ Add mechanism to specify inside the .p file that NYTProf
 should not be loaded via the command line. That's needed to test
 behaviors in environments where perl is init'd first. Such as mod_perl.
 Then we can test things like not having the sub line range for some subs.
-
-It may be possible to calculate *exclusive* subroutine times like this:
-Whenever a sub inclusive time is calculated, increment a global by that amount.
-When a sub is entered record the current cumulative sub time.
-When a sub is left, subtract the different between the saved cumulative sub time
-and the current cumulative sub time from the inclusive sub time to give the
-exclusive sub time.
-That would make NYTProf an even better sub-level profiler and, when line-level
-profiling is disabled, the fastest sub profiler by far.
-
-Add way to tell if were returning from the outermost scope, ie we're
-in mod_perl and we're exiting a handler back to mod_perl. So any wait time
-before the next statement shouldn't be counted.
-Otherwise a some return, typically from a DESTROY, gets all the time spent
-waiting for the next request. Which is inappropriate and confusing.
 
 Add top-n statements to file reports between sub table and line table.
 
@@ -268,7 +214,7 @@ The tricky/clever/new idea is that by nesting a span inside another and using
 the :before or :after on the inner one the text of the popup can reside in css
 and not html. Mind you, I've not seen anyone do this so I may be crazy :)
 
-The data file includes the information mapping a line-level live to the
+The data file includes the information mapping a line-level line to the
 corresponding block-level and sub-level lines. This should be added to the data
 structure. It would enable a much richer visualization of which lines have
 contributed to the 'rolled up' counts. That's especially tricky to work out
@@ -277,13 +223,6 @@ with the block level view.
 Following on from that I have a totally crazy idea that the browsers css engine
 could be used to highlight the corresponding rollup line when hovering over a
 source line, and/or the opposite. Needs lots of thought, but it's an interesting idea.
-
-test14 depends on the AutoLoad module looking like version 5.60, the
-version included with Perl 5.8.8.  Perl 5.8.9 and Perl 5.10.0 have
-a more recent version.  Users can also now update AutoLoader from CPAN.
-We need to skip test14 if using a different version of AutoLoader, and
-make the tests a bit smarter with differing AutoLoader versions.  Steve
-is looking into this.
 
 Investigate and fix "Unable to determine line number" cases. Here's one:
 $ NYTPROF=begin=1:blocks=1:trace=1 perl  -d:NYTProf -Mstrict -e 1
@@ -297,17 +236,10 @@ at 37: EVAL in different file (-e, /usr/local/perl58-i/lib/5.8.6/strict.pm) at /
 Unable to determine line number in -e.
 Unable to determine line number in -e.
 
-Add way for use to ask for pid to be embedded into the data file name
-so that using PERL5OPT=-d:NYTProf and running multiple scripts
-won't overwrite the same profile file each time. (Could also add way to embed
-basename($0) into the filename)
-
 Add option to disable statement based profiling, so you're left with subroutine
 inclusive timing. That's *really* fast and would be handy for a quick check on
 performance of a large application. It's also generates no i/o till the end
 so may be useful for long running apps that would otherwise generate a huge data file.
-
-Add tooltip to sub names where we can't provide a link because the sub is in XS.
 
 Add a 'permalink' icon (eg infinity symbol) to the right of lines defining subs
 to make it easer to email/IM links to particular places in the code.
@@ -329,9 +261,9 @@ recursing (based on CvDEPTH(cv)) wich would be 0 for subs that didn't recurse
 
 The sub_caller information is currently one level deep. It would be good to
 make it two levels that. Especially because it would allow you to "see through"
-AUTOLOADs.
+AUTOLOADs and other kinds of 'dispatch' subs.
 
-Currently goto isn't noticed by the sub profiler. Need to intercept pp_goto.
+Currently goto isn't explicitly noticed by the sub profiler. Need to intercept pp_goto.
 But that may be non-trivial. Could make it look like the statement that called
 the sub that called goto also called the sub that goto went to, or make it look
 like the goto &$sub made the call (but we'd then get the wrong inclusive time,
@@ -344,6 +276,28 @@ Consider use of CLOCK_PROF for (higher-resolution?) cpu time measurement
 
 Need better handling of XS subs. Specifically we know all the places an xsub is
 called from but we've nowhere to write that information in the report.
-We could assign fids to subs based on matching the package name to the
-name of non-xsubs. Then add dummy lines to the report for each xsub.
+We could assign fids to xsubs based on matching the package name to the
+package name of non-xsubs. Then add dummy lines to the report for each xsub.
 Could get_file_id(CvFILE(cv)), but the source file will be long gone.
+
+Replace DB::enable_profiling() and DB::disable_profiling() with $DB::profile = 1|0;
+That a more consistent API with $DB::single etc., but more importantly it lets
+users leave the code in place when NYTProf is not loaded. It'll just do nothing,
+whereas currently the user will get a fatal error if NYTProf isn't loaded.
+It also allows smart things like use of local for temporary overrides.
+
+Combine current profile_* globals into a single global int using bit fields.
+That way assigning to $DB::profile can offer a finer degree of control.
+
+Add mechanism to enable control of profiling on a per-sub-name and/or
+per-package-name basis. For example, specify a regex and whenever a sub is
+entered (for the first time, to make it cheap) check if the sub name matches
+the regex. If it does then save the current $DB::profile value and set a new one.
+When the sub exits restore the previous $DB::profile value.
+
+Could optionally track resource usage per sub. Data sources could be perl sv
+arenas (clone visit() function from sv.c) to measure number of SVs & total SV
+memory, plus getrusage()). Abstract those into a structure with functions to
+subtract the difference. Then use the same logic to get inclusive and exclusive
+values as we use for inclusive and exclusive subroutine times.
+

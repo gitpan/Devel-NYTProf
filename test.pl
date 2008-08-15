@@ -8,7 +8,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: test.pl 352 2008-07-22 19:08:20Z tim.bunce $
+## $Id: test.pl 402 2008-08-11 20:14:45Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -103,6 +103,7 @@ ok(-x $nytprofcsv, "Where's nytprofcsv?");
 for my $leave (@test_opt_leave) {
 	for my $use_db_sub (@test_opt_use_db_sub) {
 		run_all_tests( {
+			start => 'init',
 			leave => $leave,
 			use_db_sub => $use_db_sub,
 		} );
@@ -297,7 +298,7 @@ sub verify_csv_report {
 		my $tc0 = $3;
 
 		if (defined $expected[$index]
-		   and 0 != $expected[$index] =~ s/^\|([0-9.]+)\|(.*)/0$2/
+		   and 0 != $expected[$index] =~ s/^~([0-9.]+)/0/
 		   and $c0 # protect against div-by-0 in some error situations
 		) {
 			push @accuracy_errors, "$test line $index: got $t0 expected ~$1 for time"

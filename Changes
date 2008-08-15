@@ -2,7 +2,33 @@
 
 Devel::NYTProf:Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2008-07-24 09:31:42 -0700 (Thu, 24 Jul 2008) $ $Revision: 361 $)
+(As of $Date: 2008-08-15 14:10:58 +0100 (Fri, 15 Aug 2008) $ $Revision: 405 $)
+
+=head2 Changes in Devel::NYTProf 2.03 (svn r405) 15 Aug 2008
+
+  NOTES:
+  1. File format changed. Old profiles can't be read.
+  2. Perl 5.8.1 is the oldest perl version supported.
+
+  Fixed accounting for time spent executing subs that were
+    compiled in string evals.
+  Fixed risk of file corruption by names containing newlines.
+
+  Changed to also profile compile-time activity by default.
+  Improved formating of stats for subs called by a statement.
+
+  Added start=begin|init|end|no option to NYTPROF env var.
+  Added addpid=1 option to NYTPROF env var.
+  Added support for .pmc files.
+  Added detection of #line directives in source code
+    currently just warns that they are not handled.
+
+  Known issues:
+  Perl 5.8.8 can report garbage file names for XS subs.
+  (Perl 5.8.6 and 5.10 don't seem to have this problem.)
+	Where a subroutine is called from code compiled in a string
+  evals, the artificial "eval file names" are not yet merged.
+  (You're unlikely to notice this obscure case anyway.)
 
 =head2 Changes in Devel::NYTProf 2.02 (svn r361) 24 Jul 2008
 
