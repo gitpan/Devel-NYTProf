@@ -7,11 +7,11 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 405 2008-08-15 13:10:58Z tim.bunce $
+## $Id: NYTProf.pm 481 2008-10-01 15:17:03Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
-our $VERSION = '2.03';
+our $VERSION = '2.04';
 
 package    # hide the package from the PAUSE indexer
     DB;
@@ -279,6 +279,15 @@ have to run the code for many hours to have any hope of reasonably useful result
 =head2 file=...
 
 Specify the output file to write profile data to (default: './nytprof.out').
+
+=head2 compress=...
+
+Specify the compression level to use, if NYTProf is compiled with compression
+support. Valid values are 0 to 9, with 0 disabling compression. The default is
+6 as higher values yield little extra compression but the cpu cost starts to
+rise significantly. Using level 1 still gives you a significant reduction in file size.
+
+If NYTProf was not compiled with compression support, this option is silently ignored.
 
 =head1 SELECTIVE PROFILING
 

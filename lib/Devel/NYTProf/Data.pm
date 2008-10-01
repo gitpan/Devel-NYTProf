@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Data.pm 405 2008-08-15 13:10:58Z tim.bunce $
+# $Id: Data.pm 474 2008-09-30 10:48:55Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -50,7 +50,7 @@ use Scalar::Util qw(blessed);
 use Devel::NYTProf::Core;
 use Devel::NYTProf::Util qw(strip_prefix_from_paths get_abs_paths_alternation_regex);
 
-our $VERSION = '2.03';
+our $VERSION = '2.04';
 
 my $trace = (($ENV{NYTPROF}||'') =~ m/\b trace=(\d+) /x) && $1; # XXX a hack
 
@@ -505,7 +505,9 @@ sub normalize_variables {
 sub make_fid_filenames_relative {
     my ($self, $roots) = @_;
     $roots ||= ['.'];    # e.g. [ @INC, '.' ]
-    strip_prefix_from_paths($roots, $self->{fid_fileinfo}, undef);
+    # strip prefix from start of string and also when embeded
+    # e.g., "(eval 42)[/foo/bar/...]"
+    strip_prefix_from_paths($roots, $self->{fid_fileinfo}, qr{^|\[});
 }
 
 

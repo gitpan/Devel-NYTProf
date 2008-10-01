@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Util.pm 405 2008-08-15 13:10:58Z tim.bunce $
+# $Id: Util.pm 474 2008-09-30 10:48:55Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Util;
 
@@ -40,7 +40,7 @@ use Cwd qw(getcwd);
 use List::Util qw(sum);
 use UNIVERSAL qw( isa can VERSION );
 
-our $VERSION = '2.03';
+our $VERSION = '2.04';
 
 our @EXPORT_OK = qw(
     fmt_float
@@ -104,7 +104,7 @@ sub strip_prefix_from_paths {
                 strip_prefix_from_paths($inc_ref, $path, $anchor);
             }
             elsif ($path) {
-                $path =~ s{$inc_regex}{};
+                $path =~ s{$inc_regex}{$1};
             }
         }
     }
@@ -129,11 +129,17 @@ sub strip_prefix_from_paths {
 # eg normalize the width/precision so that the tables look good.
 sub fmt_float {
     my ($val, $precision) = @_;
-    if ($val < 0.00001 and $val > 0) {
-        $val = sprintf("%.0e", $val);
+    $precision ||= 5;
+    if ($val < 10 ** -($precision - 1) and $val > 0) {
+	# Give the same width as a larger value formatted with the %f below.
+	# This gives us 2 digits of precision for $precision == 5
+        $val = sprintf("%." . ($precision - 4) . "e", $val);
+	# But our exponents will always be e-05 to e-09, never e-10 or smaller
+	# so remove the leading zero to make these small numbers stand out less
+	# on the table.
+	$val =~ s/e-0/e-/;
     }
     elsif ($val != int($val)) {
-        $precision ||= 5;
         $val = sprintf("%.${precision}f", $val);
     }
     return $val;

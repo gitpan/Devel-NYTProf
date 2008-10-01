@@ -1,5 +1,5 @@
 # vim: ts=2 sw=2 sts=0 noexpandtab:
-# $Id: HACKING 403 2008-08-11 20:23:02Z tim.bunce $
+# $Id: HACKING 444 2008-08-17 15:32:55Z nick@ccl4.org $
 
 HACKING Devel::NYTProf
 ======================
@@ -129,6 +129,11 @@ Intercept all opcodes that may fork and run perl code in the child
 	and fflush before executing the op (so fpurge isn't strictly required)
   and reinit_if_forked() afterwards
 	add option to force reinit_if_forked check per stmt just-in-case
+Alternatively it might be better to use pthread_atfork() [if available] with a
+child handler. The man page says "Remember: only async-cancel-safe functions
+are allowed on the child side of fork()" so it seems that the safe thing to do
+is to use a volatile flag variable, and change its value in the handler to
+signal to the main code.
 
 Add way to merge profile data. Merging could be done in perl.
 
@@ -142,15 +147,12 @@ Support profiling programs which use threads:
 	- move all relevant globals into a structure
 	- add lock around output to file
 
-Support optionally generating a compressed data file (using popen("zip -c > $file"))
-But the problem with that approach is that the zip would drain cpu time from
-the application in a way we can't predict or compensate for. It would be best to
-embed the zip library into NYTProf itself so the zip can happen in in the same
-process and we can measure and discount the cost. (Zip's >90%, by the way.)
+Support optionally generating a compressed data file. Right now you always get
+compression if zlib is detected at Makefile.PL time.
 
-Support optionally saving eval strings (from @{"_<$filename"}, see perldoc perldebguts)
-Should always save the first eval string at each distinct eval (fid:line)
-and require an option to save them all (which could make the data file very large).
+We now save eval strings (from @{"_<$filename"}, see perldoc perldebguts)
+but it requires use_db_subs=1 due to perl internals. Currently unused.
+Add source code of first string eval at each fid:line to report.
 
 Add % of total time to file table on index page.
 Add % of total time to exclusive time column in subs table as a tooltip.

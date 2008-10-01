@@ -7,11 +7,11 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: Reader.pm 405 2008-08-15 13:10:58Z tim.bunce $
+## $Id: Reader.pm 473 2008-09-30 09:13:32Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Reader;
 
-our $VERSION = '2.03';
+our $VERSION = '2.04';
 
 use warnings;
 use strict;
@@ -351,7 +351,9 @@ sub _generate_report {
 
         $self->{filestats}->{$filestr}->{'time'}      = $runningTotalTime;
         $self->{filestats}->{$filestr}->{'calls'}     = $runningTotalCalls;
-        $self->{filestats}->{$filestr}->{'time/call'} = $runningTotalTime / $runningTotalCalls;
+        $self->{filestats}->{$filestr}->{'time/call'} = eval { $runningTotalTime / $runningTotalCalls };
+        warn "Um, that's odd, the count of executed statements is zero for '$filestr'\n"
+            unless $runningTotalCalls;
 
         # Use Median Absolute Deviation Formula to get file deviations for each of
         # calls, time and time/call values
@@ -404,6 +406,10 @@ sub _generate_report {
 
         if (!open(IN, $filestr)) {
 
+            # ignore synthetic file names that perl assigns when reading
+            # code returned by a CODE ref in @INC
+            next if $filestr =~ m{^/loader/0x[0-9a-zA-Z]+/};
+
             # the report will not be complete, but this doesn't need to be fatal
             my $hint = '';
             $hint =
@@ -422,7 +428,7 @@ sub _generate_report {
             foreach my $regexp (@{$self->{user_regexp}}) {
                 $line =~ s/$regexp->{pattern}/$regexp->{replace}/g;
             }
-            if ($line =~ m/^\# \s* line \b/x) {
+            if ($line =~ m/^\# \s* line \s+ (\d+) \b/x) {
                 # XXX we should be smarter about this - patches welcome!
                 warn "Ignoring '$line' directive at line $LINE - profile data for $filestr will be out of sync with source!\n"
                     unless our $line_directive_warn->{$filestr}++; # once per file

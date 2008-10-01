@@ -16,12 +16,15 @@ lib/Devel/NYTProf/Data.pm
 lib/Devel/NYTProf.pm
 lib/Devel/NYTProf/Reader.pm
 lib/Devel/NYTProf/Util.pm
+lib/Devel/NYTProf/js/jquery.min.js
+lib/Devel/NYTProf/js/jquery.tablesorter.min.js
 Makefile.PL
 MANIFEST
 NYTProf.xs
 ppport.h
 README
 t/00.load.t
+t/50.errno.t
 t/90.pod.t
 t/80.version.t
 t/91.pod_coverage.t

@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-# $Id: Makefile.PL 405 2008-08-15 13:10:58Z tim.bunce $
+# $Id: Makefile.PL 463 2008-09-17 21:28:17Z tim.bunce $
 ###########################################################
 
 use 5.008001;
@@ -63,7 +63,6 @@ my $cpp = $Config{cpp} || do {
 
 print "Looking for header files and functions...\n";
 my $INCLUDE;
-my $clock_gettime;
 
 my $h_files;
 my @h_dirs;
@@ -74,19 +73,21 @@ push @h_dirs, qw(/include /usr/include /usr/local/include);
 
 $h_files = find_h_files(@h_dirs);
 
-# search for clock_gettime
-$clock_gettime = search_h_file('time.h', qr/(clock_gettime)\s*\(/)
-    and print "Found $clock_gettime in time.h\n";
-
-
-my @LIBS = ();
-push @LIBS, "-lrt" if $clock_gettime;
-
 # See lib/ExtUtils/MakeMaker.pm for details of how to influence
 # the contents of the Makefile that is written.
 my %mm_opts;
+my @libs = ();
 
-$mm_opts{DEFINE} .= ' -DHAS_' . uc($clock_gettime) if $clock_gettime;
+foreach (['time.h', qr/(clock_gettime)\s*\(/, '-DHAS_CLOCK_GETTIME', '-lrt'],
+	 ['zlib.h', qr/(deflateInit2)(?:_)?\s*\(/, '-DHAS_ZLIB', '-lz'],
+	) {
+    my ($header, $regexp, $define, $libs) = @$_;
+    if (my $result = search_h_file($header, $regexp)) {
+	print "Found $result in $header\n";
+	push @libs, $libs;
+	$mm_opts{DEFINE} .= " $define";
+    }
+}
 
 $mm_opts{LICENSE}  = 'perl' if $ExtUtils::MakeMaker::VERSION >= 6.3002;
 $mm_opts{OPTIMIZE} = '-g'   if $opt_g;
@@ -117,7 +118,7 @@ WriteMakefile(
         'XSLoader'     => 0,
         'Getopt::Long' => 0,
     },
-    LIBS      => \@LIBS,
+    LIBS      => [join ' ', @libs],
     EXE_FILES => ['bin/nytprofhtml', 'bin/nytprofcsv'],
     @man,
     INC   => $INCLUDE,
@@ -191,6 +192,7 @@ PERLTIDY=perltidy --profile=.perltidyrc -nst -b
 perltidy:
 	$(PERLTIDY) bin/nytprofhtml bin/nytprofcsv
 	$(PERLTIDY) lib/Devel/NYTProf.pm lib/Devel/NYTProf/*.pm
+	$(PERLTIDY) test.pl
 
 # the XS portion of the file will be mangled and require manual fixup
 ctidy_bcpp:
