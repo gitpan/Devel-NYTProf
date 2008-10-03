@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: Reader.pm 473 2008-09-30 09:13:32Z tim.bunce $
+## $Id: Reader.pm 482 2008-10-01 15:30:43Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Reader;
 
