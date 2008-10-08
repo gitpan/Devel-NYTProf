@@ -1,8 +1,18 @@
 =head1 NAME
 
-Devel::NYTProf:Changes - List of significant changes to Devel::NYTProf
+Devel::NYTProf::Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2008-10-03 10:53:51 +0100 (Fri, 03 Oct 2008) $ $Revision: 483 $)
+(As of $Date: 2008-10-08 23:40:43 +0100 (Wed, 08 Oct 2008) $ $Revision: 498 $)
+
+=head2 Changes in Devel::NYTProf 2.05 (svn r498) 8th Oct 2008
+
+  Fixed alteration of $! during profiling thanks to Slaven Rezic.
+  Fixed clock_gettime() clock selection to fallback to CLOCK_REALTIME
+    if CLOCK_MONOTONIC is not available, e.g, on linux 2.4.
+  Fixed error when application ends after DB::disable_profile().
+
+  Added some docs to Devel::NYTProf::Apache
+  Added clock=N option to enable user to select the clock.
 
 =head2 Changes in Devel::NYTProf 2.04 (svn r483) 1st Oct 2008
 

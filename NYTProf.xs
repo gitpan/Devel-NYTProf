@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 481 2008-10-01 15:17:03Z tim.bunce $
+ * $Id: NYTProf.xs 495 2008-10-08 16:50:46Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -186,10 +186,12 @@ static struct NYTP_int_options_t options[] = {
     { "use_db_sub", 0 },
 #define compression_level options[7].option_value
 #ifdef HAS_ZLIB
-    { "compress", 6 }
+    { "compress", 6 },
 #else
-    { "compress", 0 }
+    { "compress", 0 },
 #endif
+#define profile_clock options[8].option_value
+    { "clock", -1 }
 };
 
 /* time tracking */
@@ -200,11 +202,7 @@ static struct tms start_ctime, end_ctime;
  * http://sean.chittenden.org/news/2008/06/01/
  */
 typedef struct timespec time_of_day_t;
-#  ifdef CLOCK_MONOTONIC
-#    define CLOCK_GETTIME(ts) clock_gettime(CLOCK_MONOTONIC, ts)
-#  else
-#    define CLOCK_GETTIME(ts) clock_gettime(CLOCK_REALTIME, ts)
-#  endif
+#  define CLOCK_GETTIME(ts) clock_gettime(profile_clock, ts)
 #  define CLOCKS_PER_TICK 10000000                /* 10 million - 100ns */
 #  define get_time_of_day(into) if (!profile_zero) CLOCK_GETTIME(&into)
 #  define get_ticks_between(s, e, ticks, overflow) STMT_START { \
@@ -323,6 +321,9 @@ NYTP_type_of_offset(NYTP_file file) {
     }
 }
 
+#ifdef HASATTRIBUTE_NORETURN
+__attribute__noreturn__
+#endif 
 static void
 compressed_io_croak(NYTP_file file, const char *function) {
     const char *what;
@@ -798,6 +799,7 @@ output_header(pTHX)
     NYTP_printf(out, ":%s=%lu\n",      "basetime",      (unsigned long)PL_basetime);
     NYTP_printf(out, ":%s=%s\n",       "xs_version",    XS_VERSION);
     NYTP_printf(out, ":%s=%d.%d.%d\n", "perl_version",  PERL_REVISION, PERL_VERSION, PERL_SUBVERSION);
+    NYTP_printf(out, ":%s=%d\n",       "clock_id",      profile_clock);
     NYTP_printf(out, ":%s=%u\n",       "ticks_per_sec", ticks_per_sec);
     NYTP_printf(out, ":%s=%lu\n",      "nv_size", (long unsigned int)sizeof(NV));
     /* $0 - application name */
@@ -1007,6 +1009,7 @@ fid_is_pmc(pTHX_ Hash_entry *fid_info)
         SV *pmcsv = Perl_newSVpvf(aTHX_ "%s%c", SvPV_nolen(pmsv), 'c');
         Stat_t pmstat;
         Stat_t pmcstat;
+        int saved_errno = errno;
         if (PerlLIO_lstat(SvPV_nolen(pmcsv), &pmcstat) == 0) {
             /* .pmc exists, is it newer than the .pm (if that exists) */
             if (PerlLIO_lstat(SvPV_nolen(pmsv), &pmstat) < 0 ||
@@ -1014,6 +1017,7 @@ fid_is_pmc(pTHX_ Hash_entry *fid_info)
                 is_pmc = 1;                       /* hey, maybe it's Larry working on the perl6 comiler */
             }
         }
+        SETERRNO(saved_errno, 0);
         SvREFCNT_dec(pmcsv);
         SvREFCNT_dec(pmsv);
     }
@@ -1149,7 +1153,7 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
         if (src_av) {
             I32 lines = av_len(src_av);
             int line;
-            for (line = 1; line < lines; ++line) { /* lines start at 1 */
+            for (line = 1; line <= lines; ++line) { /* lines start at 1 */
                 SV **svp = av_fetch(src_av, line, 0);
                 STRLEN len = 0;
                 char *src = (svp) ? SvPV(*svp, len) : "";
@@ -2093,12 +2097,15 @@ static int
 disable_profile(pTHX)
 {
     int prev_is_profiling = is_profiling;
-    sv_setiv(PL_DBsingle, 0);
-    is_profiling = 0;
-    if (out)
-        NYTP_flush(out);
+    if (is_profiling) {
+        if (use_db_sub)
+            sv_setiv(PL_DBsingle, 0);
+        if (out)
+            NYTP_flush(out);
+        is_profiling = 0;
+    }
     if (trace_level)
-        warn("NYTProf disable_profile");
+        warn("NYTProf disable_profile %d->%d", prev_is_profiling, is_profiling);
     return prev_is_profiling;
 }
 
@@ -2107,8 +2114,8 @@ static void
 finish_profile(pTHX)
 {
     if (trace_level >= 1)
-        warn("finish_profile (last_pid %d, getpid %d, overhead %"NVff"s)\n",
-            last_pid, getpid(), cumulative_overhead_ticks/ticks_per_sec);
+        warn("finish_profile (last_pid %d, getpid %d, overhead %"NVff"s, is_profiling %d)\n",
+            last_pid, getpid(), cumulative_overhead_ticks/ticks_per_sec, is_profiling);
 
     /* write data for final statement, unless DB_leave has already */
     if (!profile_leave || use_db_sub)
@@ -2143,8 +2150,30 @@ init_profiler(pTHX)
     last_pid = getpid();
     ticks_per_sec = (usecputime) ? CLOCKS_PER_SEC : CLOCKS_PER_TICK;
 
+#ifdef HAS_CLOCK_GETTIME
+    if (profile_clock == -1) { /* auto select */
+#  ifdef CLOCK_MONOTONIC
+        profile_clock = CLOCK_MONOTONIC;
+#  else
+        profile_clock = CLOCK_REALTIME;
+#  endif
+    }
+    /* downgrade to CLOCK_REALTIME if desired clock not available */
+    if (clock_gettime(profile_clock, &start_time) != 0) {
+        if (trace_level)
+            warn("clock_gettime clock %d not available (%s) using CLOCK_REALTIME instead",
+                profile_clock, strerror(errno));
+        profile_clock = CLOCK_REALTIME;
+        /* check CLOCK_REALTIME as well, just in case */
+        if (clock_gettime(profile_clock, &start_time) != 0)
+            croak("clock_gettime CLOCK_REALTIME not available (%s), aborting",
+                strerror(errno));
+    }
+#endif
+
     if (trace_level || profile_zero)
-        warn("NYTProf init pid %d%s\n", last_pid, profile_zero ? ", zero=1" : "");
+        warn("NYTProf init pid %d, clock %d%s\n", last_pid, profile_clock,
+            profile_zero ? ", zero=1" : "");
 
     if (get_hv("DB::sub", 0) == NULL) {
         warn("NYTProf internal error - perl not in debug mode");
@@ -2498,6 +2527,7 @@ load_profile_data_from_stream()
     HV *live_pids_hv = newHV();
     HV *attr_hv = newHV();
     AV* fid_fileinfo_av = newAV();
+    AV* fid_filecontents_av = newAV();
     AV* fid_line_time_av = newAV();
     AV* fid_block_time_av = NULL;
     AV* fid_sub_time_av = NULL;
@@ -2506,6 +2536,7 @@ load_profile_data_from_stream()
     SV *tmp_str_sv = newSVpvn("",0);
 
     av_extend(fid_fileinfo_av, 64);               /* grow it up front. */
+    av_extend(fid_filecontents_av, 64);
     av_extend(fid_line_time_av, 64);
 
     if (2 != NYTP_scanf(in, "NYTProf %d %d\n", &file_major, &file_minor)) {
@@ -2664,6 +2695,19 @@ load_profile_data_from_stream()
                 unsigned int file_num = read_int();
                 unsigned int line_num = read_int();
                 SV *src = read_str(aTHX_ NULL);
+                AV *file_av;
+
+                /* first line in the file seen */
+                if (!av_exists(fid_filecontents_av, file_num)) {
+                    file_av = newAV();
+                    av_store(fid_filecontents_av, file_num, newRV_noinc((SV*)file_av));
+                }
+                else {
+                    file_av = (AV *)SvRV(*av_fetch(fid_filecontents_av, file_num, 1));
+                }
+
+                av_store(file_av, line_num, src);
+
                 if (trace_level >= 4) {
                     warn("Fid %2u:%u: %s\n", file_num, line_num, SvPV_nolen(src));
                 }
@@ -2710,8 +2754,8 @@ load_profile_data_from_stream()
                 subname_sv = read_str(aTHX_ tmp_str_sv);
 
                 if (trace_level >= 3)
-                    warn("Sub %s called by fid %u line %u: count %d\n",
-                        SvPV_nolen(subname_sv), fid, line, count);
+                    warn("Sub %s called by fid %u line %u: count %d, incl %f, excl %f, ucpu %f scpu %f\n",
+                        SvPV_nolen(subname_sv), fid, line, count, incl_time, excl_time, ucpu_time, scpu_time);
 
                 subinfo_av = lookup_subinfo_av(aTHX_ subname_sv, sub_subinfo_hv);
 
@@ -2856,6 +2900,7 @@ load_profile_data_from_stream()
     profile_hv = newHV();
     (void)hv_stores(profile_hv, "attribute",          newRV_noinc((SV*)attr_hv));
     (void)hv_stores(profile_hv, "fid_fileinfo",       newRV_noinc((SV*)fid_fileinfo_av));
+    (void)hv_stores(profile_hv, "fid_filecontents",   newRV_noinc((SV*)fid_filecontents_av));
     (void)hv_stores(profile_hv, "fid_line_time",      newRV_noinc((SV*)fid_line_time_av));
     (void)hv_stores(profile_modes, "fid_line_time", newSVpvf("line"));
     if (fid_block_time_av) {

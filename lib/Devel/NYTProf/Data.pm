@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Data.pm 482 2008-10-01 15:30:43Z tim.bunce $
+# $Id: Data.pm 497 2008-10-08 22:34:59Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -50,7 +50,7 @@ use Scalar::Util qw(blessed);
 use Devel::NYTProf::Core;
 use Devel::NYTProf::Util qw(strip_prefix_from_paths get_abs_paths_alternation_regex);
 
-our $VERSION = '2.04';
+our $VERSION = '2.05';
 
 my $trace = (($ENV{NYTPROF}||'') =~ m/\b trace=(\d+) /x) && $1; # XXX a hack
 
@@ -328,6 +328,8 @@ sub _dump_elements {
         $value = $value->_values_for_dump
             if blessed $value && $value->can('_values_for_dump');
 
+        next if $key eq 'fid_filecontents';
+
         # special case some common cases to be more compact:
         #		fid_*_time   [fid][line] = [N,N]
         #		sub_subinfo {subname} = [fid,startline,endline,calls,incl_time]
@@ -417,11 +419,8 @@ for example, by the test suite.
 The data normalized is:
 
  - profile timing data: set to 0
- - basetime attribute: set to 0
- - xs_version attribute: set to 0
- - perl_version attribute: set to 0
- - nv_size attribute: set to 0
  - subroutines: timings are set to 0
+ - attributes, like basetime, xs_version, etc., are set to 0
  - filenames: path prefixes matching absolute paths in @INC are removed
  - filenames: eval sequence numbers, like "(re_eval 2)" are changed to 0
  - calls remove_internal_data_of() for files loaded from absolute paths in @INC
@@ -436,6 +435,7 @@ sub normalize_variables {
     $self->{attribute}{basetime}      = 0;
     $self->{attribute}{xs_version}    = 0;
     $self->{attribute}{perl_version}  = 0;
+    $self->{attribute}{clock_id}      = 0;
     $self->{attribute}{ticks_per_sec} = 0;
     $self->{attribute}{nv_size}       = 0;
 
