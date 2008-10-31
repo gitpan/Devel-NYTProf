@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Util.pm 497 2008-10-08 22:34:59Z tim.bunce $
+# $Id: Util.pm 580 2008-10-31 13:54:02Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Util;
 
@@ -40,11 +40,11 @@ use Cwd qw(getcwd);
 use List::Util qw(sum);
 use UNIVERSAL qw( isa can VERSION );
 
-our $VERSION = '2.05';
+our $VERSION = '2.06';
 
 our @EXPORT_OK = qw(
     fmt_float
-    fmt_incl_excl_time
+    fmt_time fmt_incl_excl_time
     strip_prefix_from_paths
     calculate_median_absolute_deviation
     get_alternation_regex
@@ -73,8 +73,9 @@ sub get_abs_paths_alternation_regex {
 
     # rewrite relative directories to be absolute
     # the logic here should match that in get_file_id()
+    my $abs_path_regex = $^O eq "MSWin32" ? qr,^\w:/, : qr,^/,;
     for (@inc) {
-        next if m{^\/};    # already absolute
+        next if $_ =~ $abs_path_regex;    # already absolute
         $_ =~ s/^\.\///;   # remove a leading './'
         $cwd ||= getcwd();
         $_ = ($_ eq '.') ? $cwd : "$cwd/$_";
@@ -85,8 +86,9 @@ sub get_abs_paths_alternation_regex {
 
 # edit @$paths in-place to remove specified absolute path prefixes
 sub strip_prefix_from_paths {
-    my ($inc_ref, $paths, $anchor) = @_;
-    $anchor = '^' if not defined $anchor;
+    my ($inc_ref, $paths, $anchor, $replacement) = @_;
+    $anchor      = '^' if not defined $anchor;
+    $replacement = ''  if not defined $replacement;
 
     my @inc = @$inc_ref
         or return;
@@ -101,10 +103,10 @@ sub strip_prefix_from_paths {
     if (UNIVERSAL::isa($paths, 'ARRAY')) {
         for my $path (@$paths) {
             if (ref $path) {    # recurse to process deeper data
-                strip_prefix_from_paths($inc_ref, $path, $anchor);
+                strip_prefix_from_paths($inc_ref, $path, $anchor, $replacement);
             }
             elsif ($path) {
-                $path =~ s{$inc_regex}{$1};
+                $path =~ s{$inc_regex}{$1$replacement};
             }
         }
     }
@@ -145,13 +147,33 @@ sub fmt_float {
     return $val;
 }
 
+sub fmt_time {
+    my ($sec, $width) = @_;
+    $width = '' unless defined $width;
+    return sprintf "%$width.0f", 0 unless $sec;
+    return sprintf "%$width.0fns", $sec * 1e9                              if $sec < 1e-6;
+    return sprintf "%$width.0f&micro;s", $sec * 1e6                        if $sec < 1e-3;
+    return sprintf "%$width.*fms", 3 - length(int($sec * 1e3)), $sec * 1e3 if $sec < 1;
+    return sprintf "%$width.*fs",  3 - length(int($sec)),       $sec       if $sec < 100;
+    return sprintf "%$width.0fs", $sec;
+}
 
 sub fmt_incl_excl_time {
     my ($incl, $excl) = @_;
     my $diff = $incl - $excl;
-    return fmt_float($incl) . "s" unless $diff;
-    return sprintf "%ss (%s+%s)", fmt_float($incl + $excl), fmt_float($excl),
-        fmt_float($incl - $excl);
+    return fmt_time($incl) unless $diff;
+    $_ = fmt_time($_) for $incl, $excl, $diff;
+    if ($incl =~ /(\D+)$/) {
+	# no need to repeat the unit if it's the same for all time stamps
+	my $unit = $1;
+	my $offset = -length($unit);
+	for ($excl, $diff) {
+	    if (/(\D+)$/) {
+		substr($_, $offset) = "" if $1 eq $unit
+	    }
+	}
+    }
+    return sprintf "%s (%s+%s)", $incl, $excl, $diff;
 }
 
 
@@ -161,6 +183,7 @@ sub fmt_incl_excl_time {
 sub calculate_median_absolute_deviation {
     my $values_ref = shift;
     my ($ignore_zeros) = @_;
+    croak "No array ref given" unless ref $values_ref eq 'ARRAY';
 
     my @values = ($ignore_zeros) ? grep {$_} @$values_ref : @$values_ref;
     my $median_value = [sort { $a <=> $b } @values]->[@values / 2];

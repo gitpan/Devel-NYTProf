@@ -1,14 +1,13 @@
-# vim: ts=2 sw=2 sts=0 noexpandtab:
-# $Id: README 297 2008-07-10 23:05:08Z tim.bunce $
+# vim: ts=8 sw=2 sts=0 noexpandtab:
+# $Id: README 542 2008-10-23 07:39:18Z gisle.aas $
 
 Devel-NYTProf
 =============
 
 Devel::NYTProf is a powerful feature-rich perl source code profiler.
 
-Devel::NYTProf was written and tested on Linux, Solaris and OS X.
+Devel::NYTProf was written and tested on Linux, Solaris, OS X and Windows.
 Please report any problems you encounter on other platforms.
-(Except for windows as we can't help you, but we'd love someone to port it for us.)
 
 INSTALLATION
 
@@ -18,9 +17,6 @@ To install this module type the following:
    make
    make test
    make install
-
-Some eval tests may fail on perl 5.6.x. It is safe for 'force install' and
-ignore this.
 
 CONTRIBUTING & PUBLIC SVN
 

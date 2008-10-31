@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Data.pm 497 2008-10-08 22:34:59Z tim.bunce $
+# $Id: Data.pm 580 2008-10-31 13:54:02Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -19,9 +19,9 @@ Devel::NYTProf::Data - L<Devel::NYTProf> data loading and manipulation
 
   use Devel::NYTProf::Data;
 
-	$profile = Devel::NYTProf::Data->new( { filename => 'nytprof.out' } );
+  $profile = Devel::NYTProf::Data->new( { filename => 'nytprof.out' } );
 
-	$profile->dump_profile_data();
+  $profile->dump_profile_data();
 
 =head1 DESCRIPTION
 
@@ -50,13 +50,13 @@ use Scalar::Util qw(blessed);
 use Devel::NYTProf::Core;
 use Devel::NYTProf::Util qw(strip_prefix_from_paths get_abs_paths_alternation_regex);
 
-our $VERSION = '2.05';
+our $VERSION = '2.06';
 
 my $trace = (($ENV{NYTPROF}||'') =~ m/\b trace=(\d+) /x) && $1; # XXX a hack
 
 =head2 new
 
-	$profile = Devel::NYTProf::Data->new( { filename => 'nytprof.out' } );
+  $profile = Devel::NYTProf::Data->new( { filename => 'nytprof.out' } );
 
 Reads the specified file containing profile data written by L<Devel::NYTProf>,
 aggregates the contents, and returns the results as a blessed data structure.
@@ -66,10 +66,12 @@ aggregates the contents, and returns the results as a blessed data structure.
 
 sub new {
     my $class = shift;
-    my $args = shift || {filename => 'nytprof.out'};
+    my $args = shift || { filename => 'nytprof.out' };
 
     my $file = $args->{filename}
         or croak "No filename specified";
+
+    print "Reading $file\n" unless $args->{quiet};
 
     my $profile = load_profile_data_from_file($file);
     bless $profile => $class;
@@ -90,6 +92,8 @@ sub new {
     # bless sub_subinfo data
     (my $sub_class = $class) =~ s/\w+$/ProfSub/;
     $_ and bless $_ => $sub_class for values %$sub_subinfo;
+
+    #$profile->_migrate_sub_callers_from_eval_fids;
 
     # XXX merge evals - should become a method optionally called here
     # (which uses other methods to do the work and those methods
@@ -153,9 +157,13 @@ sub new {
             }
         }
     }
+    $profile->_clear_caches;
 
     return $profile;
 }
+
+sub _caches       { return shift->{caches} ||= {} }
+sub _clear_caches { return delete shift->{caches} }
 
 sub all_subinfos {
     my @all = values %{ shift->{sub_subinfo} };
@@ -189,6 +197,50 @@ sub fileinfo_of {
 }
 
 
+# map of { eval_fid => base_fid, ... }
+sub eval_fid_2_base_fid_map {
+    my ($self, $flatten_evals) = @_;
+
+    my $fid_fileinfo = $self->{fid_fileinfo} || [];
+    my $eval_fid_map = {};
+
+    for my $fi (@$fid_fileinfo) {
+        my $base_fi = $fi && $fi->eval_fi
+            or next;
+
+        while ($flatten_evals and my $b_eval_fi = $base_fi->eval_fi) {
+            $base_fi = $b_eval_fi;
+        }
+        $eval_fid_map->{ $fi->fid } = $base_fi->fid;
+    }
+    return $eval_fid_map;
+}
+
+
+# map of { base_fid => [ eval_fid, ...].  }
+sub base_fid_2_eval_fids_map {
+    my ($self, $flatten_evals) = @_;
+    my $e2b = $self->eval_fid_2_base_fid_map($flatten_evals);
+    my $b2e = {};
+    while ( my ($eval_fid, $base_fid) = each %$e2b ) {
+        push @{ $b2e->{$base_fid} }, $eval_fid;
+    }
+    return $b2e;
+}
+
+sub fid_sub_calls_map {
+    my $self = shift;
+    my $sub_caller = $self->{sub_caller} || {};
+    my $fid_sub_calls_map = {};
+    while ( my ($subname, $fid_hash) = each %$sub_caller ) {
+        for my $fid (keys %$fid_hash) {
+            push @{ $fid_sub_calls_map->{$fid} }, $subname;
+        }
+    }
+    return $fid_sub_calls_map;
+}
+
+
 sub inc {
 
     # XXX should return inc from profile data, when it's there
@@ -199,8 +251,8 @@ sub inc {
 
   $profile->dump_profile_data;
   $profile->dump_profile_data( {
-    filehandle => \*STDOUT,
-    separator  => "",
+      filehandle => \*STDOUT,
+      separator  => "",
   } );
 
 Writes the profile data in a reasonably human friendly format to the sepcified
@@ -213,51 +265,51 @@ place a subroutine was called from, plus one per subroutine.
 The default format is a Data::Dumper style whitespace-indented tree.
 The types of data present can depend on the options used when profiling.
 
- {
-    attribute => {
-        basetime => 1207228764
-        ticks_per_sec => 1000000
-        xs_version => 1.13
-    }
-    fid_fileinfo => [
-        1: [
-            0: test01.p
-            1: 
-            2: 
-            3: 1
-            4: 0
-            5: 0
-            6: 0
-        ]
-    ]
-    fid_line_time => [
-        1: [
-            2: [ 4e-06 2 ]
-            3: [ 1.2e-05 2 ]
-            7: [ 4.6e-05 4 ]
-            11: [ 2e-06 1 ]
-            16: [ 1.2e-05 1 ]
-        ]
-    ]
-    sub_caller => {
-        main::bar => {
-            1 => {
-                12 => 1 # main::bar was called by fid 1, line 12, 1 time.
-                16 => 1
-                3 => 2
-            }
-        }
-        main::foo => {
-            1 => {
-                11 => 1
-            }
-        }
-    }
-    sub_subinfo => {
-        main::bar => [ 1 6 8 762 2e-06 ]
-        main::foo => [ 1 1 4 793 1.5e-06 ]
-    }
- }
+  {
+      attribute => {
+          basetime => 1207228764
+          ticks_per_sec => 1000000
+          xs_version => 1.13
+      }
+      fid_fileinfo => [
+          1: [
+              0: test01.p
+              1: 
+              2: 
+              3: 1
+              4: 0
+              5: 0
+              6: 0
+          ]
+      ]
+      fid_line_time => [
+          1: [
+              2: [ 4e-06 2 ]
+              3: [ 1.2e-05 2 ]
+              7: [ 4.6e-05 4 ]
+              11: [ 2e-06 1 ]
+              16: [ 1.2e-05 1 ]
+          ]
+      ]
+      sub_caller => {
+          main::bar => {
+              1 => {
+                  12 => 1 # main::bar was called by fid 1, line 12, 1 time.
+                  16 => 1
+                  3 => 2
+              }
+          }
+          main::foo => {
+              1 => {
+                  11 => 1
+              }
+          }
+      }
+      sub_subinfo => {
+          main::bar => [ 1 6 8 762 2e-06 ]
+          main::foo => [ 1 1 4 793 1.5e-06 ]
+      }
+  }
 
 If C<separator> is true then instead of whitespace, each item of data is
 indented with the I<path> through the structure with C<separator> used to
@@ -291,6 +343,7 @@ sub dump_profile_data {
     my $filehandle = $args->{filehandle} || \*STDOUT;
     my $startnode  = $args->{startnode} || $self;       # undocumented
     croak "Invalid startnode" unless ref $startnode;
+    $self->_clear_caches;
     _dump_elements($startnode, $separator, $filehandle, []);
 }
 
@@ -328,7 +381,7 @@ sub _dump_elements {
         $value = $value->_values_for_dump
             if blessed $value && $value->can('_values_for_dump');
 
-        next if $key eq 'fid_filecontents';
+        next if $key eq 'fid_srclines';
 
         # special case some common cases to be more compact:
         #		fid_*_time   [fid][line] = [N,N]
@@ -397,14 +450,11 @@ sub remove_internal_data_of {
     # remove all subs defined in this file
     if (my $sub_subinfo = $self->{sub_subinfo}) {
         while (my ($subname, $subinfo) = each %$sub_subinfo) {
-            delete $sub_subinfo->{$subname} if $subinfo->fid == $fid;
+            delete $sub_subinfo->{$subname} if (($subinfo->fid||0) == $fid);
         }
     }
 
-    # remove sub_caller info for calls made from within this file
-    if (my $sub_caller = $self->{sub_caller}) {
-        delete $_->{$fid} for values %$sub_caller;
-    }
+    $fileinfo->delete_subs_called_info;
 }
 
 
@@ -418,30 +468,55 @@ for example, by the test suite.
 
 The data normalized is:
 
- - profile timing data: set to 0
- - subroutines: timings are set to 0
- - attributes, like basetime, xs_version, etc., are set to 0
- - filenames: path prefixes matching absolute paths in @INC are removed
- - filenames: eval sequence numbers, like "(re_eval 2)" are changed to 0
- - calls remove_internal_data_of() for files loaded from absolute paths in @INC
+=over
+
+=item *
+
+profile timing data: set to 0
+
+=item *
+
+subroutines: timings are set to 0
+
+=item *
+
+attributes, like basetime, xs_version, etc., are set to 0
+
+=item *
+
+filenames: path prefixes matching absolute paths in @INC are changed to "/.../"
+
+=item *
+
+filenames: eval sequence numbers, like "(re_eval 2)" are changed to 0
+
+=item *
+
+calls remove_internal_data_of() for files loaded from absolute paths in @INC
+
+=back
 
 =cut
 
 
 sub normalize_variables {
     my $self       = shift;
-    my $eval_regex = qr/ \( ((?:re_)?) eval \s \d+ \) /x;
 
-    $self->{attribute}{basetime}      = 0;
-    $self->{attribute}{xs_version}    = 0;
-    $self->{attribute}{perl_version}  = 0;
-    $self->{attribute}{clock_id}      = 0;
-    $self->{attribute}{ticks_per_sec} = 0;
-    $self->{attribute}{nv_size}       = 0;
+    for my $attr (qw(
+        basetime xs_version perl_version clock_id ticks_per_sec nv_size
+        profiler_duration profiler_end_time profiler_start_time
+        total_stmts_duration
+        total_stmts_measured total_stmts_discounted
+    )) {
+        $self->{attribute}{$attr} = 0;
+    }
+
+    my $eval_regex = qr/ \( ((?:re_)?) eval \s \d+ \) /x;
 
     # remove_internal_data_of library files
     # (the definition of which is quite vague at the moment)
-    my @abs_inc = grep { $_ =~ m:^/: } $self->inc;
+    my $abs_path_regex = $^O eq "MSWin32" ? qr,^\w:/, : qr,^/,;
+    my @abs_inc = grep { $_ =~ $abs_path_regex } $self->inc;
     my $is_lib_regex = get_abs_paths_alternation_regex(\@abs_inc);
     for my $fileinfo ($self->all_fileinfos) {
 
@@ -467,25 +542,25 @@ sub normalize_variables {
     # zero subroutine inclusive time
     my $sub_subinfo = $self->{sub_subinfo};
     for (values %$sub_subinfo) {
-        $_->[4] = $_->[5] = 0;
+        $_->[4] = $_->[5] = $_->[9] = 0;
     }
 
     # zero per-call-location subroutine inclusive time
-    # { 'pkg::sub' => { fid => { line => [ count, incl_time, excl_time, ucpu, scpu ] } } }
+    # { 'pkg::sub' => { fid => { line => [ count, incl, excl, ucpu, scpu, reci, recdepth ] } } }
     my $sub_caller = $self->{sub_caller} || {};
     for (map { values %$_ } map { values %$_ } values %$sub_caller) {
-        $_->[1] = $_->[2] = $_->[3] = $_->[4] = 0;
+        $_->[1] = $_->[2] = $_->[3] = $_->[4] = $_->[5] = 0;
     }
 
     my $inc = [@INC, '.'];
 
-    $self->make_fid_filenames_relative($inc);
+    $self->make_fid_filenames_relative($inc, '/.../');
 
     for my $info ($self->{sub_subinfo}, $self->{sub_caller}) {
 
         # normalize paths in sub names like
         #		AutoLoader::__ANON__[/lib/perl5/5.8.6/AutoLoader.pm:96]
-        strip_prefix_from_paths($inc, $info, '\[');
+        strip_prefix_from_paths($inc, $info, '\[', '/.../');
 
         # normalize eval sequence numbers in sub names to 0
         for my $subname (keys %$info) {
@@ -502,12 +577,54 @@ sub normalize_variables {
 }
 
 
+sub _migrate_sub_callers_from_eval_fids {
+    my $self = shift;
+
+    # migrate sub calls made from evals to be calls from the base fid
+    #
+    # map of { eval_fid => base_fid, ... }
+    my $eval_fid_map = $self->eval_fid_2_base_fid_map;
+    # map of { fid => { subs called from fid... }, ... }
+    my $fid_sub_calls_map = $self->fid_sub_calls_map;
+    #
+    while ( my ($eval_fid, $base_fid) = each %$eval_fid_map ) {
+        my $subnames = $fid_sub_calls_map->{$eval_fid}
+            or next; # no subs called from this eval fid
+
+        # drill thru string-evals-within-string-evals
+        $base_fid = $eval_fid_map->{$base_fid}
+            while $eval_fid_map->{$base_fid};
+
+        my $line_of_eval = $self->fileinfo_of($eval_fid)->eval_line;
+        warn "Migrating sub calls from eval fid $eval_fid to fid $base_fid line $line_of_eval: @$subnames\n"
+            if $trace;
+
+        my $sub_caller = $self->{sub_caller};
+        for my $subname (@$subnames) {
+
+            my $eval_calls = delete $sub_caller->{$subname}{$eval_fid}
+                or die "panic";
+            my $base_calls =        $sub_caller->{$subname}{$base_fid} ||= {};
+
+            warn "merged $subname calls from fid $eval_fid to $base_fid\n"
+                if $trace;
+            while ( my ($line_in_eval, $eval_line_calls) = each %$eval_calls ) {
+                my $e = $eval_calls->{$line_in_eval};
+                my $b = $base_calls->{$line_of_eval} ||= [ (0) x @$e ];
+                $b->[$_] += $e->[$_] for (0..@$e-1);
+            }
+        }
+    }
+    $self->_clear_caches;
+}
+
+
 sub make_fid_filenames_relative {
-    my ($self, $roots) = @_;
+    my ($self, $roots, $replacement) = @_;
     $roots ||= ['.'];    # e.g. [ @INC, '.' ]
     # strip prefix from start of string and also when embeded
     # e.g., "(eval 42)[/foo/bar/...]"
-    strip_prefix_from_paths($roots, $self->{fid_fileinfo}, qr{^|\[});
+    strip_prefix_from_paths($roots, $self->{fid_fileinfo}, qr{^|\[}, $replacement);
 }
 
 
@@ -528,7 +645,8 @@ sub _zero_array_elem {
 
 sub _filename_to_fid {
     my $self = shift;
-    return $self->{_filename_to_fid_cache} ||= do {
+    my $caches = $self->_caches;
+    return $caches->{_filename_to_fid_cache} ||= do {
         my $fid_fileinfo = $self->{fid_fileinfo} || [];
         my $filename_to_fid = {};
         for my $fid (1 .. @$fid_fileinfo - 1) {
@@ -545,11 +663,14 @@ sub _filename_to_fid {
   $subs_defined_hash = $profile->subs_defined_in_file( $file, $include_lines );
 
 Returns a reference to a hash containing information about subroutines defined
-in a source file.  The $file argument can be an integer file id (fid) or a file path.
-Returns undef if the profile contains no C<sub_caller> data for the $file.
+in a source file.  The $file argument can be an integer file id (fid) or a file
+path. If $file is 0 then details for all known subroutines are returned.
 
-The keys are fully qualifies subroutine names and the corresponding value is a
-hash reference containing L<Devel::NYTProf::ProfSub> objects..
+Returns undef if the profile contains no C<sub_subinfo> data for the $file.
+
+The keys of the returned hash are fully qualified subroutine names and the
+corresponding value is a hash reference containing L<Devel::NYTProf::ProfSub>
+objects.
 
 If $include_lines is true then the hash also contains integer keys
 corresponding to the first line of the subroutine. The corresponding value is a
@@ -558,14 +679,15 @@ subroutines defined on that line, typically just one.
 
 =cut
 
-
 sub subs_defined_in_file {
     my ($self, $fid, $incl_lines) = @_;
     $fid = $self->resolve_fid($fid);
     $incl_lines ||= 0;
+    $incl_lines = 0 if $fid == 0;
+    my $caches = $self->_caches;
 
     my $cache_key = "_cache:subs_defined_in_file:$fid:$incl_lines";
-    return $self->{$cache_key} if $self->{$cache_key};
+    return $caches->{$cache_key} if $caches->{$cache_key};
 
     my $sub_subinfo = $self->{sub_subinfo}
         or return;
@@ -573,9 +695,7 @@ sub subs_defined_in_file {
     my %subs;
     while (my ($sub, $subinfo) = each %$sub_subinfo) {
 
-        # XXX should use $subinfo->fid but we need this to be fast so we
-        # break encapsulation till we stop using this brute force method
-        next if $fid && ($subinfo->[0] || 0) != $fid;
+        next if $fid && ($subinfo->fid||0) != $fid;
         $subs{$sub} = $subinfo;
     }
 
@@ -587,15 +707,15 @@ sub subs_defined_in_file {
         }
     }
 
-    $self->{$cache_key} = \%subs;
-    return $self->{$cache_key};
+    $caches->{$cache_key} = \%subs;
+    return $caches->{$cache_key};
 }
 
 
 =head2 subname_at_file_line
 
-    @subname = $profile->subname_at_file_line($file, $line_number);
-    $subname = $profile->subname_at_file_line($file, $line_number);
+  @subname = $profile->subname_at_file_line($file, $line_number);
+  $subname = $profile->subname_at_file_line($file, $line_number);
 
 =cut
 
@@ -646,7 +766,7 @@ sub fid_filename {
 
 =head2 file_line_range_of_sub
 
-    ($file, $fid, $first, $last) = $profile->file_line_range_of_sub("main::foo");
+  ($file, $fid, $first, $last) = $profile->file_line_range_of_sub("main::foo");
 
 Returns the filename, fid, and first and last line numbers for the specified
 subroutine (which must be fully qualified with a package name).
@@ -763,34 +883,73 @@ For example, if the following was line 42 of a file C<foo.pl>:
 that line was executed once, and foo and bar were imported from pkg1, then
 $profile->line_calls_for_file( 'foo.pl' ) would return something like:
 
-	{
-		42 => {
-			'pkg1::foo' => [ 1, 0.02093 ],
-			'pkg1::bar' => [ 1, 0.00154 ],
-		},
-	}
+  {
+      42 => {
+	  'pkg1::foo' => [ 1, 0.02093 ],
+	  'pkg1::bar' => [ 1, 0.00154 ],
+      },
+  }
 
 =cut
 
 
 sub line_calls_for_file {
-    my ($self, $fid) = @_;
-
+    my ($self, $fid, $flatten_evals) = @_;
     $fid = $self->resolve_fid($fid);
+
     my $sub_caller = $self->{sub_caller}
         or return;
 
-    my $line_calls = {};
-    while (my ($sub, $fid_hash) = each %$sub_caller) {
-        my $line_calls_hash = $fid_hash->{$fid}
-            or next;
+    # hash of fids we're interested in
+    my %fids = ($fid => 1);
+    # add in all the fids for evals compiled in this fid
+    my $b2e = $self->base_fid_2_eval_fids_map($flatten_evals);
+    $fids{$_} = 1 for @{ $b2e->{$fid} || [] };
 
-        while (my ($line, $calls) = each %$line_calls_hash) {
-            $line_calls->{$line}{$sub} = $calls;
+    my $line_calls = {};
+    # search through all subs to find those that were called
+    # from the fid we're interested in, or any eval fids in that
+    while (my ($subname, $fid_hash) = each %$sub_caller) {
+
+        while ( my ($caller_fid, $line_calls_hash) = each %$fid_hash ) {
+            next unless $fids{ $caller_fid };
+
+            my $caller_fi = $self->fileinfo_of($caller_fid);
+            my ($outer_fi, $outer_line) = $caller_fi->outer(1);
+
+            while (my ($line, $callinfo) = each %$line_calls_hash) {
+                my $caller_line = $outer_line || $line;
+                my $ci = $line_calls->{$caller_line}{$subname} ||= [];
+                if (!@$ci) {    # typical case
+                    @$ci = @$callinfo;
+                }
+                else {          # e.g., multiple calls inside the same string eval
+                    #warn "merging calls to $subname from fid $caller_fid line $caller_line ($outer_line || $line)";
+                    $ci->[$_] += $callinfo->[$_] for 0..5;
+                    $ci->[6]   = $callinfo->[6] if $callinfo->[6] > $ci->[6]; # NYTP_SCi_REC_DEPTH
+                }
+            }
         }
 
     }
     return $line_calls;
+}
+
+
+sub package_fids {
+    my ($self, $package) = @_;
+    my @fids;
+    #warn "package_fids '$package'";
+    return @fids if wantarray;
+    warn "Package 'package' has items defined in multiple fids: @fids\n"
+        if @fids > 1;
+    return $fids[0];
+}
+
+
+sub _dumper {
+    require Data::Dumper;
+    return Data::Dumper::Dumper(@_);
 }
 
 ## --- will move out to separate files later ---
@@ -804,6 +963,7 @@ sub line_calls_for_file {
 
     sub filename  { shift->[0] }
     sub eval_fid  { shift->[1] }
+    sub eval_fi   { return $_[0]->profile->fileinfo_of($_[0]->eval_fid || return) }
     sub eval_line { shift->[2] }
     sub fid       { shift->[3] }
     sub flags     { shift->[4] }
@@ -841,12 +1001,17 @@ sub line_calls_for_file {
     }
 
     sub outer {
-        my $self = shift;
-        my $fid  = $self->eval_fid
+        my ($self, $recurse) = @_;
+        my $fi  = $self->eval_fi
             or return;
-        my $fileinfo = $self->profile->fileinfo_of($fid);
-        return $fileinfo unless wantarray;
-        return ($fileinfo, $self->eval_line);
+        my $prev = $self;
+
+        while ($recurse and my $eval_fi = $fi->eval_fi) {
+            $prev = $fi;
+            $fi = $eval_fi;
+       }
+        return $fi unless wantarray;
+        return ($fi, $prev->eval_line);
     }
 
 
@@ -855,8 +1020,8 @@ sub line_calls_for_file {
     }
 
 
-# should return the filename that the application used
-# when loading the file
+    # should return the filename that the application used
+    # when loading the file
     sub filename_without_inc {
         my $self = shift;
         my $f    = [$self->filename];
@@ -872,6 +1037,34 @@ sub line_calls_for_file {
         return \@values;
     }
 
+    sub delete_subs_called_info {
+        my $self = shift;
+        my $profile = $self->profile;
+        my $sub_caller = $profile->{sub_caller}
+            or return;
+        my $fid = $self->fid;
+        # remove sub_caller info for calls made *from within* this file
+        delete $_->{$fid} for values %$sub_caller;
+        return;
+    }
+
+    sub srclines_array {
+        my $self = shift;
+        my $profile = $self->profile;
+        #warn Dumper($profile->{fid_srclines});
+        if (my $srclines = $profile->{fid_srclines}[ $self->fid ]) {
+            return [ @$srclines ]; # shallow clone
+        }
+        # open file
+        my $filename = $self->filename;
+        # if it's a .pmc then assume that's the file we want to look at
+        # (because the main use for .pmc's are related to perl6)
+        $filename .= "c" if $self->is_pmc;
+        open my $fh, "<", $filename
+            or return undef;
+        return [ <$fh> ];
+    }
+
 }    # end of package
 
 
@@ -881,7 +1074,7 @@ sub line_calls_for_file {
 
     use List::Util qw(sum);
 
-    sub fid        { shift->[0] }
+    sub fid        { $_[0]->[0] ||= $_[0]->profile->package_fids($_[0]->package) }
     sub first_line { shift->[1] }
     sub last_line  { shift->[2] }
     sub calls      { shift->[3] }
@@ -889,6 +1082,9 @@ sub line_calls_for_file {
     sub excl_time  { shift->[5] }
     sub subname    { shift->[6] }
     sub profile    { shift->[7] }
+    sub package    { (my $pkg = shift->subname) =~ s/::.*?$//; return $pkg }
+    sub recur_max_depth { shift->[8] }
+    sub recur_incl_time { shift->[9] }
 
     sub is_xsub {
         my $self = shift;
@@ -899,8 +1095,10 @@ sub line_calls_for_file {
 
     sub fileinfo {
         my $self = shift;
-        my $fid  = $self->fid
-            or return undef;    # sub not have a known fid
+        my $fid  = $self->fid;
+        if (!$fid) {
+            return undef;    # sub not have a known fid
+        }
         $self->profile->fileinfo_of($fid);
     }
 
@@ -914,7 +1112,7 @@ sub line_calls_for_file {
 
     sub _values_for_dump {
         my $self   = shift;
-        my @values = @{$self}[0 .. 5];
+        my @values = @{$self}[0 .. 5, 8, 9 ];
         return \@values;
     }
 
@@ -950,7 +1148,7 @@ sub line_calls_for_file {
         my $callers = $self->callers
             or return 0;
 
-        # scalar: count of the number of distinct locations sub iss called from
+        # scalar: count of the number of distinct locations sub is called from
         # list: array of [ fid, line, @... ]
         my @callers;
         warn "caller_places in list context not implemented/tested yet";

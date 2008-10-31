@@ -1,14 +1,13 @@
 #! /usr/bin/env perl
-# vim: ts=2 sw=2 sts=0 noexpandtab:
+# vim: ts=8 sw=2 sts=0 noexpandtab:
 ##########################################################
 ## This script is part of the Devel::NYTProf distribution
 ##
-## Copyright, contact and other information can be found
-## at the bottom of this file, or by going to:
-## http://search.cpan.org/dist/Devel-NYTProf/
+## Copyright, contact and other information can be found in the
+## README file and at http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: test.pl 461 2008-09-08 10:37:51Z tim.bunce $
+## $Id: 20.runtests.t 557 2008-10-27 08:29:56Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -27,9 +26,8 @@ $| = 1;
 
 # skip these tests when the provided condition is true
 my %SKIP_TESTS = (
-    'test06' => ($] >= 5.008) ? 0 : "needs perl >= 5.8",
-    'test15' => ($] < 5.008)  ? 0 : "needs perl < 5.8",
     'test16' => ($] >= 5.010) ? 0 : "needs perl >= 5.10",
+    'test30-fork' => ($^O ne "MSWin32") ? 0 : "doesn't work with fork() emulation",
 );
 
 my %opts = (
@@ -40,6 +38,7 @@ GetOptions(\%opts, qw/p=s I=s v|verbose d|debug html open profperlopts=s leave=i
     or exit 1;
 
 $opts{v} ||= $opts{d};
+$opts{html} ||= $opts{open};
 
 my $opt_perl         = $opts{p};
 my $opt_include      = $opts{I};
@@ -66,7 +65,12 @@ chdir('t') if -d 't';
 
 my $tests_per_extn = {p => 1, rdt => 1, x => 3};
 
-s:^t/:: for @ARGV;    # allow args to use t/ prefix
+@ARGV = map {
+   s:^t/::;        # allow args to use t/ prefix
+   s:^(\d)$:0$1:;  # allow single digit tests
+   s:^(\d+)$:test$1:;  # can skip test prefix
+   $_ =~ /\./ ? $_ : <$_.*>
+} @ARGV;
 
 # *.p   = perl code to profile
 # *.rdt = result tsv data dump to verify
@@ -99,7 +103,8 @@ if ($opts{v}) {
     print "nytprofcvs: $nytprofcsv\n";
 }
 
-ok(-x $nytprofcsv, "Where's nytprofcsv?");
+# Windows emulates the executable bit based on file extension only
+ok($^O eq "MSWin32" ? -f $nytprofcsv : -x $nytprofcsv, "Found nytprofcsv as $nytprofcsv");
 
 # run all tests in various configurations
 for my $leave (@test_opt_leave) {
@@ -115,7 +120,7 @@ for my $leave (@test_opt_leave) {
 
 sub run_all_tests {
     my ($env) = @_;
-    print "Running tests with options: { @{[ %$env ]} }\n";
+    print "# Running tests with options: { @{[ %$env ]} }\n";
     for my $test (@tests) {
         run_test($test, $env);
     }
@@ -155,15 +160,16 @@ SKIP: {
             verify_csv_report($test, $test_datafile, $outdir);
 
             if ($opts{html}) {
-                run_command("$perl $nytprofhtml --file=$profile_datafile --out=$outdir");
-                run_command("open $outdir/*.html")
-                    if $opts{open};    # possibly only useful on OS X
+                my $cmd = "$perl $nytprofhtml --file=$profile_datafile --out=$outdir";
+                $cmd .= " --open" if $opts{open};
+                run_command($cmd);
             }
         }
-        else {
-            warn "Unrecognized extension '$type' on test file '$test'\n"
-                unless $type eq 'new'
-                or $type     eq 'outdir';    # handy for "test.pl t/test01.*"
+	elsif ($type =~ /^(?:pl|pm|new|outdir)$/) {
+	    # skip; handy for "test.pl t/test01.*"
+	}
+	else {
+            warn "Unrecognized extension '$type' on test file '$test'\n";
         }
     }
 }
@@ -193,7 +199,7 @@ sub profile {
     my ($test, $profile_datafile) = @_;
 
     my $cmd = "$perl $opts{profperlopts} $test";
-    ok run_command($cmd), "$test should run ok";
+    ok run_command($cmd), "$test runs ok under the profiler";
 }
 
 
@@ -212,7 +218,7 @@ sub verify_data {
     my @got      = slurp_file("$test.new");
     my @expected = slurp_file($test);
 
-    is_deeply(\@got, \@expected, $test)
+    is_deeply(\@got, \@expected, "$test match generated profile data")
         ? unlink("$test.new")
         : diff_files($test, "$test.new");
 }
@@ -245,7 +251,7 @@ sub diff_files {
     # we don't care if this fails, it's just an aid to debug test failures
     my @opts = split / /, $ENV{NYTPROF_DIFF_OPTS} || '';    # e.g. '-y'
     @opts = ('-u') unless @opts;
-    system("diff", @opts, @_);
+    system("diff @opts @_ 1>&2");
 }
 
 
@@ -268,7 +274,7 @@ sub verify_csv_report {
     unlink $csvfile;
 
     my $cmd = "$perl $nytprofcsv --file=$profile_datafile --out=$outdir";
-    ok run_command($cmd), "generate csv ok";
+    ok run_command($cmd), "nytprofcsv runs ok";
 
     my @got      = slurp_file($csvfile);
     my @expected = slurp_file($test);
@@ -335,11 +341,11 @@ sub verify_csv_report {
         print "\n";
     }
 
-    is_deeply(\@got, \@expected, $test) or do {
+    is_deeply(\@got, \@expected, "$test match generated CSV data") or do {
         spit_file("$test.new", join("", @got));
         diff_files($test, "$test.new");
     };
-    is(join("\n", @accuracy_errors), '', $test);
+    is(join("\n", @accuracy_errors), '', "$test has no accuracy errors");
 }
 
 
@@ -401,4 +407,4 @@ sub unlink_old_profile_datafiles {
 }
 
 
-# vim:ts=2:sw=2
+# vim:ts=8:sw=2

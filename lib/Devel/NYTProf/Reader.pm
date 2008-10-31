@@ -7,11 +7,11 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: Reader.pm 497 2008-10-08 22:34:59Z tim.bunce $
+## $Id: Reader.pm 580 2008-10-31 13:54:02Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Reader;
 
-our $VERSION = '2.05';
+our $VERSION = '2.06';
 
 use warnings;
 use strict;
@@ -142,8 +142,7 @@ sub _map_new_to_old {    # convert into old-style data structure
         # (because the main use for .pmc's are related to perl6)
         $filename .= "c" if $fid_fileinfo->[$fid]->is_pmc;
 
-        my $lines_array = $fid_line_data->[$fid]
-            or next;    # ignore fid's with no lines executed
+        my $lines_array = $fid_line_data->[$fid] || [];
 
         # convert any embedded eval line time arrays to hashes
         for (@$lines_array) {
@@ -256,10 +255,13 @@ sub report {
     my $self = shift;
     my ($opts) = @_;
 
+    print "Writing report to $self->{output_dir} directory\n"
+        unless $opts->{quiet};
+
     my $level_additional_sub = $opts->{level_additional};
     my $profile              = $self->{profile};
     my $modes                = $profile->get_profile_levels;
-    for my $level (values %$modes) {
+    for my $level (grep { {reverse %$modes}->{$_} } qw(sub block line)) {
         $self->_generate_report($profile, $level);
         $level_additional_sub->($profile, $level)
             if $level_additional_sub;
@@ -309,11 +311,13 @@ sub _generate_report {
 
         my %totalsAccum;         # holds all line times. used to find median
         my %totalsByLine;        # holds individual line stats
-        my $runningTotalTime;    # holds the running total
+        my $runningTotalTime = 0;  # holds the running total
 
         # (should equal sum of $totalsAccum)
-        my $runningTotalCalls;    # holds the running total number of calls.
+        my $runningTotalCalls = 0; # holds the running total number of calls.
 
+        # note that a file may have no source lines executed, so no keys here
+        # (but is included because some xsubs in the package were executed)
         foreach my $key (keys %{$data->{$filestr}}) {
             my $a = $data->{$filestr}->{$key};
 
@@ -351,19 +355,18 @@ sub _generate_report {
 
         $self->{filestats}->{$filestr}->{'time'}      = $runningTotalTime;
         $self->{filestats}->{$filestr}->{'calls'}     = $runningTotalCalls;
-        $self->{filestats}->{$filestr}->{'time/call'} = eval { $runningTotalTime / $runningTotalCalls };
-        warn "Um, that's odd, the count of executed statements is zero for '$filestr'\n"
-            unless $runningTotalCalls;
+        $self->{filestats}->{$filestr}->{'time/call'} =
+            ($runningTotalCalls) ? $runningTotalTime / $runningTotalCalls: 0;
 
         # Use Median Absolute Deviation Formula to get file deviations for each of
         # calls, time and time/call values
         my %statistics = (
-            'calls'     => calculate_median_absolute_deviation($totalsAccum{'calls'}),
-            'time'      => calculate_median_absolute_deviation($totalsAccum{'time'}),
-            'time/call' => calculate_median_absolute_deviation($totalsAccum{'time/call'}),
+            'calls'     => calculate_median_absolute_deviation($totalsAccum{'calls'}||[]),
+            'time'      => calculate_median_absolute_deviation($totalsAccum{'time'}||[]),
+            'time/call' => calculate_median_absolute_deviation($totalsAccum{'time/call'}||[]),
         );
 
-        my $line_calls_hash = $profile->line_calls_for_file($filestr);
+        my $line_calls_hash = $profile->line_calls_for_file($filestr, 1);
         my $subs_defined_hash = $profile->subs_defined_in_file($filestr, 1);
 
         # the output file name that will be open later.  Not including directory at this time.
@@ -396,7 +399,7 @@ sub _generate_report {
 
         # open output file
         #warn "$self->{output_dir}/$fname";
-        open(OUT, "> $self->{output_dir}/$fname")
+        open(OUT, ">", "$self->{output_dir}/$fname")
             or confess "Unable to open $self->{output_dir}/$fname " . "for writing: $!\n";
 
         # begin output
@@ -404,7 +407,10 @@ sub _generate_report {
         print OUT $taintmsg if $tainted;
         print OUT $datastart;
 
-        if (!open(IN, $filestr)) {
+        my $LINE = 1;    # actual line number. PATTERN variable, DO NOT CHANGE
+        my $fileinfo = $profile->fileinfo_of($filestr);
+        my $src_lines = $fileinfo->srclines_array;
+        if (!$src_lines) {
 
             # ignore synthetic file names that perl assigns when reading
             # code returned by a CODE ref in @INC
@@ -417,13 +423,14 @@ sub _generate_report {
                 . "or ensure \@INC is correct."
                 unless $filestr eq '-e'
                 or our $_generate_report_inc_hint++;
-            warn "Unable to open '$filestr' for reading: $!.$hint\n"
+            my $msg = "Unable to open '$filestr' for reading: $!.$hint\n";
+            warn $msg
                 unless our $_generate_report_filestr_warn->{$filestr}++;    # only once
-            next;
+            $src_lines = [ $msg ];
+            $LINE = 0;
         }
 
-        my $LINE = 1;    # actual line number. PATTERN variable, DO NOT CHANGE
-        foreach my $line (<IN>) {
+        while ( my $line = shift @$src_lines ) {
             chomp $line;
             foreach my $regexp (@{$self->{user_regexp}}) {
                 $line =~ s/$regexp->{pattern}/$regexp->{replace}/g;
@@ -447,12 +454,12 @@ sub _generate_report {
                         print OUT $func->(
                             $value, $totalsByLine{$LINE}->{$value},
                             $statistics{$value}, $LINE, $line, $profile, $subs_defined,
-                            $makes_calls_to
+                            $makes_calls_to, $filestr
                         );
                     }
                     else {
                         print OUT $func->(
-                            $value, $LINE, $line, $profile, $subs_defined, $makes_calls_to
+                            $value, $LINE, $line, $profile, $subs_defined, $makes_calls_to, $filestr
                         );
                     }
                     next;
@@ -486,6 +493,37 @@ sub _generate_report {
             # Increment line number counters
             $LINE++;
         }
+
+        # iterate over xsubs 
+        my $subs_defined_in_file = $profile->subs_defined_in_file($filestr, 0);
+        foreach my $subname (sort keys %$subs_defined_in_file) {
+            my $subinfo = $subs_defined_in_file->{$subname};
+            next unless $subinfo->is_xsub;
+
+            $LINE = '';
+            my $src = "sub $subname; # xsub\n\t";
+            my $filestr = '';
+
+            foreach my $hash (@{$self->{line}}) {
+
+                my $func = $hash->{func};
+                my $value = $hash->{value};
+                if ($value) {
+                    print OUT $func->(
+                        $subname, undef,
+                        undef, $LINE, $src, $profile,
+                        [ $subinfo ], {}, $filestr
+                    );
+                }
+                else {
+                    print OUT $func->(
+                        $subname, $LINE, $src, $profile, [ $subinfo ], {}, $filestr
+                    );
+                }
+            }
+
+        }
+
         print OUT $dataend;
         print OUT $footer;
         close OUT;
@@ -494,29 +532,35 @@ sub _generate_report {
 
 
 sub href_for_sub {
-    my ($self, $sub) = @_;
+    my ($self, $sub, %opts) = @_;
 
     my ($file, $fid, $first, $last) = $self->{profile}->file_line_range_of_sub($sub);
     if (!$first) {
-        return undef if defined $first;    # is xs (first and least are 0)
-        warn("No file line range data for sub '$sub'\n")
-            unless our $href_for_sub_no_data_warn->{$sub}++;    # warn just once
-        return undef;
+        if (not defined $first) {
+            warn("No file line range data for sub '$sub'\n")
+                unless our $href_for_sub_no_data_warn->{$sub}++;    # warn just once
+            return "";
+        }
+        # probably xsub
+        # return no link if we don't have a file for this xsub
+        return "" unless $file;
+        # use sanitized subname as label
+        ($first = $sub) =~ s/\W/_/g;
     }
 
-    my $stats      = $self->get_file_stats();
+    my $stats      = $self->get_file_stats(); # may be undef
     my $file_stats = $stats->{$file};
     if (!$file_stats) {
         warn("Sub '$sub' file '$file' (fid $fid) not in stats!\n");
-        return "#sub unknown";
+        return "";
     }
     my $html_safe = $file_stats->{html_safe} ||= do {
-
         # warn, just once, and use a default value
         warn "Sub '$sub' file '$file' (fid $fid) has no html_safe value\n";
         "unknown";
     };
-    return "$html_safe.html#$first";
+    $html_safe = ($opts{in_this_file}) ? "" : "$html_safe.html";
+    return sprintf q{href="%s#%s"}, $html_safe, $first;
 }
 
 
@@ -529,40 +573,40 @@ Devel::NYTProf::Reader - Tranforms L<Devel::NYTProf> output into comprehensive, 
 
 =head1 SYNOPSIS
 
- # This module comes with two scripts that implement it:
- #
- # nytprofhtml - create an html report with statistics highlighting
- # nytprofcsv - create a basic comma delimited report
- #
- # They are in the bin directory of your perl path, so add that to your PATH.
- #
- # The csv script is simple, and really only provided as a starting point
- # for creating other custom reports. You should refer to the html script
- # for advanced usage and statistics.
+  # This module comes with two scripts that implement it:
+  #
+  # nytprofhtml - create an html report with statistics highlighting
+  # nytprofcsv - create a basic comma delimited report
+  #
+  # They are in the bin directory of your perl path, so add that to your PATH.
+  #
+  # The csv script is simple, and really only provided as a starting point
+  # for creating other custom reports. You should refer to the html script
+  # for advanced usage and statistics.
 
- # First run some code through the profiler to generate the nytprof database.
- perl -d:NYTProf some_perl.pl
+  # First run some code through the profiler to generate the nytprof database.
+  perl -d:NYTProf some_perl.pl
 
- # To create an HTML report in ./nytprof 
- nytprofhtml
+  # To create an HTML report in ./nytprof 
+  nytprofhtml
 
- # To create a csv report in ./nytprof 
- nytprofcsv
+  # To create a csv report in ./nytprof 
+  nytprofcsv
 
- # Or to generate a simple comma delimited report manually
- use Devel::NYTProf::Reader;
- my $reporter = new Devel::NYTProf::Reader('nytprof.out');
+  # Or to generate a simple comma delimited report manually
+  use Devel::NYTProf::Reader;
+  my $reporter = new Devel::NYTProf::Reader('nytprof.out');
 
- # place to store the output
- $reporter->output_dir($file);
+  # place to store the output
+  $reporter->output_dir($file);
 
- # set other options and parameters
- $reporter->add_regexp('^\s*', ''); # trim leading spaces
+  # set other options and parameters
+  $reporter->add_regexp('^\s*', ''); # trim leading spaces
 
- # generate the report
- $reporter->report();
+  # generate the report
+  $reporter->report();
 
- # many configuration options exist.  See nytprofhtml, advanced example.
+  # many configuration options exist.  See nytprofhtml, advanced example.
 
 =head1 DESCRIPTION
 
@@ -583,22 +627,28 @@ will provide the following statistics:
 =over
 
 =item *
- Total calls
+
+Total calls
 
 =item *
- Total time
+
+Total time
 
 =item *
- Average time per call
+
+Average time per call
 
 =item *
- Deviation of all of the above
+
+Deviation of all of the above
 
 =item *
- Line number
+
+Line number
 
 =item *
- Source code
+
+Source code
 
 =back
 
@@ -642,9 +692,9 @@ will be run through each entry in the pattern stack.
 
 For example, to replace spaces, < and > with html entities, you might do:
 
-	$reporter->add_regexp(' ', '&nbsp;');
-	$reporter->add_regexp('<', '&lt;');
-	$reporter->add_regexp('>', '&gt;');
+  $reporter->add_regexp(' ', '&nbsp;');
+  $reporter->add_regexp('<', '&lt;');
+  $reporter->add_regexp('>', '&gt;');
 
 =item $reporter->set_param( $parameter, $value );
 
@@ -743,8 +793,8 @@ the work is done.
 
 When called after calling C<$reporter-E<gt>report()>, will return a hash containing the cumulative totals for each file.
 
- my $stats = $reporter->getStats();
- $stats->{FILENAME}->{time}; # might hold 0.25, the total runtime of this file>>
+  my $stats = $reporter->getStats();
+  $stats->{FILENAME}->{time}; # might hold 0.25, the total runtime of this file>>
 
 Fields are time, calls, time/call, html-safe.
 

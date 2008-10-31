@@ -1,4 +1,4 @@
-# vim: ts=2 sw=2 sts=0 noexpandtab:
+# vim: ts=8 sw=2 sts=0 noexpandtab:
 ##########################################################
 ## This script is part of the Devel::NYTProf distribution
 ##
@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-# $Id: Makefile.PL 463 2008-09-17 21:28:17Z tim.bunce $
+# $Id: Makefile.PL 575 2008-10-29 22:40:49Z tim.bunce $
 ###########################################################
 
 use 5.008001;
@@ -32,13 +32,6 @@ if ($ENV{PERL_CORE}) {
         'bin/nytprofhtml' => '$(INST_MAN1DIR)/nytprofhtml.1',
         'bin/nytprofcsv'  => '$(INST_MAN1DIR)/nytprofcsv.1'
   } );
-}
-
-# --- Bail out on Windows
-if ($^O eq 'MSWin32') {
-    print "This module does not currently support Windows.\n"
-        . "Please help us port it - contact us at develnytprof-dev\@googlegroups.com\n";
-    die "No support for OS" if $ENV{AUTOMATED_TESTING};    # keep cpan-testers happy
 }
 
 # --- Options
@@ -122,7 +115,11 @@ WriteMakefile(
     EXE_FILES => ['bin/nytprofhtml', 'bin/nytprofcsv'],
     @man,
     INC   => $INCLUDE,
-    clean => {FILES => "t/nytprof_t.out nytprof t/nytprof.out t/*.outdir t/test*.*.new t/auto demo-out"},
+    clean => { FILES => join " ",
+		"nytprof demo-out",
+		map { ("t/$_", "xt/$_") }
+			qw(nytprof_t.out nytprof.out *.outdir test*.*.new auto)
+    },
     dist  => {
         DIST_DEFAULT => 'clean distcheck disttest tardist',
         PREOP        => '$(MAKE) -f Makefile.old distdir',
@@ -192,7 +189,6 @@ PERLTIDY=perltidy --profile=.perltidyrc -nst -b
 perltidy:
 	$(PERLTIDY) bin/nytprofhtml bin/nytprofcsv
 	$(PERLTIDY) lib/Devel/NYTProf.pm lib/Devel/NYTProf/*.pm
-	$(PERLTIDY) test.pl
 
 # the XS portion of the file will be mangled and require manual fixup
 ctidy_bcpp:

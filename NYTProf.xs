@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 495 2008-10-08 16:50:46Z tim.bunce $
+ * $Id: NYTProf.xs 574 2008-10-29 22:36:59Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -47,9 +47,6 @@
 #define PL_curcop_nytprof PL_curcop
 #endif
 
-#ifndef OP_NAME                                   /* for perl 5.6 */
-#define OP_NAME "<?>"
-#endif
 #define OP_NAME_safe(op) ((op) ? OP_NAME(op) : "NULL")
 
 #ifdef I_SYS_TIME
@@ -90,7 +87,6 @@
 
 #define NYTP_TAG_NO_TAG          '\0'   /* Used as a flag to mean "no tag" */
 
-#define output_int(i)            output_tag_int(NYTP_TAG_NO_TAG, (i))
 
 /* Hash table definitions */
 #define MAX_HASH_SIZE 512
@@ -173,7 +169,7 @@ static struct NYTP_int_options_t options[] = {
 #define usecputime options[0].option_value
     { "usecputime", 0 },
 #define profile_subs options[1].option_value
-    { "subs", 1 },                                /* sub *inclusive* times */
+    { "subs", 1 },                                /* subroutine times */
 #define profile_blocks options[2].option_value
     { "blocks", 1 },                              /* block and sub *exclusive* times */
 #define profile_leave options[3].option_value
@@ -191,7 +187,9 @@ static struct NYTP_int_options_t options[] = {
     { "compress", 0 },
 #endif
 #define profile_clock options[8].option_value
-    { "clock", -1 }
+    { "clock", -1 },
+#define profile_stmts options[9].option_value
+    { "stmts", 1 }                               /* statement exclusive times */
 };
 
 /* time tracking */
@@ -200,6 +198,8 @@ static struct tms start_ctime, end_ctime;
 /* http://www.freebsd.org/cgi/man.cgi?query=clock_gettime
  * http://webnews.giga.net.tw/article//mailing.freebsd.performance/710
  * http://sean.chittenden.org/news/2008/06/01/
+ * Explanation of why gettimeofday() (and presumably CLOCK_REALTIME) may go backwards:
+ * http://groups.google.com/group/comp.os.linux.development.apps/tree/browse_frm/thread/dc29071f2417f75f/ac44671fdb35f6db?rnum=1&_done=%2Fgroup%2Fcomp.os.linux.development.apps%2Fbrowse_frm%2Fthread%2Fdc29071f2417f75f%2Fc46264dba0863463%3Flnk%3Dst%26rnum%3D1%26#doc_776f910824bdbee8
  */
 typedef struct timespec time_of_day_t;
 #  define CLOCK_GETTIME(ts) clock_gettime(profile_clock, ts)
@@ -249,7 +249,9 @@ static unsigned int ticks_per_sec = 0;            /* 0 forces error if not set *
 /* prototypes */
 static void output_header(pTHX);
 static void output_tag_int(unsigned char tag, unsigned int);
+#define     output_int(i)   output_tag_int(NYTP_TAG_NO_TAG, (unsigned int)(i))
 static void output_str(char *str, I32 len);
+static void output_nv(NV nv);
 static unsigned int read_int();
 static SV *read_str(pTHX_ SV *sv);
 static unsigned int get_file_id(pTHX_ char*, STRLEN, int created_via);
@@ -261,9 +263,9 @@ static void finish_profile(pTHX);
 static void open_output_file(pTHX_ char *);
 static int reinit_if_forked(pTHX);
 static void write_cached_fids();
-static void write_sub_line_ranges(pTHX_ int fids_only);
+static void write_sub_line_ranges(pTHX);
 static void write_sub_callers(pTHX);
-static HV *load_profile_data_from_stream();
+static HV *load_profile_data_from_stream(SV* cb);
 static AV *store_profile_line_entry(pTHX_ SV *rvav, unsigned int line_num,
 				    NV time, int count, unsigned int fid);
 
@@ -274,23 +276,20 @@ orig_ppaddr_t *PL_ppaddr_orig;
 static OP *pp_entersub_profiler(pTHX);
 static OP *pp_leaving_profiler(pTHX);
 static HV *sub_callers_hv;
+static HV *sub_xsubs_hv;    /* like PL_DBsub but for xsubs only */
+static HV *pkg_fids_hv;     /* currently just package names */
 
 /* macros for outputing profile data */
 #ifndef HAS_GETPPID
 #define getppid() 0
 #endif
-#define OUTPUT_PID() STMT_START { \
-    assert(out != NULL); output_tag_int(NYTP_TAG_PID_START, getpid()); output_int(getppid()); \
-} STMT_END
 
-#define END_OUTPUT_PID(pid) STMT_START { \
-    assert(out != NULL); output_tag_int(NYTP_TAG_PID_END, pid); NYTP_flush(out); \
-} STMT_END
 
 /***********************************
  * Devel::NYTProf Functions        *
  ***********************************/
 
+/* XXX The proper return value would be Off_t */
 static long
 NYTP_tell(NYTP_file file) {
 #ifdef HAS_ZLIB
@@ -301,7 +300,7 @@ NYTP_tell(NYTP_file file) {
 	    ? file->zs.total_out : file->zs.total_in;
     }
 #endif
-    return ftell(file->file);
+    return (long)ftell(file->file);
 }
 
 static const char *
@@ -425,21 +424,6 @@ NYTP_gets(NYTP_file ifile, char *buffer, unsigned int len) {
     return fgets(buffer, len, ifile->file);
 }
 
-static unsigned int
-NYTP_scanf(NYTP_file ifile, const char *format, ...) {
-    unsigned int retval;
-    va_list args;
-
-    if (FILE_STATE(ifile) != NYTP_FILE_STDIO) {
-	compressed_io_croak(ifile, "NYTP_scanf");
-    }
-
-    va_start(args, format);
-    retval = vfscanf(ifile->file, format, args);
-    va_end(args);
-    return retval;
-}
-
 #ifdef HAS_ZLIB
 
 static void
@@ -508,10 +492,10 @@ grab_input(NYTP_file ifile) {
 #endif
 
 
-static unsigned int
-NYTP_read_unchecked(NYTP_file ifile, void *buffer, unsigned int len) {
+static size_t
+NYTP_read_unchecked(NYTP_file ifile, void *buffer, size_t len) {
 #ifdef HAS_ZLIB
-    unsigned int result = 0;
+    size_t result = 0;
 #endif
     if (FILE_STATE(ifile) == NYTP_FILE_STDIO) {
 	return fread(buffer, 1, len, ifile->file);
@@ -544,12 +528,12 @@ NYTP_read_unchecked(NYTP_file ifile, void *buffer, unsigned int len) {
 }
 
 
-static unsigned int
-NYTP_read(NYTP_file ifile, void *buffer, unsigned int len, char *what) {
-    unsigned int got = NYTP_read_unchecked(ifile, buffer, len);
+static size_t
+NYTP_read(NYTP_file ifile, void *buffer, size_t len, char *what) {
+    size_t got = NYTP_read_unchecked(ifile, buffer, len);
     if (got != len) {
-        croak("Profile format error whilst reading %s at %ld%s: expected %d got %d, %s",
-                what, NYTP_tell(ifile), NYTP_type_of_offset(ifile), len, got,
+        croak("Profile format error whilst reading %s at %ld%s: expected %ld got %ld, %s",
+              what, NYTP_tell(ifile), NYTP_type_of_offset(ifile), (long)len, (long)got,
                 (NYTP_eof(in)) ? "end of file" : NYTP_fstrerror(in));
     }
     return len;
@@ -639,10 +623,10 @@ flush_output(NYTP_file ofile, int flush) {
 }
 #endif
 
-static unsigned int
-NYTP_write(NYTP_file ofile, const void *buffer, unsigned int len) {
+static size_t
+NYTP_write(NYTP_file ofile, const void *buffer, size_t len) {
 #ifdef HAS_ZLIB
-    unsigned int result = 0;
+    size_t result = 0;
 #endif
     if (FILE_STATE(ofile) == NYTP_FILE_STDIO) {
 	if (fwrite(buffer, 1, len, ofile->file) < 1) {
@@ -681,9 +665,9 @@ NYTP_write(NYTP_file ofile, const void *buffer, unsigned int len) {
 #endif
 }
 
-static unsigned int
+static int
 NYTP_printf(NYTP_file ofile, const char *format, ...) {
-    unsigned int retval;
+    int retval;
     va_list args;
 
     if (FILE_STATE(ofile) != NYTP_FILE_STDIO) {
@@ -693,6 +677,7 @@ NYTP_printf(NYTP_file ofile, const char *format, ...) {
     va_start(args, format);
     retval = vfprintf(ofile->file, format, args);
     va_end(args);
+
     return retval;
 }
 
@@ -767,11 +752,34 @@ NYTP_close(NYTP_file file, int discard) {
 
     Safefree(file);
 
+    if (ferror(raw_file))
+        warn("There was an error writing to the profile data file\n");
+
     if (discard) {
-	close(fileno(raw_file)); /* close the underlying fd first */
+        /* close the underlying fd first so any buffered data gets discarded
+         * when fclose is called below */
+	close(fileno(raw_file));
     }
 
     return fclose(raw_file);
+}
+
+
+static NV
+gettimeofday_nv(void)
+{
+#ifdef HAS_GETTIMEOFDAY
+    struct timeval when;
+    gettimeofday(&when, (struct timezone *) 0);
+    return when.tv_sec + (when.tv_usec / 1000000.0);
+#else
+    if (u2time) {
+        UV time_of_day[2];
+        (*u2time)(aTHX_ &time_of_day);
+        return time_of_day[0] + (time_of_day[1] / 1000000.0);
+    }
+    return 0.0;
+#endif
 }
 
 /**
@@ -785,7 +793,7 @@ output_header(pTHX)
 
     assert(out != NULL);
     /* File header with "magic" string, with file major and minor version */
-    NYTP_printf(out, "NYTProf %d %d\n", 2, 0);
+    NYTP_printf(out, "NYTProf %d %d\n", 2, 1);
     /* Human readable comments and attributes follow
      * comments start with '#', end with '\n', and are discarded
      * attributes start with ':', a word, '=', then the value, then '\n'
@@ -808,20 +816,17 @@ output_header(pTHX)
 
 #ifdef HAS_ZLIB
     if (compression_level) {
-        const char tag = NYTP_TAG_START_DEFLATE;
+        const unsigned char tag = NYTP_TAG_START_DEFLATE;
 	NYTP_printf(out, "# Compressed at level %d with zlib %s\n",
 		    compression_level, zlibVersion());
 	NYTP_write(out, &tag, sizeof(tag));
 	NYTP_start_deflate(out);
-
-	/* If the next action stops being OUTPUT_PID(), or it stops having
-	   a flush() built in, consider adding a call to
-	   sync_avail_out_to_ftell() "here" instead, most logically by putting
-	   it in NYTP_start_deflate(out).  */
     }
 #endif
 	
-    OUTPUT_PID();
+    output_tag_int(NYTP_TAG_PID_START, getpid());
+    output_int(getppid());
+    output_nv(gettimeofday_nv());
 
     write_cached_fids();                          /* empty initially, non-empty after fork */
 
@@ -831,9 +836,9 @@ output_header(pTHX)
 
 static void
 output_str(char *str, I32 len) {    /* negative len signifies utf8 */
-    int tag = NYTP_TAG_STRING;
+    unsigned char tag = NYTP_TAG_STRING;
     if (!len)
-        len = strlen(str);
+        len = (I32)strlen(str);
     else if (len < 0) {
         tag = NYTP_TAG_STRING_UTF8;
         len = -len;
@@ -847,7 +852,7 @@ static SV *
 read_str(pTHX_ SV *sv) {
     STRLEN len;
     char *buf;
-    char tag;
+    unsigned char tag;
 
     NYTP_read(in, &tag, sizeof(tag), "string prefix");
 
@@ -986,7 +991,23 @@ emit_fid (Hash_entry *fid_info)
     output_int(fid_info->fid_flags);
     output_int(fid_info->file_size);
     output_int(fid_info->file_mtime);
-    output_str(file_name, file_name_len);
+
+#ifdef WIN32
+    /* Make sure we only use forward slashes in filenames */
+    if (memchr(file_name, '\\', file_name_len)) {
+        STRLEN i;
+        char *file_name_copy = (char*)safemalloc(file_name_len);
+        for (i=0; i<file_name_len; ++i) {
+            char ch = file_name[i];
+            file_name_copy[i] = ch == '\\' ? '/' : ch;
+        }
+        output_str(file_name_copy, (I32)file_name_len);
+        Safefree(file_name_copy);
+        return;
+    }
+#endif
+
+    output_str(file_name, (I32)file_name_len);
 }
 
 
@@ -1009,15 +1030,13 @@ fid_is_pmc(pTHX_ Hash_entry *fid_info)
         SV *pmcsv = Perl_newSVpvf(aTHX_ "%s%c", SvPV_nolen(pmsv), 'c');
         Stat_t pmstat;
         Stat_t pmcstat;
-        int saved_errno = errno;
         if (PerlLIO_lstat(SvPV_nolen(pmcsv), &pmcstat) == 0) {
             /* .pmc exists, is it newer than the .pm (if that exists) */
             if (PerlLIO_lstat(SvPV_nolen(pmsv), &pmstat) < 0 ||
             pmstat.st_mtime < pmcstat.st_mtime) {
-                is_pmc = 1;                       /* hey, maybe it's Larry working on the perl6 comiler */
+                is_pmc = 1; /* hey, maybe it's Larry working on the perl6 comiler */
             }
         }
-        SETERRNO(saved_errno, 0);
         SvREFCNT_dec(pmcsv);
         SvREFCNT_dec(pmsv);
     }
@@ -1061,10 +1080,10 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
             file_name_len = new_end - file_name;
     }
     entry.key = file_name;
-    entry.key_len = file_name_len;
+    entry.key_len = (unsigned int)file_name_len;
 
     /* inserted new entry */
-    if (1 == hash_op(entry, &found, created_via)) {
+    if (1 == hash_op(entry, &found, (bool)(created_via ? 1 : 0))) {
         AV *src_av = Nullav;
 
         /* if this is a synthetic filename for an 'eval'
@@ -1088,36 +1107,47 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
             found->eval_line_num = atoi(end+1);
         }
 
-        if (1) { /* XXX sanity check for OutCopFILE/CvFILE corruption */
-            char *p = entry.key;
-            STRLEN len = entry.key_len;
-            while (len-- > 0) {
-                if (isprint(*p++))
-                    continue;
-                warn("Fid %d filename contains strange characters '%.*s' (please report this possible corruption, %d)",
-                    found->id, entry.key_len, entry.key, created_via);
-                break;
-            }
-        }
-
         /* determine absolute path if file_name is relative */
         found->key_abs = NULL;
-        if (!found->eval_fid && *file_name != '/') {
+        if (!found->eval_fid &&
+            !(file_name_len==1 && strEQ(file_name,"-" )) &&
+            !(file_name_len==2 && strEQ(file_name,"-e")) &&
+#ifdef WIN32
+            /* XXX should we check for UNC names too? */
+            (file_name_len < 3 || !isALPHA(file_name[0]) || file_name[1] != ':' ||
+             (file_name[2] != '/' && file_name[2] != '\\'))
+#else
+            *file_name != '/'
+#endif
+           )
+        {
             char file_name_abs[MAXPATHLEN * 2];
             /* Note that the current directory may have changed
              * between loading the file and profiling it.
              * We don't use realpath() or similar here because we want to
-             * keep the of symlinks etc. as the program saw them.
+             * keep the view of symlinks etc. as the program saw them.
              */
             if (!getcwd(file_name_abs, sizeof(file_name_abs))) {
                 /* eg permission */
                 warn("getcwd: %s\n", strerror(errno));
             }
-            else if (strNE(file_name_abs, "/")) {
-                if (strnEQ(file_name, "./", 2))
-                    ++file_name;
-                else
-                    strcat(file_name_abs, "/");
+            else {
+#ifdef WIN32
+                char *p = file_name_abs;
+                while (*p) {
+                    if ('\\' == *p)
+                        *p = '/';
+                    ++p;
+                }
+                if (p[-1] != '/') {
+#else
+                if (strNE(file_name_abs, "/")) {
+#endif
+                    if (strnEQ(file_name, "./", 2))
+                        ++file_name;
+                    else
+                        strcat(file_name_abs, "/");
+                }
                 strncat(file_name_abs, file_name, file_name_len);
                 found->key_abs = strdup(file_name_abs);
             }
@@ -1129,17 +1159,22 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
 
         emit_fid(found);
 
-        /* if it's a string eval or a synthetic filename from CODE ref in @INC
+        /* if it's a string eval or a synthetic filename from CODE ref in @INC,
+         * or the command line -e '...code...'
          * then think about writing out the source code */
-        if (found->eval_fid || (found->key_len > 10 && strnEQ(found->key, "/loader/0x", 10))) {
+        if (found->eval_fid
+        || (found->key_len > 10 && strnEQ(found->key, "/loader/0x", 10))
+        || (found->key_len == 1 && strnEQ(found->key, "-",  1))
+        || (found->key_len == 2 && strnEQ(found->key, "-e", 2))
+        ) {
             src_av = GvAV(gv_fetchfile(found->key));
-            if (!src_av && trace_level >= 4)
+            if (!src_av && trace_level >= 3)
                 /* source lines are only saved if PERLDB_LINE is true */
                 warn("No source available for fid %d%s\n",
                     found->id, use_db_sub ? "" : ", set use_db_sub=1 option");
         }
 
-        if (trace_level) {
+        if (trace_level >= 2) {
             /* including last_executed_fid can be handy for tracking down how
              * a file got loaded */
             warn("New fid %2u (after %2u:%-4u) %x e%u:%u %.*s %s%s\n",
@@ -1153,17 +1188,17 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
         if (src_av) {
             I32 lines = av_len(src_av);
             int line;
+            if (trace_level >= 4)
+                warn("fid %d has %ld src lines", found->id, (long)lines+1);
             for (line = 1; line <= lines; ++line) { /* lines start at 1 */
                 SV **svp = av_fetch(src_av, line, 0);
                 STRLEN len = 0;
                 char *src = (svp) ? SvPV(*svp, len) : "";
-                if (!*src)  /* skip empty lines */
-                    continue;
                 /* outputting the tag and fid for each (non empty) line
                  * is a little inefficient, but not enough to worry about */
                 output_tag_int(NYTP_TAG_SRC_LINE, found->id);
                 output_int(line);
-                output_str(src, len);    /* includes newline */
+                output_str(src, (I32)len);    /* includes newline */
                 if (trace_level >= 5)
                     warn("fid %d src line %d: %s", found->id, line, src);
             }
@@ -1182,7 +1217,7 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
 /**
  * Output an integer in bytes, optionally preceded by a tag. Use the special tag
  * NYTP_TAG_NO_TAG to suppress the tag output. A wrapper macro output_int(i)
- * does tHis for you.
+ * does this for you.
  * "In bytes" means output the number in binary, using the least number of bytes
  * possible.  All numbers are positive. Use sign slot as a marker
  */
@@ -1225,6 +1260,17 @@ output_tag_int(unsigned char tag, unsigned int i)
 }
 
 
+static UV
+output_uv_from_av(pTHX_ AV *av, int idx, UV default_uv)
+{
+    SV **svp = av_fetch(av, idx, 0);
+    UV uv = (!svp || !SvOK(*svp)) ? default_uv : SvUV(*svp);
+    output_int( uv );
+    return uv;
+}
+        
+
+
 /**
  * Output a double precision float via a simple binary write of the memory.
  * (Minor portbility issues are seen as less important than speed and space.)
@@ -1235,6 +1281,16 @@ output_nv(NV nv)
     NYTP_write(out, (unsigned char *)&nv, sizeof(NV));
 }
 
+
+static NV
+output_nv_from_av(pTHX_ AV *av, int idx, NV default_nv)
+{
+    SV **svp = av_fetch(av, idx, 0);
+    NV nv = (!svp || !SvOK(*svp)) ? default_nv : SvNV(*svp);
+    output_nv( nv );
+    return nv;
+}
+        
 
 static const char* block_type[] =
 {
@@ -1319,7 +1375,7 @@ start_cop_of_context(pTHX_ PERL_CONTEXT *cx)
     }
     /* find next cop from OP */
     o = start_op;
-    while ( o && (type = (o->op_type) ? o->op_type : o->op_targ) ) {
+    while ( o && (type = (o->op_type) ? o->op_type : (int)o->op_targ) ) {
         if (type == OP_NEXTSTATE || type == OP_SETSTATE || type == OP_DBSTATE) {
             if (trace_level >= trace)
                 warn("\tstart_cop_of_context %s is %s line %d of %s\n",
@@ -1507,6 +1563,7 @@ closest_cop(pTHX_ const COP *cop, const OP *o)
 static void
 DB_stmt(pTHX_ OP *op)
 {
+    int saved_errno = errno;
     char *file;
     unsigned int elapsed;
     unsigned int overflow;
@@ -1525,16 +1582,16 @@ DB_stmt(pTHX_ OP *op)
     if (overflow)                                 /* XXX later output overflow to file */
         warn("profile time overflow of %d seconds discarded", overflow);
 
-    if (!out)
+    if (!out || !is_profiling || !profile_stmts) {
+        SETERRNO(saved_errno, 0);
         return;
+    }
 
-    if (!is_profiling)
-        return;
+    reinit_if_forked(aTHX);
 
     if (last_executed_fid) {
-        reinit_if_forked(aTHX);
 
-        output_tag_int(((profile_blocks)
+        output_tag_int((unsigned char)((profile_blocks)
 			? NYTP_TAG_TIME_BLOCK : NYTP_TAG_TIME_LINE), elapsed);
         output_int(last_executed_fid);
         output_int(last_executed_line);
@@ -1542,7 +1599,7 @@ DB_stmt(pTHX_ OP *op)
             output_int(last_block_line);
             output_int(last_sub_line);
         }
-        if (trace_level >= 3)
+        if (trace_level >= 4)
             warn("Wrote %d:%-4d %2u ticks (%u, %u)\n", last_executed_fid,
                 last_executed_line, elapsed, last_block_line, last_sub_line);
     }
@@ -1601,15 +1658,18 @@ DB_stmt(pTHX_ OP *op)
     /* measure time we've spent measuring so we can discount it */
     get_ticks_between(end_time, start_time, elapsed, overflow);
     cumulative_overhead_ticks += elapsed;
+
+    SETERRNO(saved_errno, 0);
 }
 
 
 static void
 DB_leave(pTHX_ OP *op)
 {
+    int saved_errno = errno;
     int prev_last_executed_fid  = last_executed_fid;
     int prev_last_executed_line = last_executed_line;
-    const char tag = NYTP_TAG_DISCOUNT;
+    const unsigned char tag = NYTP_TAG_DISCOUNT;
 
     /* Called _after_ ops that indicate we've completed a statement
      * and are returning into the middle of some outer statement.
@@ -1619,7 +1679,7 @@ DB_leave(pTHX_ OP *op)
      * PL_curcop has already been updated.
      */
 
-    if (!is_profiling || !out)
+    if (!is_profiling || !out || !profile_stmts)
         return;
 
     /* measure and output end time of previous statement
@@ -1642,6 +1702,7 @@ DB_leave(pTHX_ OP *op)
             (op) ? "" : ", LEAVING PERL"
         );
     }
+    SETERRNO(saved_errno, 0);
 }
 
 
@@ -1697,8 +1758,16 @@ static void
 open_output_file(pTHX_ char *filename)
 {
     char filename_buf[MAXPATHLEN];
+    /* 'x' is a GNU C lib extension for O_EXCL which gives us a little
+     * extra protection, but it isn't POSIX compliant */
+    char *mode = "wbx";
+    /* most systems that don't support it will silently ignore it
+     * but for some we need to remove it to avoid an error */
+#ifdef WIN32
+    mode = "wb";
+#endif
 
-    if (profile_opts & NYTP_OPTf_ADDPID
+    if ((profile_opts & NYTP_OPTf_ADDPID)
     || out /* already opened so assume forking */
     ) {  
         sprintf(filename_buf, "%s.%d", filename, getpid());
@@ -1708,12 +1777,13 @@ open_output_file(pTHX_ char *filename)
 
     /* some protection against multiple processes writing to the same file */
     unlink(filename);   /* throw away any previous file */
-    out = NYTP_open(filename, "wbx");
+
+    out = NYTP_open(filename, mode);
     if (!out) {
         int fopen_errno = errno;
         char *hint = "";
         if (fopen_errno==EEXIST && !(profile_opts & NYTP_OPTf_ADDPID))
-            hint = " (enable addpid mode to protect against concurrent writes)";
+            hint = " (enable addpid option to protect against concurrent writes)";
         disable_profile(aTHX);
         croak("Failed to open output '%s': %s%s", filename, strerror(fopen_errno), hint);
     }
@@ -1732,9 +1802,11 @@ reinit_if_forked(pTHX)
     /* we're now the child process */
     if (trace_level >= 1)
         warn("New pid %d (was %d)\n", getpid(), last_pid);
+
     /* reset state */
     last_pid = getpid();
     last_executed_fileptr = NULL;
+    last_executed_fid = 0; /* don't count the fork in the child */
     if (sub_callers_hv)
         hv_clear(sub_callers_hv);
 
@@ -1754,12 +1826,37 @@ reinit_if_forked(pTHX)
  * Sub caller and inclusive time tracking
  ******************************************/
 
+#define NYTP_SCi_CALL_COUNT  0   /* count of calls to sub */    
+#define NYTP_SCi_INCL_RTIME  1   /* inclusive real time in sub */    
+#define NYTP_SCi_EXCL_RTIME  2   /* exclusive real time in sub */    
+#define NYTP_SCi_INCL_UTIME  3   /* incl user cpu time in sub */
+#define NYTP_SCi_INCL_STIME  4   /* incl sys  cpu time in sub */
+#define NYTP_SCi_RECI_RTIME  5   /* recursive incl real time in sub */
+#define NYTP_SCi_REC_DEPTH   6   /* max recursion call depth */
+#define NYTP_SCi_elements    7   /* highest index, plus 1 */
+
+static AV *
+new_sub_call_info_av(pTHX)
+{
+    AV *av = newAV();
+    av_store(av, NYTP_SCi_CALL_COUNT, newSVuv(1));
+    av_store(av, NYTP_SCi_INCL_RTIME, newSVnv(0.0));
+    av_store(av, NYTP_SCi_EXCL_RTIME, newSVnv(0.0));
+    av_store(av, NYTP_SCi_INCL_UTIME, newSVnv(0.0));
+    av_store(av, NYTP_SCi_INCL_STIME, newSVnv(0.0));
+    /* NYTP_SCi_RECI_RTIME - allocated when needed */
+    /* NYTP_SCi_REC_DEPTH  - allocated when needed */
+    return av;
+}
+
 typedef struct sub_call_start_st
 {
     time_of_day_t sub_call_time;
     char fid_line[50];
     SV *subname_sv;
     AV *sub_av;
+    CV *sub_cv;
+    int call_depth;
     NV current_overhead_ticks;
     NV current_subr_secs;
 } sub_call_start_t;
@@ -1772,9 +1869,9 @@ incr_sub_inclusive_time(pTHX_ sub_call_start_t *sub_call_start)
     SV *incl_time_sv = *av_fetch(av, 1, 1);
     SV *excl_time_sv = *av_fetch(av, 2, 1);
     /* statement overheads we've accumulated since we entered the sub */
-    int overhead_ticks = (cumulative_overhead_ticks - sub_call_start->current_overhead_ticks);
+    NV overhead_ticks = (int)(cumulative_overhead_ticks - sub_call_start->current_overhead_ticks);
     /* seconds spent in subroutines called by this subroutine */
-    NV called_sub_secs = (cumulative_subr_secs      - sub_call_start->current_subr_secs);
+    NV called_sub_secs = (cumulative_subr_secs - sub_call_start->current_subr_secs);
     NV incl_subr_sec;
     NV excl_subr_sec;
 
@@ -1785,32 +1882,52 @@ incr_sub_inclusive_time(pTHX_ sub_call_start_t *sub_call_start)
     else {
         time_of_day_t sub_end_time;
         unsigned int ticks, overflow;
+
         /* calculate ticks since we entered the sub */
         get_time_of_day(sub_end_time);
         get_ticks_between(sub_call_start->sub_call_time, sub_end_time, ticks, overflow);
-        ticks -= overhead_ticks;                  /* subtract statement measurement overheads */
-        incl_subr_sec = overflow + ticks / (NV)ticks_per_sec;
+        
+        incl_subr_sec = overflow + (ticks / (NV)ticks_per_sec);
+        /* subtract statement measurement overheads */
+        incl_subr_sec -= (overhead_ticks / (NV)ticks_per_sec);
+        /* exclusive = inclusive - time spent in subroutines called by this subroutine */
         excl_subr_sec = incl_subr_sec - called_sub_secs;
     }
 
     if (trace_level >= 3)
-        warn("exited %s after %"NVff"s incl - %"NVff"s = %"NVff"s excl (%"NVff"s @ %s, oh %g-%g=%dt)\n",
+        warn(" <-     %s after %"NVff"s incl - %"NVff"s = %"NVff"s excl (sub %g-%g=%g, oh %g-%g=%gt) d%d @%s\n",
             SvPV_nolen(subname_sv), incl_subr_sec, called_sub_secs, excl_subr_sec,
-            SvNV(incl_time_sv)+incl_subr_sec, sub_call_start->fid_line,
-            cumulative_overhead_ticks, sub_call_start->current_overhead_ticks, overhead_ticks);
+            cumulative_subr_secs, sub_call_start->current_subr_secs, called_sub_secs,
+            cumulative_overhead_ticks, sub_call_start->current_overhead_ticks, overhead_ticks,
+            (int)sub_call_start->call_depth,
+            sub_call_start->fid_line);
 
-    sv_setnv(incl_time_sv, SvNV(incl_time_sv)+incl_subr_sec);
+    /* only count inclusive time for the outer-most calls */
+    if (sub_call_start->call_depth <= 1) {
+        sv_setnv(incl_time_sv, SvNV(incl_time_sv)+incl_subr_sec);
+    }
+    else {
+        /* recursing into an already entered sub */
+        /* measure max depth and accumulate incl time separately */
+        SV *reci_time_sv = *av_fetch(av, NYTP_SCi_RECI_RTIME, 1);
+        SV *max_depth_sv = *av_fetch(av, NYTP_SCi_REC_DEPTH, 1);
+        sv_setnv(reci_time_sv, (SvOK(reci_time_sv)) ? SvNV(reci_time_sv)+incl_subr_sec : incl_subr_sec);
+        /* we track recursion depth here, which is call_depth-1 */
+        if (!SvOK(max_depth_sv) || sub_call_start->call_depth > SvIV(max_depth_sv)-1)
+            sv_setiv(max_depth_sv, sub_call_start->call_depth-1);
+    }
     sv_setnv(excl_time_sv, SvNV(excl_time_sv)+excl_subr_sec);
+
     sv_free(sub_call_start->subname_sv);
 
     cumulative_subr_secs += excl_subr_sec;
 }
 
 
-static void                                              /* wrapper called via scope exit due to save_destructor below */
+static void                                       /* wrapper called via scope exit due to save_destructor below */
 incr_sub_inclusive_time_ix(pTHX_ void *save_ix_void)
 {
-    I32 save_ix = (I32)save_ix_void;
+    I32 save_ix = (I32)PTR2IV(save_ix_void);
     sub_call_start_t *sub_call_start = SSPTR(save_ix, sub_call_start_t *);
     incr_sub_inclusive_time(aTHX_ sub_call_start);
 }
@@ -1906,6 +2023,7 @@ pp_entersub_profiler(pTHX)
     op = run_original_op(OP_ENTERSUB);            /* may croak */
 
     if (profile_subs && is_profiling) {
+        int saved_errno = errno;
 
         /* get line, file, and fid for statement *before* the call */
 
@@ -1922,6 +2040,7 @@ pp_entersub_profiler(pTHX)
         int fid_line_key_len = my_snprintf(fid_line_key, sizeof(fid_line_key), "%u:%d", fid, line);
         SV *subname_sv = newSV(0);
         SV *sv_tmp;
+        char *stash_name = NULL;
         CV *cv;
         int is_xs;
 
@@ -1950,7 +2069,8 @@ pp_entersub_profiler(pTHX)
              * package, so we dig to find the original package
              */
             GV *gv = CvGV(cv);
-            sv_setpvf(subname_sv, "%s::%s", HvNAME(GvSTASH(gv)), GvNAME(gv));
+            stash_name = HvNAME(GvSTASH(gv));
+            sv_setpvf(subname_sv, "%s::%s", stash_name, GvNAME(gv));
         }
         else if (!SvOK(subname_sv)) {
             /* unnamed CV, e.g. seen in mod_perl. XXX do better? */
@@ -1961,28 +2081,17 @@ pp_entersub_profiler(pTHX)
             }
         }
 
-        if (trace_level >= 3)
-            fprintf(stderr, "fid %d:%d called %s %s (oh %gt, sub %gs)\n", fid, line,
-                SvPV_nolen(subname_sv), (is_xs) ? "xs" : "sub",
-            sub_call_start.current_overhead_ticks,
-            sub_call_start.current_subr_secs);
-
         /* { subname => { "fid:line" => [ count, incl_time ] } } */
         sv_tmp = *hv_fetch(sub_callers_hv, SvPV_nolen(subname_sv),
-            SvCUR(subname_sv), 1);
+            (I32)SvCUR(subname_sv), 1);
 
-        if (!SvROK(sv_tmp)) {   /* autoviv hash ref - is first call */
+        if (!SvROK(sv_tmp)) { /* autoviv hash ref - is first call of this subname from anywhere */
             HV *hv = newHV();
             sv_setsv(sv_tmp, newRV_noinc((SV *)hv));
 
             if (is_xs) { /* create dummy item to hold flag to indicate xs */
-                AV *av = newAV();
+                AV *av = new_sub_call_info_av(aTHX);
                 /* flag to indicate xs */
-                av_store(av, 0, newSVuv(1));
-                av_store(av, 1, newSVnv(0.0));
-                av_store(av, 2, newSVnv(0.0));
-                av_store(av, 3, newSVnv(0.0));
-                av_store(av, 4, newSVnv(0.0));
                 sv_setsv(*hv_fetch(hv, "0:0", 3, 1), newRV_noinc((SV *)av));
 
                 if (cv && SvTYPE(cv) == SVt_PVCV) {
@@ -1992,39 +2101,44 @@ pp_entersub_profiler(pTHX)
                      * The reader can try to associate the xsubs with the
                      * corresonding .pm file using the package part of the subname.
                      */
-                    /* Inject faked xsub file details into PL_DBsub hash. */
-                    SV *sv = *hv_fetch(GvHV(PL_DBsub), SvPV_nolen(subname_sv), SvCUR(subname_sv), 1);
-
-                    if (!SvOK(sv)) {
-                        if (trace_level >= 2)
-                            warn("Adding fake DBsub entry for '%s' xsub\n", SvPV_nolen(subname_sv));
-                        sv_setpv(sv, ":0-0");
-                    }
+                    SV *sv = *hv_fetch(GvHV(PL_DBsub), SvPV_nolen(subname_sv), (I32)SvCUR(subname_sv), 1);
+                    sv_setpv(sv, ":0-0"); /* empty file name */
+                    if (trace_level >= 2)
+                        warn("Adding fake DBsub entry for '%s' xsub\n", SvPV_nolen(subname_sv));
                 }
             }
         }
 
+        /* drill-down to array of sub call information for this fid_line_key */
         sv_tmp = *hv_fetch((HV*)SvRV(sv_tmp), fid_line_key, fid_line_key_len, 1);
         if (!SvROK(sv_tmp)) {                     /* autoviv array ref */
-            AV *av = newAV();
-            av_store(av, 0, newSVuv(1));          /* count of call to sub */
-            /* inclusive time in sub */
-            av_store(av, 1, newSVnv(0.0));
-            /* exclusive time in sub */
-            av_store(av, 2, newSVnv(0.0));
-            /* incl user cpu time in sub */
-            av_store(av, 3, newSVnv(0.0));
-            /* incl sys  cpu time in sub */
-            av_store(av, 4, newSVnv(0.0));
+            AV *av = new_sub_call_info_av(aTHX);
+
             sv_setsv(sv_tmp, newRV_noinc((SV *)av));
+            sub_call_start.sub_av = av;
+
+            if (stash_name) /* note that a sub in this package was called */
+                hv_fetch(pkg_fids_hv, stash_name, (I32)strlen(stash_name), 1);
         }
         else {
-            sv_inc(AvARRAY(SvRV(sv_tmp))[0]);
+            sub_call_start.sub_av = (AV *)SvRV(sv_tmp);
+            sv_inc(AvARRAY(sub_call_start.sub_av)[0]); /* ++call count */
         }
+
+        /* record call_depth, adjust for xs since, in that case, we
+         * have already left the sub, unlike the non-xs case.        */
+        sub_call_start.call_depth = (cv) ? CvDEPTH(cv)+(is_xs?1:0) : 1;
+
+        if (trace_level >= 3)
+            fprintf(stderr, " ->%s %s from %d:%d (d%d, oh %gt, sub %gs)\n",
+                (is_xs) ? "xsub" : " sub", SvPV_nolen(subname_sv), fid, line,
+                sub_call_start.call_depth,
+                sub_call_start.current_overhead_ticks,
+                sub_call_start.current_subr_secs
+            );
 
         if (profile_subs) {
             sub_call_start.subname_sv = subname_sv;
-            sub_call_start.sub_av = (AV *)SvRV(sv_tmp);
             strcpy(sub_call_start.fid_line, fid_line_key);
             if (is_xs) {
                 /* acculumate now time we've just spent in the xs sub */
@@ -2035,12 +2149,13 @@ pp_entersub_profiler(pTHX)
                 I32 save_ix = SSNEWa(sizeof(sub_call_start), MEM_ALIGNBYTES);
                 Copy(&sub_call_start, SSPTR(save_ix, sub_call_start_t *), 1, sub_call_start_t);
                 /* defer acculumating time spent until we leave the sub */
-                save_destructor_x(incr_sub_inclusive_time_ix, (void *)save_ix);
+                save_destructor_x(incr_sub_inclusive_time_ix, INT2PTR(void *, (IV)save_ix));
             }
         }
         else {
             sv_free(subname_sv);
         }
+        SETERRNO(saved_errno, 0);
     }
 
     return op;
@@ -2083,6 +2198,10 @@ static int
 enable_profile(pTHX)
 {
     int prev_is_profiling = is_profiling;
+    if (!out) {
+        warn("enable_profile: NYTProf not active");
+        return 0;
+    }
     if (trace_level)
         warn("NYTProf enable_profile%s", (prev_is_profiling)?" (already enabled)":"");
     is_profiling = 1;
@@ -2113,6 +2232,8 @@ disable_profile(pTHX)
 static void
 finish_profile(pTHX)
 {
+    int saved_errno = errno;
+
     if (trace_level >= 1)
         warn("finish_profile (last_pid %d, getpid %d, overhead %"NVff"s, is_profiling %d)\n",
             last_pid, getpid(), cumulative_overhead_ticks/ticks_per_sec, is_profiling);
@@ -2124,16 +2245,21 @@ finish_profile(pTHX)
     disable_profile(aTHX);
 
     if (out) {
-        write_sub_line_ranges(aTHX_ 0);
+        write_sub_line_ranges(aTHX);
         write_sub_callers(aTHX);
+
         /* mark end of profile data for last_pid pid
          * (which is the pid that relates to the out filehandle)
          */
-        END_OUTPUT_PID(last_pid);
+        output_tag_int(NYTP_TAG_PID_END, last_pid);
+        output_nv(gettimeofday_nv());
+
         if (-1 == NYTP_close(out, 0))
             warn("Error closing profile data file: %s", strerror(errno));
         out = NULL;
     }
+
+    SETERRNO(saved_errno, 0);
 }
 
 
@@ -2169,9 +2295,14 @@ init_profiler(pTHX)
             croak("clock_gettime CLOCK_REALTIME not available (%s), aborting",
                 strerror(errno));
     }
+#else
+    if (profile_clock != -1) {  /* user tried to select different clock */
+        warn("clock %d not available (clock_gettime not supported on this system)\n", profile_clock);
+        profile_clock = -1;
+    }
 #endif
 
-    if (trace_level || profile_zero)
+    if (trace_level)
         warn("NYTProf init pid %d, clock %d%s\n", last_pid, profile_clock,
             profile_zero ? ", zero=1" : "");
 
@@ -2227,6 +2358,10 @@ init_profiler(pTHX)
     /* redirect opcodes for caller tracking */
     if (!sub_callers_hv)
         sub_callers_hv = newHV();
+    if (!pkg_fids_hv)
+        pkg_fids_hv = newHV();
+    if (!sub_xsubs_hv)
+        sub_xsubs_hv = newHV();
     PL_ppaddr[OP_ENTERSUB] = pp_entersub_profiler;
 
     if (!PL_checkav) PL_checkav = newAV();
@@ -2309,47 +2444,109 @@ int count, unsigned int fid)
         sv_setnv(time_sv, time + SvNV(time_sv));
         if (count) {
             SV *sv = *av_fetch(line_av, 1, 1);
-            (count == 1) ? sv_inc(sv) : sv_setiv(sv, time + SvIV(sv));
+            (count == 1) ? sv_inc(sv) : sv_setiv(sv, (IV)time + SvIV(sv));
         }
     }
     return line_av;
 }
 
 
+static SV *
+sub_pkg_filename_sv(pTHX_ char *sub_name)
+{
+    SV **svp;
+    char *colon = strrchr(sub_name, ':'); /* end of package name */
+    if (!colon || colon == sub_name || *--colon != ':')
+        return Nullsv;   /* no :: delimiter */
+    svp = hv_fetch(pkg_fids_hv, sub_name, (I32)(colon-sub_name), 0);
+    if (!svp)
+        return Nullsv;   /* not a package we've profiled sub calls into */
+    return *svp;
+}
+
+
 static void
-write_sub_line_ranges(pTHX_ int fids_only)
+write_sub_line_ranges(pTHX)
 {
     char *sub_name;
     I32 sub_name_len;
     SV *file_lines_sv;
     HV *hv = GvHV(PL_DBsub);
+    unsigned int fid;
 
     if (trace_level >= 2)
         warn("writing sub line ranges\n");
 
+    /* Skim through PL_DBsub hash to build a package to filename hash
+     * by associating the package part of the sub_name in the key
+     * with the filename part of the value.
+     * but only for packages we already know we're interested in
+     */
     hv_iterinit(hv);
     while (NULL != (file_lines_sv = hv_iternextsv(hv, &sub_name, &sub_name_len))) {
+        char *filename = SvPV_nolen(file_lines_sv);
+        char *first = strrchr(filename, ':');
+        STRLEN filename_len = (first) ? first - filename : 0;
+
+        /* get sv for package-of-subname to filename mapping */
+        SV *pkg_filename_sv = sub_pkg_filename_sv(aTHX_ sub_name);
+
+        /* ignore is package is not of interest, or filename is empty (xs) */
+        if (!pkg_filename_sv || !filename_len)
+            continue;
+
+        /* ignore if we've already got a filename for this package XXX should allow multiple */
+        if (SvOK(pkg_filename_sv))
+            continue;
+
+        /* associate the filename with the package */
+        sv_setpvn(pkg_filename_sv, filename, filename_len);
+
+        /* ensure a fid is assigned since we don't allow it below */
+        fid = get_file_id(aTHX_ filename, filename_len, NYTP_FIDf_VIA_SUB);
+
+        if (trace_level >= 3)
+            warn("Associating package of %s with %.*s (fid %d)\n",
+                 sub_name, (int)filename_len, filename, fid );
+    }
+
+    /* Iterate over PL_DBsub writing out fid and source line range of subs.
+     * If filename is missing (i.e., because it's an xsub so has no source file)
+     * then use the filename of another sub in the same package.
+     */
+    while (NULL != (file_lines_sv = hv_iternextsv(hv, &sub_name, &sub_name_len))) {
         /* "filename:first-last" */
-        char *file_lines = SvPV_nolen(file_lines_sv);
-        char *first = strrchr(file_lines, ':');
+        char *filename = SvPV_nolen(file_lines_sv);
+        char *first = strrchr(filename, ':');
         char *last = (first) ? strchr(first, '-') : NULL;
-        unsigned int fid;
+        STRLEN filename_len = first - filename;
         UV first_line, last_line;
 
         if (!first || !last || !grok_number(first+1, last-first-1, &first_line)) {
-            warn("Can't parse %%DB::sub entry for %s '%s'\n", sub_name, file_lines);
+            warn("Can't parse %%DB::sub entry for %s '%s'\n", sub_name, filename);
             continue;
         }
         last_line = atoi(++last);
 
         if (!first_line && !last_line && strstr(sub_name, "::BEGIN"))
-            continue;                             /* no point writing these */
+            continue;                             /* no point writing these XXX? */
 
-        fid = get_file_id(aTHX_ file_lines, first - file_lines, 0);
-        if (!fid)                                 /* no point in writing subs in files we've not profiled */
-            continue;
-        if (fids_only)                            /* caller just wants fids assigned */
-            continue;
+        if (!filename_len) {    /* no filename, so presumably a fake entry for xsub */
+            /* do we know a filename that contains subs in the same package */
+            SV *pkg_filename_sv = sub_pkg_filename_sv(aTHX_ sub_name);
+            if (SvOK(pkg_filename_sv)) {
+                filename = SvPV(pkg_filename_sv, filename_len);
+            if (trace_level >= 2)
+                warn("Sub %s is xsub, we'll associate it with filename %.*s\n", sub_name, (int)filename_len, filename);
+            }
+        }
+
+        fid = get_file_id(aTHX_ filename, filename_len, 0);
+        if (!fid) {
+            if (trace_level >= 4)
+                warn("Sub %s not profiled\n", sub_name);
+            continue; /* no point in writing subs in files we've not profiled */
+        }
 
         if (trace_level >= 2)
             warn("Sub %s fid %u lines %lu..%lu\n",
@@ -2382,27 +2579,32 @@ write_sub_callers(pTHX)
         I32 fid_line_len;
         SV *sv;
 
+        /* iterate over callers to this sub ({ "fid:line" => [ ... ] })  */
         hv_iterinit(fid_lines_hv);
         while (NULL != (sv = hv_iternextsv(fid_lines_hv, &fid_line_string, &fid_line_len))) {
+            NV sc[NYTP_SCi_elements];
             AV *av = (AV *)SvRV(sv);
-            unsigned int count = SvUV(AvARRAY(av)[0]);
-            unsigned int fid = 0;
-            unsigned int line = 0;
+
+            unsigned int fid = 0, line = 0;
             sscanf(fid_line_string, "%u:%u", &fid, &line);
-            if (trace_level >= 3)
-                warn("%s called by %u:%u: count %d (%"NVff"s %"NVff"s %"NVff"s %"NVff"s)\n",
-                    sub_name, fid, line, count,
-                    SvNV(AvARRAY(av)[1]), SvNV(AvARRAY(av)[2]),
-                    SvNV(AvARRAY(av)[3]), SvNV(AvARRAY(av)[4]) );
 
             output_tag_int(NYTP_TAG_SUB_CALLERS, fid);
             output_int(line);
-            output_int(count);
-            output_nv( SvNV(AvARRAY(av)[1]) );
-            output_nv( SvNV(AvARRAY(av)[2]) );
-            output_nv( SvNV(AvARRAY(av)[3]) );
-            output_nv( SvNV(AvARRAY(av)[4]) );
+            sc[NYTP_SCi_CALL_COUNT] = output_uv_from_av(aTHX_ av, NYTP_SCi_CALL_COUNT, 0) * 1.0;
+            sc[NYTP_SCi_INCL_RTIME] = output_nv_from_av(aTHX_ av, NYTP_SCi_INCL_RTIME, 0.0);
+            sc[NYTP_SCi_EXCL_RTIME] = output_nv_from_av(aTHX_ av, NYTP_SCi_EXCL_RTIME, 0.0);
+            sc[NYTP_SCi_INCL_UTIME] = output_nv_from_av(aTHX_ av, NYTP_SCi_INCL_UTIME, 0.0);
+            sc[NYTP_SCi_INCL_STIME] = output_nv_from_av(aTHX_ av, NYTP_SCi_INCL_STIME, 0.0);
+            sc[NYTP_SCi_RECI_RTIME] = output_nv_from_av(aTHX_ av, NYTP_SCi_RECI_RTIME, 0.0);
+            sc[NYTP_SCi_REC_DEPTH]  = output_uv_from_av(aTHX_ av, NYTP_SCi_REC_DEPTH , 0) * 1.0;
             output_str(sub_name, sub_name_len);
+
+            if (trace_level >= 3)
+                warn("%s called by %u:%u: count %"NVff" (i%"NVff"s e%"NVff"s u%"NVff"s s%"NVff"s, d%"NVff" ri%"NVff"s)\n",
+                    sub_name, fid, line, sc[NYTP_SCi_CALL_COUNT],
+                    sc[NYTP_SCi_INCL_RTIME], sc[NYTP_SCi_EXCL_RTIME],
+                    sc[NYTP_SCi_INCL_UTIME], sc[NYTP_SCi_INCL_STIME],
+                    sc[NYTP_SCi_REC_DEPTH], sc[NYTP_SCi_RECI_RTIME]);
         }
     }
 }
@@ -2497,6 +2699,15 @@ lookup_subinfo_av(pTHX_ SV *subname_sv, HV *sub_subinfo_hv)
 }
 
 
+static void
+store_attrib_sv(pTHX_ HV *attr_hv, char *text, SV *value_sv)
+{
+    (void)hv_store(attr_hv, text, (I32)strlen(text), value_sv, 0);
+    if (trace_level >= 1)
+        warn(": %s = '%s'\n", text, SvPV_nolen(value_sv));
+}
+
+
 /**
  * Process a profile output file and return the results in a hash like
  * { fid_fileinfo  => [ [file, other...info ], ... ], # index by [fid]
@@ -2510,24 +2721,25 @@ lookup_subinfo_av(pTHX_ SV *subname_sv, HV *sub_subinfo_hv)
  * data for each line of the string eval.
  */
 static HV*
-load_profile_data_from_stream()
+load_profile_data_from_stream(SV *cb)
 {
     dTHX;
+    dSP;
     int file_major, file_minor;
 
     unsigned long input_chunk_seqn = 0L;
     unsigned int last_file_num = 0;
     unsigned int last_line_num = 0;
     int statement_discount = 0;
-    NV total_stmt_seconds = 0.0;
-    int total_stmt_measures = 0;
-    int total_stmt_discounts = 0;
+    NV total_stmts_duration = 0.0;
+    int total_stmts_measured = 0;
+    int total_stmts_discounted = 0;
     HV *profile_hv;
     HV* profile_modes = newHV();
     HV *live_pids_hv = newHV();
     HV *attr_hv = newHV();
     AV* fid_fileinfo_av = newAV();
-    AV* fid_filecontents_av = newAV();
+    AV* fid_srclines_av = newAV();
     AV* fid_line_time_av = newAV();
     AV* fid_block_time_av = NULL;
     AV* fid_sub_time_av = NULL;
@@ -2535,16 +2747,59 @@ load_profile_data_from_stream()
     HV* sub_callers_hv = newHV();
     SV *tmp_str_sv = newSVpvn("",0);
 
+    /* these times don't reflect profile_enable & profile_disable calls */
+    NV profiler_start_time = 0.0;
+    NV profiler_end_time = 0.0;
+    NV profiler_duration = 0.0;
+
+    /* callback support */
+    int i;
+    SV *input_chunk_seqn_sv = NULL;
+    SV *cb_DISCOUNT_tag = NULL;
+    SV *cb_TIME_BLOCK_tag = NULL;
+    SV *cb_TIME_LINE_tag = NULL;
+    SV *cb_args[12];  /* must be large enough for the largest callback argument list */
+
     av_extend(fid_fileinfo_av, 64);               /* grow it up front. */
-    av_extend(fid_filecontents_av, 64);
+    av_extend(fid_srclines_av, 64);
     av_extend(fid_line_time_av, 64);
 
-    if (2 != NYTP_scanf(in, "NYTProf %d %d\n", &file_major, &file_minor)) {
+    if (FILE_STATE(in) != NYTP_FILE_STDIO) {
+	compressed_io_croak(in, "load_profile_data_from_stream");
+    }
+    if (2 != fscanf(in->file, "NYTProf %d %d\n", &file_major, &file_minor)) {
         croak("Profile format error while parsing header");
     }
     if (file_major != 2)
         croak("Profile format version %d.%d not supported by %s %s",
             file_major, file_minor, __FILE__, XS_VERSION);
+
+    if (cb) {
+        input_chunk_seqn_sv = save_scalar(gv_fetchpv(".", GV_ADD, SVt_IV));
+	sv_setuv(input_chunk_seqn_sv, input_chunk_seqn);
+
+	/* these tags are frequent enough that we reuse the same SV in all calls */
+	cb_DISCOUNT_tag = sv_2mortal(newSVpvs("DISCOUNT"));
+	cb_TIME_BLOCK_tag = sv_2mortal(newSVpvs("TIME_BLOCK"));
+	cb_TIME_LINE_tag = sv_2mortal(newSVpvs("TIME_LINE"));
+	SvREADONLY_on(cb_DISCOUNT_tag);
+	SvREADONLY_on(cb_TIME_BLOCK_tag);
+	SvREADONLY_on(cb_TIME_LINE_tag);
+
+	for (i = 0; i < C_ARRAY_LENGTH(cb_args); i++)
+	    cb_args[i] = sv_newmortal();
+
+
+        PUSHMARK(SP);
+
+	i = 0;
+	sv_setpvs(cb_args[i], "VERSION");  XPUSHs(cb_args[i++]);
+	sv_setiv(cb_args[i], file_major);  XPUSHs(cb_args[i++]);
+	sv_setiv(cb_args[i], file_minor);  XPUSHs(cb_args[i++]);
+
+	PUTBACK;
+	call_sv(cb, G_DISCARD);
+    }
 
     while (1) {
 	/* Loop "forever" until EOF. We can only check the EOF flag *after* we
@@ -2559,16 +2814,28 @@ load_profile_data_from_stream()
 	}
 
         input_chunk_seqn++;
+	if (cb) {
+	    sv_setuv(input_chunk_seqn_sv, input_chunk_seqn);
+	}
+
         if (trace_level >= 6)
             warn("Chunk %lu token is %d ('%c') at %ld%s\n", input_chunk_seqn, c, c, NYTP_tell(in)-1, NYTP_type_of_offset(in));
 
         switch (c) {
             case NYTP_TAG_DISCOUNT:
             {
+		if (cb) {
+		    PUSHMARK(SP);
+		    XPUSHs(cb_DISCOUNT_tag);
+		    PUTBACK;
+		    call_sv(cb, G_DISCARD);
+		    break;
+		}
+
                 if (statement_discount)
                     warn("multiple statement discount after %u:%d\n", last_file_num, last_line_num);
                 ++statement_discount;
-                ++total_stmt_discounts;
+                ++total_stmts_discounted;
                 break;
             }
 
@@ -2584,6 +2851,28 @@ load_profile_data_from_stream()
                 unsigned int file_num = read_int();
                 unsigned int line_num = read_int();
 
+		if (cb) {
+		    PUSHMARK(SP);
+
+		    XPUSHs(c == NYTP_TAG_TIME_BLOCK ? cb_TIME_BLOCK_tag : cb_TIME_LINE_tag);
+
+		    i = 0;
+		    sv_setiv(cb_args[i], eval_file_num);  XPUSHs(cb_args[i++]);
+		    sv_setiv(cb_args[i], eval_line_num);  XPUSHs(cb_args[i++]);
+		    sv_setiv(cb_args[i], ticks);          XPUSHs(cb_args[i++]);
+		    sv_setiv(cb_args[i], file_num);       XPUSHs(cb_args[i++]);
+		    sv_setiv(cb_args[i], line_num);       XPUSHs(cb_args[i++]);
+
+		    if (c == NYTP_TAG_TIME_BLOCK) {
+			sv_setiv(cb_args[i], read_int()); XPUSHs(cb_args[i++]); /* block_line_num */
+			sv_setiv(cb_args[i], read_int()); XPUSHs(cb_args[i++]); /* sub_line_num */
+		    }
+
+		    PUTBACK;
+		    call_sv(cb, G_DISCARD);
+		    break;
+		}
+
                 seconds  = (NV)ticks / ticks_per_sec;
 
                 fid_info_rvav = *av_fetch(fid_fileinfo_av, file_num, 1);
@@ -2596,8 +2885,8 @@ load_profile_data_from_stream()
                 }
                 else {
                     AV *fid_av = (AV *)SvRV(fid_info_rvav);
-                    eval_file_num = SvUV(*av_fetch(fid_av,1,1));
-                    eval_line_num = SvUV(*av_fetch(fid_av,2,1));
+                    eval_file_num = (unsigned int)SvUV(*av_fetch(fid_av,1,1));
+                    eval_line_num = (unsigned int)SvUV(*av_fetch(fid_av,2,1));
                 }
 
                 if (eval_file_num) {              /* fid is an eval */
@@ -2618,7 +2907,7 @@ load_profile_data_from_stream()
                     1-statement_discount
                 );
 
-                if (c == '*') {
+                if (c == NYTP_TAG_TIME_BLOCK) {
                     unsigned int block_line_num = read_int();
                     unsigned int sub_line_num   = read_int();
 
@@ -2640,8 +2929,8 @@ load_profile_data_from_stream()
                         warn("\tblock %u, sub %u\n", block_line_num, sub_line_num);
                 }
 
-                total_stmt_measures++;
-                total_stmt_seconds += seconds;
+                total_stmts_measured++;
+                total_stmts_duration += seconds;
                 statement_discount = 0;
                 last_file_num = file_num;
                 break;
@@ -2659,7 +2948,28 @@ load_profile_data_from_stream()
                 unsigned int file_mtime    = read_int();
 
                 filename_sv = read_str(aTHX_ NULL);
-                if (trace_level) {
+
+		if (cb) {
+		    PUSHMARK(SP);
+
+		    i = 0;
+		    sv_setpvs(cb_args[i], "NEW_FID");    XPUSHs(cb_args[i++]);
+		    sv_setiv(cb_args[i], file_num);      XPUSHs(cb_args[i++]);
+		    sv_setiv(cb_args[i], eval_file_num); XPUSHs(cb_args[i++]);
+		    sv_setiv(cb_args[i], eval_line_num); XPUSHs(cb_args[i++]);
+		    sv_setiv(cb_args[i], fid_flags);     XPUSHs(cb_args[i++]);
+		    sv_setiv(cb_args[i], file_size);     XPUSHs(cb_args[i++]);
+		    sv_setiv(cb_args[i], file_mtime);    XPUSHs(cb_args[i++]);
+		    assert(i <= C_ARRAY_LENGTH(cb_args));
+
+		    XPUSHs(sv_2mortal(filename_sv));
+
+		    PUTBACK;
+		    call_sv(cb, G_DISCARD);
+		    break;
+		}
+
+                if (trace_level >= 2) {
                     warn("Fid %2u is %s (eval %u:%u) 0x%x sz%u mt%u\n",
                         file_num, SvPV_nolen(filename_sv), eval_file_num, eval_line_num,
                         fid_flags, file_size, file_mtime);
@@ -2697,13 +3007,28 @@ load_profile_data_from_stream()
                 SV *src = read_str(aTHX_ NULL);
                 AV *file_av;
 
+		if (cb) {
+		    PUSHMARK(SP);
+
+		    i = 0;
+		    sv_setpvs(cb_args[i], "SRC_LINE");  XPUSHs(cb_args[i++]);
+		    sv_setuv(cb_args[i], file_num);     XPUSHs(cb_args[i++]);
+		    sv_setuv(cb_args[i], line_num);     XPUSHs(cb_args[i++]);
+
+		    XPUSHs(sv_2mortal(src));
+
+		    PUTBACK;
+		    call_sv(cb, G_DISCARD);
+		    break;
+		}
+
                 /* first line in the file seen */
-                if (!av_exists(fid_filecontents_av, file_num)) {
+                if (!av_exists(fid_srclines_av, file_num)) {
                     file_av = newAV();
-                    av_store(fid_filecontents_av, file_num, newRV_noinc((SV*)file_av));
+                    av_store(fid_srclines_av, file_num, newRV_noinc((SV*)file_av));
                 }
                 else {
-                    file_av = (AV *)SvRV(*av_fetch(fid_filecontents_av, file_num, 1));
+                    file_av = (AV *)SvRV(*av_fetch(fid_srclines_av, file_num, 1));
                 }
 
                 av_store(file_av, line_num, src);
@@ -2721,6 +3046,22 @@ load_profile_data_from_stream()
                 unsigned int first_line = read_int();
                 unsigned int last_line  = read_int();
                 SV *subname_sv = read_str(aTHX_ tmp_str_sv);
+
+		if (cb) {
+		    PUSHMARK(SP);
+
+		    i = 0;
+		    sv_setpvs(cb_args[i], "SUB_LINE_RANGE"); XPUSHs(cb_args[i++]);
+		    sv_setuv(cb_args[i], fid);               XPUSHs(cb_args[i++]);
+		    sv_setuv(cb_args[i], first_line);        XPUSHs(cb_args[i++]);
+		    sv_setuv(cb_args[i], last_line);         XPUSHs(cb_args[i++]);
+		    sv_setsv(cb_args[i], subname_sv);        XPUSHs(cb_args[i++]);
+
+		    PUTBACK;
+		    call_sv(cb, G_DISCARD);
+		    break;
+		}
+
                 if (trace_level >= 2)
                     warn("Sub %s fid %u lines %u..%u\n",
                         SvPV_nolen(subname_sv), fid, first_line, last_line);
@@ -2728,8 +3069,13 @@ load_profile_data_from_stream()
                 sv_setuv(*av_fetch(av, 0, 1), fid);
                 sv_setuv(*av_fetch(av, 1, 1), first_line);
                 sv_setuv(*av_fetch(av, 2, 1), last_line);
-                /* [3] used for call count - updated by sub caller info below */
-                /* [4] used for incl_time - updated by sub caller info below */
+                sv_setuv(*av_fetch(av, 3, 1),   0); /* cal count */
+                sv_setnv(*av_fetch(av, 4, 1), 0.0); /* incl_time */
+                sv_setnv(*av_fetch(av, 5, 1), 0.0); /* excl_time */
+                sv_setsv(*av_fetch(av, 6, 1), subname_sv);
+                sv_setsv(*av_fetch(av, 6, 1), &PL_sv_undef); /* ref to profile */
+                sv_setuv(*av_fetch(av, 8, 1),   0); /* rec_depth */
+                sv_setnv(*av_fetch(av, 9, 1), 0.0); /* reci_time */
                 break;
             }
 
@@ -2745,13 +3091,34 @@ load_profile_data_from_stream()
                 unsigned int line  = read_int();
                 unsigned int count = read_int();
                 NV incl_time       = read_nv();
-                NV excl_time       = 0.0;
-                NV ucpu_time       = 0.0;
-                NV scpu_time       = 0.0;
-                excl_time        = read_nv();
-                ucpu_time        = read_nv();
-                scpu_time        = read_nv();
+                NV excl_time       = read_nv();
+                NV ucpu_time       = read_nv();
+                NV scpu_time       = read_nv();
+                NV reci_time       = (file_minor >= 1) ? read_nv()  : 0;
+                UV rec_depth       = (file_minor >= 1) ? read_int() : 0;
                 subname_sv = read_str(aTHX_ tmp_str_sv);
+
+		if (cb) {
+		    PUSHMARK(SP);
+
+		    i = 0;
+		    sv_setpvs(cb_args[i], "SUB_CALLERS"); XPUSHs(cb_args[i++]);
+		    sv_setuv(cb_args[i], fid);            XPUSHs(cb_args[i++]);
+		    sv_setuv(cb_args[i], line);           XPUSHs(cb_args[i++]);
+		    sv_setuv(cb_args[i], count);          XPUSHs(cb_args[i++]);
+		    sv_setnv(cb_args[i], incl_time);      XPUSHs(cb_args[i++]);
+		    sv_setnv(cb_args[i], excl_time);      XPUSHs(cb_args[i++]);
+		    sv_setnv(cb_args[i], ucpu_time);      XPUSHs(cb_args[i++]);
+		    sv_setnv(cb_args[i], scpu_time);      XPUSHs(cb_args[i++]);
+		    sv_setnv(cb_args[i], reci_time);      XPUSHs(cb_args[i++]);
+		    sv_setiv(cb_args[i], rec_depth);      XPUSHs(cb_args[i++]);
+		    sv_setsv(cb_args[i], subname_sv);     XPUSHs(cb_args[i++]);
+		    assert(i <= C_ARRAY_LENGTH(cb_args));
+
+		    PUTBACK;
+		    call_sv(cb, G_DISCARD);
+		    break;
+		}
 
                 if (trace_level >= 3)
                     warn("Sub %s called by fid %u line %u: count %d, incl %f, excl %f, ucpu %f scpu %f\n",
@@ -2776,11 +3143,13 @@ load_profile_data_from_stream()
                     if (!SvROK(sv))               /* autoviv */
                         sv_setsv(sv, newRV_noinc((SV*)newAV()));
                     sv = SvRV(sv);
-                    sv_setuv(*av_fetch((AV *)sv, 0, 1), count);
-                    sv_setnv(*av_fetch((AV *)sv, 1, 1), incl_time);
-                    sv_setnv(*av_fetch((AV *)sv, 2, 1), excl_time);
-                    sv_setnv(*av_fetch((AV *)sv, 3, 1), ucpu_time);
-                    sv_setnv(*av_fetch((AV *)sv, 4, 1), scpu_time);
+                    sv_setuv(*av_fetch((AV *)sv, NYTP_SCi_CALL_COUNT, 1), count);
+                    sv_setnv(*av_fetch((AV *)sv, NYTP_SCi_INCL_RTIME, 1), incl_time);
+                    sv_setnv(*av_fetch((AV *)sv, NYTP_SCi_EXCL_RTIME, 1), excl_time);
+                    sv_setnv(*av_fetch((AV *)sv, NYTP_SCi_INCL_UTIME, 1), ucpu_time);
+                    sv_setnv(*av_fetch((AV *)sv, NYTP_SCi_INCL_STIME, 1), scpu_time);
+                    sv_setnv(*av_fetch((AV *)sv, NYTP_SCi_RECI_RTIME, 1), reci_time);
+                    sv_setuv(*av_fetch((AV *)sv, NYTP_SCi_REC_DEPTH,  1), rec_depth);
                 }
                 else {                            /* is meta-data about sub */
                     /* line == 0: is_xs - set line range to 0,0 as marker */
@@ -2798,6 +3167,13 @@ load_profile_data_from_stream()
                 /* sub excl_time */
                 sv = *av_fetch(subinfo_av, 5, 1);
                 sv_setnv(sv, excl_time + (SvOK(sv) ? SvNV(sv) : 0.0));
+                /* sub rec_depth - record the maximum */
+                sv = *av_fetch(subinfo_av, 8, 1);
+                if (!SvOK(sv) || rec_depth > SvUV(sv))
+                    sv_setuv(sv, rec_depth);
+                /* sub reci_time */
+                sv = *av_fetch(subinfo_av, 9, 1);
+                sv_setnv(sv, reci_time + (SvOK(sv) ? SvNV(sv) : 0.0));
 
                 break;
             }
@@ -2808,10 +3184,31 @@ load_profile_data_from_stream()
                 unsigned int pid  = read_int();
                 unsigned int ppid = read_int();
                 int len = my_snprintf(text, sizeof(text), "%d", pid);
+                profiler_start_time = (file_minor >= 1) ? read_nv() : 0;
+
+		if (cb) {
+		    PUSHMARK(SP);
+
+		    i = 0;
+		    sv_setpvs(cb_args[i], "PID_START");   XPUSHs(cb_args[i++]);
+		    sv_setuv(cb_args[i], pid);            XPUSHs(cb_args[i++]);
+		    sv_setuv(cb_args[i], ppid);           XPUSHs(cb_args[i++]);
+		    if (file_minor >= 1) {
+			sv_setnv(cb_args[i], profiler_start_time); XPUSHs(cb_args[i++]);
+		    }
+
+		    PUTBACK;
+		    call_sv(cb, G_DISCARD);
+		    break;
+		}
+
                 (void)hv_store(live_pids_hv, text, len, newSVuv(ppid), 0);
                 if (trace_level)
-                    warn("Start of profile data for pid %s (ppid %d, %"IVdf" pids live)\n",
-                        text, ppid, HvKEYS(live_pids_hv));
+                    warn("Start of profile data for pid %s (ppid %d, %"IVdf" pids live) at %"NVff"\n",
+                        text, ppid, HvKEYS(live_pids_hv), profiler_start_time);
+
+                store_attrib_sv(aTHX_ attr_hv, "profiler_start_time", newSVnv(profiler_start_time));
+
                 break;
             }
 
@@ -2820,12 +3217,34 @@ load_profile_data_from_stream()
                 char text[MAXPATHLEN*2];
                 unsigned int pid = read_int();
                 int len = my_snprintf(text, sizeof(text), "%d", pid);
+                profiler_end_time = (file_minor >= 1) ? read_nv() : 0;
+
+		if (cb) {
+		    PUSHMARK(SP);
+
+		    i = 0;
+		    sv_setpvs(cb_args[i], "PID_END");  XPUSHs(cb_args[i++]);
+		    sv_setuv(cb_args[i], pid);         XPUSHs(cb_args[i++]);
+		    if (file_minor >= 1) {
+			sv_setnv(cb_args[i], profiler_end_time);  XPUSHs(cb_args[i++]);
+		    }
+
+		    PUTBACK;
+		    call_sv(cb, G_DISCARD);
+		    break;
+		}
+
                 if (!hv_delete(live_pids_hv, text, len, 0))
                     warn("Inconsistent pids in profile data (pid %d not introduced)",
                         pid);
                 if (trace_level)
-                    warn("End of profile data for pid %s, %"IVdf" remaining\n", text,
-                        HvKEYS(live_pids_hv));
+                    warn("End of profile data for pid %s (%"IVdf" remaining) at %"NVff"\n", text,
+                        HvKEYS(live_pids_hv), profiler_end_time);
+
+                store_attrib_sv(aTHX_ attr_hv, "profiler_end_time", newSVnv(profiler_end_time));
+                profiler_duration = profiler_end_time - profiler_start_time;
+                store_attrib_sv(aTHX_ attr_hv, "profiler_duration", newSVnv(profiler_duration));
+
                 break;
             }
 
@@ -2845,12 +3264,22 @@ load_profile_data_from_stream()
                 }
                 *value++ = '\0';
                 value_sv = newSVpvn(value, end-value);
-                (void)hv_store(attr_hv, text, strlen(text), value_sv, 0);
-                if (trace_level >= 2)
-                    /* includes \n */
-                    warn(": %s = '%s'\n", text, SvPV_nolen(value_sv));
+
+		if (cb) {
+		    PUSHMARK(SP);
+
+		    i = 0;
+		    sv_setpvs(cb_args[i], "ATTRIBUTE");  XPUSHs(cb_args[i++]);
+		    sv_setpv(cb_args[i], text);          XPUSHs(cb_args[i++]);
+		    sv_setsv(cb_args[i], value_sv);      XPUSHs(cb_args[i++]);
+
+		    PUTBACK;
+		    call_sv(cb, G_DISCARD);
+		}
+
+                store_attrib_sv(aTHX_ attr_hv, text, value_sv);
                 if ('t' == *text && strEQ(text, "ticks_per_sec")) {
-                    ticks_per_sec = SvUV(value_sv);
+                    ticks_per_sec = (unsigned int)SvUV(value_sv);
                 }
                 else if ('n' == *text && strEQ(text, "nv_size")) {
                     if (sizeof(NV) != atoi(value))
@@ -2867,23 +3296,63 @@ load_profile_data_from_stream()
                 if (NULL == NYTP_gets(in, text, sizeof(text)))
                     /* probably EOF */
                     croak("Profile format error reading comment");
-                if (trace_level >= 2)
+
+		if (cb) {
+		    PUSHMARK(SP);
+
+		    i = 0;
+		    sv_setpvs(cb_args[i], "COMMENT"); XPUSHs(cb_args[i++]);
+		    sv_setpv(cb_args[i], text);       XPUSHs(cb_args[i++]);
+
+		    PUTBACK;
+		    call_sv(cb, G_DISCARD);
+		    break;
+		}
+
+                if (trace_level >= 1)
                     warn("# %s", text);           /* includes \n */
                 break;
             }
 
-#ifdef HAS_ZLIB
 	    case NYTP_TAG_START_DEFLATE:
 	    {
+#ifdef HAS_ZLIB
+	        if (cb) {
+		    PUSHMARK(SP);
+
+		    i = 0;
+		    sv_setpvs(cb_args[i], "START_DEFLATE"); XPUSHs(cb_args[i++]);
+
+		    PUTBACK;
+		    call_sv(cb, G_DISCARD);
+		}
 		NYTP_start_inflate(in);
+#else
+                croak("File uses compression but compression is not supported by this build of NYTProf");
+#endif
 		break;
 	    }
-#endif
 
             default:
                 croak("File format error: token %d ('%c'), chunk %lu, pos %ld%s",
 		      c, c, input_chunk_seqn, NYTP_tell(in)-1, NYTP_type_of_offset(in));
         }
+    }
+
+    if (cb) {
+	SvREFCNT_dec(profile_modes);
+	SvREFCNT_dec(live_pids_hv);
+	SvREFCNT_dec(attr_hv);
+	SvREFCNT_dec(fid_fileinfo_av);
+	SvREFCNT_dec(fid_srclines_av);
+	SvREFCNT_dec(fid_line_time_av);
+	SvREFCNT_dec(fid_block_time_av);
+	SvREFCNT_dec(fid_sub_time_av);
+	SvREFCNT_dec(sub_subinfo_hv);
+	SvREFCNT_dec(sub_callers_hv);
+	SvREFCNT_dec(tmp_str_sv);
+
+	return newHV(); /* dummy */
     }
 
     if (HvKEYS(live_pids_hv)) {
@@ -2893,14 +3362,32 @@ load_profile_data_from_stream()
     sv_free((SV*)live_pids_hv);
     sv_free(tmp_str_sv);
 
-    if (trace_level >= 1)
-        warn("Statement totals: measured %d, discounted %d, time %"NVff"s\n",
-            total_stmt_measures, total_stmt_discounts, total_stmt_seconds);
+    store_attrib_sv(aTHX_ attr_hv, "total_stmts_measured",   newSVnv(total_stmts_measured));
+    store_attrib_sv(aTHX_ attr_hv, "total_stmts_discounted", newSVnv(total_stmts_discounted));
+    store_attrib_sv(aTHX_ attr_hv, "total_stmts_duration",   newSVnv(total_stmts_duration));
+
+    if (1) {
+        int show_summary_stats = (trace_level >= 1);
+
+        if (profiler_end_time && total_stmts_duration > profiler_duration * 1.1) {
+            warn("The sum of the statement timings is %.1f%% of the total time profiling."
+                 " (Values slightly over 100%% can be due simply to cumulative timing errors,"
+                 " whereas larger values can indicate a problem with the clock used.)\n",
+                total_stmts_duration / profiler_duration * 100);
+            show_summary_stats = 1;
+        }
+
+        if (show_summary_stats)
+            warn("Summary: statements profiled %d (%d-%d), sum of time %"NVff"s, profile spanned %"NVff"s\n",
+                total_stmts_measured-total_stmts_discounted,
+                total_stmts_measured, total_stmts_discounted,
+                total_stmts_duration, profiler_end_time-profiler_start_time);
+    }
 
     profile_hv = newHV();
     (void)hv_stores(profile_hv, "attribute",          newRV_noinc((SV*)attr_hv));
     (void)hv_stores(profile_hv, "fid_fileinfo",       newRV_noinc((SV*)fid_fileinfo_av));
-    (void)hv_stores(profile_hv, "fid_filecontents",   newRV_noinc((SV*)fid_filecontents_av));
+    (void)hv_stores(profile_hv, "fid_srclines",   newRV_noinc((SV*)fid_srclines_av));
     (void)hv_stores(profile_hv, "fid_line_time",      newRV_noinc((SV*)fid_line_time_av));
     (void)hv_stores(profile_modes, "fid_line_time", newSVpvf("line"));
     if (fid_block_time_av) {
@@ -2935,6 +3422,17 @@ constant()
     RETVAL = ix;
     OUTPUT:
     RETVAL
+
+
+MODULE = Devel::NYTProf     PACKAGE = Devel::NYTProf::Test
+
+PROTOTYPES: DISABLE
+
+void
+example_xsub(...)
+    CODE:
+    PERL_UNUSED_VAR(items);
+
 
 MODULE = Devel::NYTProf     PACKAGE = DB
 
@@ -2986,7 +3484,7 @@ _INIT()
     }
     else if (profile_start == NYTP_START_END) {
         SV *enable_profile_sv = (SV *)get_cv("DB::enable_profile", GV_ADDWARN);
-        if (trace_level >= 2)
+        if (trace_level >= 1)
             warn("enable_profile defered until END");
         av_unshift(PL_endav, 1);  /* we want to be first */
         av_store(PL_endav, 0, SvREFCNT_inc(enable_profile_sv));
@@ -3004,8 +3502,9 @@ MODULE = Devel::NYTProf     PACKAGE = Devel::NYTProf::Data
 PROTOTYPES: DISABLE
 
 HV*
-load_profile_data_from_file(file=NULL)
+load_profile_data_from_file(file,cb=NULL)
 char *file;
+SV* cb;
     CODE:
     if (trace_level)
         warn("reading profile data from file %s\n", file);
@@ -3013,7 +3512,7 @@ char *file;
     if (in == NULL) {
         croak("Failed to open input '%s': %s", file, strerror(errno));
     }
-    RETVAL = load_profile_data_from_stream();
+    RETVAL = load_profile_data_from_stream(cb);
     NYTP_close(in, 0);
     OUTPUT:
     RETVAL
