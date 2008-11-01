@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Data.pm 580 2008-10-31 13:54:02Z tim.bunce $
+# $Id: Data.pm 583 2008-11-01 08:06:13Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -50,7 +50,7 @@ use Scalar::Util qw(blessed);
 use Devel::NYTProf::Core;
 use Devel::NYTProf::Util qw(strip_prefix_from_paths get_abs_paths_alternation_regex);
 
-our $VERSION = '2.06';
+our $VERSION = '2.07';
 
 my $trace = (($ENV{NYTPROF}||'') =~ m/\b trace=(\d+) /x) && $1; # XXX a hack
 

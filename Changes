@@ -2,9 +2,9 @@
 
 Devel::NYTProf::Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2008-10-31 14:04:45 +0000 (Fri, 31 Oct 2008) $ $Revision: 581 $)
+(As of $Date: 2008-11-01 08:06:13 +0000 (Sat, 01 Nov 2008) $ $Revision: 583 $)
 
-=head2 Changes in Devel::NYTProf 2.06
+=head2 Changes in Devel::NYTProf 2.07 (svn r583) 1st Nov 2008
 
 Core:
 
