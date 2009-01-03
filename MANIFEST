@@ -17,13 +17,21 @@ demo/exclusive-sub-time.pl
 lib/Devel/NYTProf.pm
 lib/Devel/NYTProf/Apache.pm
 lib/Devel/NYTProf/Core.pm
+lib/Devel/NYTProf/Constants.pm
 lib/Devel/NYTProf/Data.pm
+lib/Devel/NYTProf/FileInfo.pm
 lib/Devel/NYTProf/Reader.pm
 lib/Devel/NYTProf/ReadStream.pm
+lib/Devel/NYTProf/SubInfo.pm
 lib/Devel/NYTProf/Test.pm
 lib/Devel/NYTProf/Util.pm
+lib/Devel/NYTProf/js/asc.png
+lib/Devel/NYTProf/js/bg.png
+lib/Devel/NYTProf/js/desc.png
 lib/Devel/NYTProf/js/jquery.min.js
 lib/Devel/NYTProf/js/jquery.tablesorter.min.js
+lib/Devel/NYTProf/js/style.tablesorter.css
+perftest.pl
 ppport.h
 t/00.load.t
 t/20.runtests.t
@@ -82,6 +90,9 @@ t/test16.x
 t/test20-streval.p
 t/test20-streval.rdt
 t/test20-streval.x
+t/test21-streval3.p
+t/test21-streval3.rdt
+t/test21-streval3.x
 t/test30-fork.0.p
 t/test30-fork.0.rdt
 t/test30-fork.0.x
@@ -98,10 +109,13 @@ t/test50-disable.rdt
 t/test50-disable.x
 t/test60-subname.p
 t/test60-subname.rdt
+t/test61-submerge.p
+t/test61-submerge.rdt
 t/test70-subexcl.p
 t/test80-recurs.p
 t/test80-recurs.rdt
 typemap
+xt/test45-overload.p
 xt/test71-while.p
 xt/test90-stress.p
 META.yml                                 Module meta-data (added by MakeMaker)

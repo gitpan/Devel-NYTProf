@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: Reader.pm 583 2008-11-01 08:06:13Z tim.bunce $
+## $Id: Reader.pm 626 2008-11-28 08:26:45Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Reader;
 
@@ -50,6 +50,8 @@ sub new {
             . "# More information at http://search.cpan.org/dist/Devel-NYTProf/\n"
             . "# Format: time,calls,time/call,code\n",
         datastart => '',
+        mk_report_source_line => undef,
+        mk_report_xsub_line   => undef,
         line      => [
             {},
             {value => 'time',      end => ',', default => '0'},
@@ -73,22 +75,22 @@ sub new {
                 replace => "\$LEVEL"
             },
             {   pattern => '!~DEV_CALLS~!',
-                replace => "\$statistics{calls}->[0]"
+                replace => "\$stats_for_file{calls}->[0]"
             },
             {   pattern => '!~DEV_TIME~!',
-                replace => "\$statistics{time}->[0]"
+                replace => "\$stats_for_file{time}->[0]"
             },
             {   pattern => '!~DEV_TIME/CALL~!',
-                replace => "\$statistics{'time/calls'}"
+                replace => "\$stats_for_file{'time/calls'}"
             },
             {   pattern => '!~MEAN_CALLS~!',
-                replace => "\$statistics{calls}->[1]"
+                replace => "\$stats_for_file{calls}->[1]"
             },
             {   pattern => '!~MEAN_TIME~!',
-                replace => "\$statistics{time}->[1]"
+                replace => "\$stats_for_file{time}->[1]"
             },
             {   pattern => '!~MEAN_TIME/CALLS~!',
-                replace => "\$statistics{'time/calls'}->[1]"
+                replace => "\$stats_for_file{'time/calls'}->[1]"
             },
             {   pattern => '!~TOTAL_CALLS~!',
                 replace => "\$self->{filestats}->{\$filestr}->{'calls'}"
@@ -109,8 +111,6 @@ sub new {
 
     bless($self, $class);
     $self->{profile} = Devel::NYTProf::Data->new({filename => $self->{file}});
-
-    $self->{profile}->make_fid_filenames_relative($opts->{relative_paths});
 
     # a hack for testing/debugging
     exit $ENV{NYTPROF_EXIT_AFTER_LOAD} if defined $ENV{NYTPROF_EXIT_AFTER_LOAD};
@@ -171,25 +171,7 @@ sub _line_array_to_line_hash {
 sub set_param {
     my ($self, $param, $value) = @_;
 
-    if ($param eq 'linestart') {
-        $self->{line}->[0] = $value;
-    }
-    elsif ($param eq 'column1') {
-        $self->{line}->[1] = $value;
-    }
-    elsif ($param eq 'column2') {
-        $self->{line}->[2] = $value;
-    }
-    elsif ($param eq 'column3') {
-        $self->{line}->[3] = $value;
-    }
-    elsif ($param eq 'column4') {
-        $self->{line}->[4] = $value;
-    }
-    elsif ($param eq 'lineend') {
-        $self->{line}->[5] = $value;
-    }
-    elsif (!exists $self->{$param}) {
+    if (!exists $self->{$param}) {
         confess "Attempt to set $param to $value failed: $param is not a valid " . "parameter\n";
     }
     else {
@@ -211,12 +193,6 @@ sub get_param {
 }
 
 ##
-sub add_regexp {
-    my ($self, $pattern, $replace) = @_;
-    push(@{$self->{user_regexp}}, {pattern => $pattern, replace => $replace});
-}
-
-##
 sub file_has_been_modified {
     my $self = shift;
     my $file = shift;
@@ -230,14 +206,13 @@ sub _output_additional {
     my ($self, $fname, $content) = @_;
     open(OUT, '>', "$self->{output_dir}/$fname")
         or confess "Unable to open $self->{output_dir}/$fname for writing; $!\n";
-    print OUT @$content;
+    print OUT $content;
     close OUT;
 }
 
 ##
 sub get_file_stats {
-    my $self = shift;
-    return $self->{filestats};
+    return shift->{filestats};
 }
 
 ##
@@ -309,11 +284,11 @@ sub _generate_report {
         # file might differ from what it looked like before.
         my $tainted = $self->file_has_been_modified($filestr);
 
-        my %totalsAccum;         # holds all line times. used to find median
-        my %totalsByLine;        # holds individual line stats
+        my %stats_accum;         # holds all line times. used to find median
+        my %stats_by_line;        # holds individual line stats
         my $runningTotalTime = 0;  # holds the running total
 
-        # (should equal sum of $totalsAccum)
+        # (should equal sum of $stats_accum)
         my $runningTotalCalls = 0; # holds the running total number of calls.
 
         # note that a file may have no source lines executed, so no keys here
@@ -340,14 +315,14 @@ sub _generate_report {
                 # as that would be inappropriate and misleading
                 $time += $_->[0] for values %$eval_lines;
             }
-            push(@{$totalsAccum{'time'}},      $time);
-            push(@{$totalsAccum{'calls'}},     $a->[1]);
-            push(@{$totalsAccum{'time/call'}}, $time / $a->[1]);
+            push(@{$stats_accum{'time'}},      $time);
+            push(@{$stats_accum{'calls'}},     $a->[1]);
+            push(@{$stats_accum{'time/call'}}, $time / $a->[1]);
 
-            $totalsByLine{$key}->{'time'}  += $time;
-            $totalsByLine{$key}->{'calls'} += $a->[1];
-            $totalsByLine{$key}->{'time/call'} =
-                $totalsByLine{$key}->{'time'} / $totalsByLine{$key}->{'calls'};
+            $stats_by_line{$key}->{'time'}  += $time;
+            $stats_by_line{$key}->{'calls'} += $a->[1];
+            $stats_by_line{$key}->{'time/call'} =
+                $stats_by_line{$key}->{'time'} / $stats_by_line{$key}->{'calls'};
 
             $runningTotalTime  += $time;
             $runningTotalCalls += $a->[1];
@@ -360,10 +335,10 @@ sub _generate_report {
 
         # Use Median Absolute Deviation Formula to get file deviations for each of
         # calls, time and time/call values
-        my %statistics = (
-            'calls'     => calculate_median_absolute_deviation($totalsAccum{'calls'}||[]),
-            'time'      => calculate_median_absolute_deviation($totalsAccum{'time'}||[]),
-            'time/call' => calculate_median_absolute_deviation($totalsAccum{'time/call'}||[]),
+        my %stats_for_file = (
+            'calls'     => calculate_median_absolute_deviation($stats_accum{'calls'}||[]),
+            'time'      => calculate_median_absolute_deviation($stats_accum{'time'}||[]),
+            'time/call' => calculate_median_absolute_deviation($stats_accum{'time/call'}||[]),
         );
 
         my $line_calls_hash = $profile->line_calls_for_file($filestr, 1);
@@ -375,7 +350,6 @@ sub _generate_report {
 
         # localize header and footer for variable replacement
         my $header    = $self->get_param('header',    [$profile, $filestr, $fname, $LEVEL]);
-        my $footer    = $self->get_param('footer',    [$profile, $filestr]);
         my $taintmsg  = $self->get_param('taintmsg',  [$profile, $filestr]);
         my $datastart = $self->get_param('datastart', [$profile, $filestr]);
         my $dataend   = $self->get_param('dataend',   [$profile, $filestr]);
@@ -390,7 +364,6 @@ sub _generate_report {
                 # replace variable content
                 $replace = eval $replace;
                 $header    =~ s/$pattern/$replace/g;
-                $footer    =~ s/$pattern/$replace/g;
                 $taintmsg  =~ s/$pattern/$replace/g;
                 $datastart =~ s/$pattern/$replace/g;
                 $dataend   =~ s/$pattern/$replace/g;
@@ -430,102 +403,44 @@ sub _generate_report {
             $LINE = 0;
         }
 
+        my $line_sub = $self->{mk_report_source_line}
+            or die "mk_report_source_line not set";
+
         while ( my $line = shift @$src_lines ) {
             chomp $line;
-            foreach my $regexp (@{$self->{user_regexp}}) {
-                $line =~ s/$regexp->{pattern}/$regexp->{replace}/g;
-            }
+
             if ($line =~ m/^\# \s* line \s+ (\d+) \b/x) {
                 # XXX we should be smarter about this - patches welcome!
                 warn "Ignoring '$line' directive at line $LINE - profile data for $filestr will be out of sync with source!\n"
                     unless our $line_directive_warn->{$filestr}++; # once per file
             }
+
             my $makes_calls_to = $line_calls_hash->{$LINE}   || {};
             my $subs_defined   = $subs_defined_hash->{$LINE} || [];
+            my $stats_for_line = $stats_by_line{$LINE} || {};
 
-            # begin output
-
-            foreach my $hash (@{$self->{line}}) {
-
-                # If a func reference is provided, it will control output for this column.
-                if (defined(my $func = $hash->{func})) {
-                    my $value = $hash->{value};
-                    if ($value) {
-                        print OUT $func->(
-                            $value, $totalsByLine{$LINE}->{$value},
-                            $statistics{$value}, $LINE, $line, $profile, $subs_defined,
-                            $makes_calls_to, $filestr
-                        );
-                    }
-                    else {
-                        print OUT $func->(
-                            $value, $LINE, $line, $profile, $subs_defined, $makes_calls_to, $filestr
-                        );
-                    }
-                    next;
-                }
-
-                print OUT $hash->{start} if defined $hash->{start};
-                if (defined $hash->{value}) {
-                    if ($hash->{value} eq 'source') {
-                        print OUT $line;    # from source rather than profile db
-                    }
-                    elsif ($hash->{value} eq 'line') {
-                        print OUT $LINE;
-                    }
-                    elsif (exists $data->{$filestr}->{$LINE}) {
-                        printf(OUT "%0."
-                                . $self->{numeric_precision}->{$hash->{value}}
-                                . $FLOAT_FORMAT,
-                            $totalsByLine{$LINE}->{$hash->{value}}
-                        );
-                    }
-                    else {
-                        print OUT $hash->{default};
-                    }
-                }
-                print OUT $hash->{end} if defined $hash->{end};
-            }
-
+            print OUT $line_sub->($LINE, $line, $stats_for_line, \%stats_for_file, $subs_defined, $makes_calls_to, $profile, $filestr);
         }
         continue {
-
             # Increment line number counters
             $LINE++;
         }
 
         # iterate over xsubs 
+        $line_sub = $self->{mk_report_xsub_line}
+            or die "mk_report_xsub_line not set";
         my $subs_defined_in_file = $profile->subs_defined_in_file($filestr, 0);
         foreach my $subname (sort keys %$subs_defined_in_file) {
             my $subinfo = $subs_defined_in_file->{$subname};
             next unless $subinfo->is_xsub;
 
-            $LINE = '';
             my $src = "sub $subname; # xsub\n\t";
-            my $filestr = '';
 
-            foreach my $hash (@{$self->{line}}) {
-
-                my $func = $hash->{func};
-                my $value = $hash->{value};
-                if ($value) {
-                    print OUT $func->(
-                        $subname, undef,
-                        undef, $LINE, $src, $profile,
-                        [ $subinfo ], {}, $filestr
-                    );
-                }
-                else {
-                    print OUT $func->(
-                        $subname, $LINE, $src, $profile, [ $subinfo ], {}, $filestr
-                    );
-                }
-            }
-
+            print OUT $line_sub->($subname, $src, undef, undef, [ $subinfo ], {}, $profile, '');
         }
 
         print OUT $dataend;
-        print OUT $footer;
+        print OUT $self->get_param('footer', [$profile, $filestr]);
         close OUT;
     }
 }
@@ -724,29 +639,6 @@ Basic Parameters:
                    representing the average time per call for a line and 
                    returns the output string for that field
 
-Advanced Parameters:
-
-  Paramter         Description
-  --------------   --------------
-  linestart        Printed at the start of each report line
-  lineend          Printed at the end of each report line
-  column1          |
-  column2          | The four parameters define what to print in each of
-  column3          | the four output fields. See below
-  column4          |
-
- Each of these parameters must be set to a hash reference with any of the
- following key/value pairs:
-
-  Key              Value
-  -------------    -------------
-  start            string printed at the start of the field
-  end              string printed at the end of the field
-  value            identifier for the value that this field will hold
-                     (can be: time, calls, time/calls, source)
-  default          string to be used when there is no value for the field
-                     specified in the 'value' key
-
 Basic Parameters Defaults:
 
   Parameter         Default
@@ -765,17 +657,6 @@ Basic Parameters Defaults:
   callsfunc        undef
   timefunc         undef
   time/callsfunc   undef
-
-Advanced Parameters Defaults:
-
-  Parameter         Default
-  --------------   --------------
-  linestart        {}
-  lineend          { end => "\n" }
-  column1          { value => 'time',      end => ',', default => '0'}
-  column2          { value => 'calls',      end => ',', default => '0'}
-  column3          { value => 'time/call',  end => ',', default => '0'}
-  column4          { value => 'source',    end => '',  default => '' }
 
 =back
 

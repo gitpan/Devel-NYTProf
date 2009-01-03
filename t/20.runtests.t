@@ -1,5 +1,5 @@
 #! /usr/bin/env perl
-# vim: ts=8 sw=2 sts=0 noexpandtab:
+# vim: ts=8 sw=2 sts=0 expandtab:
 ##########################################################
 ## This script is part of the Devel::NYTProf distribution
 ##
@@ -7,7 +7,7 @@
 ## README file and at http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: 20.runtests.t 557 2008-10-27 08:29:56Z tim.bunce $
+## $Id: 20.runtests.t 647 2008-12-09 16:17:52Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -165,10 +165,10 @@ SKIP: {
                 run_command($cmd);
             }
         }
-	elsif ($type =~ /^(?:pl|pm|new|outdir)$/) {
-	    # skip; handy for "test.pl t/test01.*"
-	}
-	else {
+        elsif ($type =~ /^(?:pl|pm|new|outdir)$/) {
+            # skip; handy for "test.pl t/test01.*"
+        }
+        else {
             warn "Unrecognized extension '$type' on test file '$test'\n";
         }
     }
@@ -240,6 +240,7 @@ sub dump_profile_to_file {
     $profile->dump_profile_data(
         {   filehandle => $fh,
             separator  => "\t",
+            skip_stdlib => 1,
         }
     );
     return;
@@ -313,11 +314,11 @@ sub verify_csv_report {
             )
         {
             my $expected = $1;
-            my $percent  = ($t0 / $expected) * 100;    # <100 if faster, >100 if slower
+            my $percent  = int(($t0 / $expected) * 100);    # <100 if faster, >100 if slower
 
             # Test aproximate times
             push @accuracy_errors,
-                "$test line $index: got $t0 expected approx $expected for time ($percent%%)"
+                "$test line $index: got $t0 expected approx $expected for time ($percent%)"
 
                 # if it was faster than expected then it should only be slightly faster
                 if ($percent < 95)
@@ -345,7 +346,7 @@ sub verify_csv_report {
         spit_file("$test.new", join("", @got));
         diff_files($test, "$test.new");
     };
-    is(join("\n", @accuracy_errors), '', "$test has no accuracy errors");
+    is(join("\n", @accuracy_errors), '', "$test times should be reasonable");
 }
 
 

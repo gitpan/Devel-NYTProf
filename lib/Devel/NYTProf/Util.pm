@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Util.pm 583 2008-11-01 08:06:13Z tim.bunce $
+# $Id: Util.pm 646 2008-12-09 16:00:18Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Util;
 
@@ -44,7 +44,9 @@ our $VERSION = '2.07';
 
 our @EXPORT_OK = qw(
     fmt_float
-    fmt_time fmt_incl_excl_time
+    fmt_time
+    fmt_incl_excl_time
+    make_path_strip_editor
     strip_prefix_from_paths
     calculate_median_absolute_deviation
     get_alternation_regex
@@ -73,7 +75,7 @@ sub get_abs_paths_alternation_regex {
 
     # rewrite relative directories to be absolute
     # the logic here should match that in get_file_id()
-    my $abs_path_regex = $^O eq "MSWin32" ? qr,^\w:/, : qr,^/,;
+    my $abs_path_regex = ($^O eq "MSWin32") ? qr,^\w:/, : qr,^/,;
     for (@inc) {
         next if $_ =~ $abs_path_regex;    # already absolute
         $_ =~ s/^\.\///;   # remove a leading './'
@@ -84,20 +86,32 @@ sub get_abs_paths_alternation_regex {
     return get_alternation_regex(\@inc, '/?');
 }
 
-# edit @$paths in-place to remove specified absolute path prefixes
-sub strip_prefix_from_paths {
-    my ($inc_ref, $paths, $anchor, $replacement) = @_;
+
+sub make_path_strip_editor {
+    my ($inc_ref, $anchor, $replacement) = @_;
     $anchor      = '^' if not defined $anchor;
     $replacement = ''  if not defined $replacement;
 
     my @inc = @$inc_ref
         or return;
-    return if not defined $paths;
 
     my $inc_regex = get_abs_paths_alternation_regex(\@inc);
 
-    # anchor at start, capture anchor, soak up any /'s at end
+    # anchor at start, capture anchor
     $inc_regex = qr{($anchor)$inc_regex};
+
+    return sub { $_[0] =~ s{$inc_regex}{$1$replacement} };
+}
+
+
+# edit @$paths in-place to remove specified absolute path prefixes
+sub strip_prefix_from_paths {
+    my ($inc_ref, $paths, $anchor, $replacement) = @_;
+
+    return if not defined $paths;
+
+    my $editor = make_path_strip_editor($inc_ref, $anchor, $replacement)
+        or return;
 
     # strip off prefix using regex, skip any empty/undef paths
     if (UNIVERSAL::isa($paths, 'ARRAY')) {
@@ -106,13 +120,13 @@ sub strip_prefix_from_paths {
                 strip_prefix_from_paths($inc_ref, $path, $anchor, $replacement);
             }
             elsif ($path) {
-                $path =~ s{$inc_regex}{$1$replacement};
+                $editor->($path);
             }
         }
     }
     elsif (UNIVERSAL::isa($paths, 'HASH')) {
         for my $orig (keys %$paths) {
-            (my $new = $orig) =~ s{$inc_regex}{$1}
+            $editor->(my $new = $orig)
                 or next;
             my $value = delete $paths->{$orig};
             warn "Stripping prefix from $orig overwrites existing $new"
@@ -147,16 +161,19 @@ sub fmt_float {
     return $val;
 }
 
+
 sub fmt_time {
     my ($sec, $width) = @_;
     $width = '' unless defined $width;
-    return sprintf "%$width.0f", 0 unless $sec;
-    return sprintf "%$width.0fns", $sec * 1e9                              if $sec < 1e-6;
-    return sprintf "%$width.0f&micro;s", $sec * 1e6                        if $sec < 1e-3;
+    return sprintf "%$width.0fs", 0    unless $sec;
+    return '-'.fmt_time(-$sec, $width) if $sec < 0; # negative value, can happen
+    return sprintf "%$width.0fns",                              $sec * 1e9 if $sec < 1e-6;
+    return sprintf "%$width.0f&micro;s",                        $sec * 1e6 if $sec < 1e-3;
     return sprintf "%$width.*fms", 3 - length(int($sec * 1e3)), $sec * 1e3 if $sec < 1;
-    return sprintf "%$width.*fs",  3 - length(int($sec)),       $sec       if $sec < 100;
+    return sprintf "%$width.*fs",  3 - length(int($sec      )), $sec       if $sec < 100;
     return sprintf "%$width.0fs", $sec;
 }
+
 
 sub fmt_incl_excl_time {
     my ($incl, $excl) = @_;

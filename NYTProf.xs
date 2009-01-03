@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 574 2008-10-29 22:36:59Z tim.bunce $
+ * $Id: NYTProf.xs 660 2009-01-03 12:03:28Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -24,7 +24,6 @@
 #include "XSUB.h"
 
 #ifndef NO_PPPORT_H
-#   define NEED_my_snprintf
 #   include "ppport.h"
 #endif
 
@@ -34,6 +33,12 @@
 
 #ifndef OP_SETSTATE
 #define OP_SETSTATE OP_NEXTSTATE
+#endif
+#ifndef PERLDBf_SAVESRC
+#define PERLDBf_SAVESRC PERLDBf_SUBLINE
+#endif
+#ifndef PERLDBf_SAVESRC_NOSUBS
+#define PERLDBf_SAVESRC_NOSUBS 0
 #endif
 
 #if (PERL_VERSION < 8) || ((PERL_VERSION == 8) && (PERL_SUBVERSION < 8))
@@ -65,6 +70,8 @@
 #define NYTP_START_END           4
 
 #define NYTP_OPTf_ADDPID         0x0001 /* append .pid to output filename */
+#define NYTP_OPTf_OPTIMIZE       0x0002 /* affect $^P & 0x04 */
+#define NYTP_OPTf_SAVESRC        0x0004 /* copy source code lines into profile data */
 
 #define NYTP_FIDf_IS_PMC         0x0001 /* .pm probably really loaded as .pmc */
 #define NYTP_FIDf_VIA_STMT       0x0002 /* fid first seen by stmt profiler */
@@ -84,9 +91,45 @@
 #define NYTP_TAG_STRING          '\'' 
 #define NYTP_TAG_STRING_UTF8     '"' 
 #define NYTP_TAG_START_DEFLATE   'z' 
-
 #define NYTP_TAG_NO_TAG          '\0'   /* Used as a flag to mean "no tag" */
 
+/* indices to elements of the file info array */
+#define NYTP_FIDi_FILENAME      0
+#define NYTP_FIDi_EVAL_FID      1
+#define NYTP_FIDi_EVAL_LINE     2
+#define NYTP_FIDi_FID           3
+#define NYTP_FIDi_FLAGS         4
+#define NYTP_FIDi_FILESIZE      5
+#define NYTP_FIDi_FILEMTIME     6
+#define NYTP_FIDi_PROFILE       7
+#define NYTP_FIDi_EVAL_FI       8
+#define NYTP_FIDi_HAS_EVALS     9
+#define NYTP_FIDi_SUBS_DEFINED  10
+#define NYTP_FIDi_SUBS_CALLED   11
+
+/* indices to elements of the sub call info array */
+#define NYTP_SIi_FID         0   /* fid of file sub was defined in */
+#define NYTP_SIi_FIRST_LINE  1   /* line number of first line of sub */    
+#define NYTP_SIi_LAST_LINE   2   /* line number of last line of sub */    
+#define NYTP_SIi_CALL_COUNT  3   /* number of times sub was called */
+#define NYTP_SIi_INCL_RTIME  4   /* incl real time in sub */
+#define NYTP_SIi_EXCL_RTIME  5   /* excl real time in sub */
+#define NYTP_SIi_SUB_NAME    6   /* sub name */
+#define NYTP_SIi_PROFILE     7   /* ref to profile object */
+#define NYTP_SIi_REC_DEPTH   8   /* max recursion call depth */
+#define NYTP_SIi_RECI_RTIME  9   /* recursive incl real time in sub */
+#define NYTP_SIi_CALLED_BY  10   /* { fid => { line => [...] } } */
+#define NYTP_SIi_elements   11   /* highest index, plus 1 */
+
+/* indices to elements of the sub call info array */
+#define NYTP_SCi_CALL_COUNT  0   /* count of calls to sub */    
+#define NYTP_SCi_INCL_RTIME  1   /* inclusive real time in sub */    
+#define NYTP_SCi_EXCL_RTIME  2   /* exclusive real time in sub */    
+#define NYTP_SCi_INCL_UTIME  3   /* incl user cpu time in sub */
+#define NYTP_SCi_INCL_STIME  4   /* incl sys  cpu time in sub */
+#define NYTP_SCi_RECI_RTIME  5   /* recursive incl real time in sub */
+#define NYTP_SCi_REC_DEPTH   6   /* max recursion call depth */
+#define NYTP_SCi_elements    7   /* highest index, plus 1 */
 
 /* Hash table definitions */
 #define MAX_HASH_SIZE 512
@@ -155,7 +198,7 @@ static NYTP_file in;
 
 /* options and overrides */
 static char PROF_output_file[MAXPATHLEN+1] = "nytprof.out";
-static unsigned int profile_opts = 0;
+static unsigned int profile_opts = NYTP_OPTf_OPTIMIZE;
 static int profile_start = NYTP_START_BEGIN;      /* when to start profiling */
 static int profile_zero = 0;                      /* don't do timing, all times are zero */
 
@@ -252,22 +295,22 @@ static void output_tag_int(unsigned char tag, unsigned int);
 #define     output_int(i)   output_tag_int(NYTP_TAG_NO_TAG, (unsigned int)(i))
 static void output_str(char *str, I32 len);
 static void output_nv(NV nv);
-static unsigned int read_int();
+static unsigned int read_int(void);
 static SV *read_str(pTHX_ SV *sv);
 static unsigned int get_file_id(pTHX_ char*, STRLEN, int created_via);
 static void DB_stmt(pTHX_ OP *op);
-static void set_option(const char*, const char*);
+static void set_option(pTHX_ const char*, const char*);
 static int enable_profile(pTHX);
 static int disable_profile(pTHX);
 static void finish_profile(pTHX);
 static void open_output_file(pTHX_ char *);
 static int reinit_if_forked(pTHX);
-static void write_cached_fids();
+static void write_cached_fids(void);
 static void write_sub_line_ranges(pTHX);
 static void write_sub_callers(pTHX);
 static HV *load_profile_data_from_stream(SV* cb);
 static AV *store_profile_line_entry(pTHX_ SV *rvav, unsigned int line_num,
-				    NV time, int count, unsigned int fid);
+                                    NV time, int count, unsigned int fid);
 
 /* copy of original contents of PL_ppaddr */
 typedef OP * (CPERLscope(*orig_ppaddr_t))(pTHX);
@@ -296,8 +339,8 @@ NYTP_tell(NYTP_file file) {
     /* This has to work with compressed files as it's used in the croaking
        routine.  */
     if (FILE_STATE(file) != NYTP_FILE_STDIO) {
-	return FILE_STATE(file) == NYTP_FILE_INFLATE
-	    ? file->zs.total_out : file->zs.total_in;
+        return FILE_STATE(file) == NYTP_FILE_INFLATE
+            ? file->zs.total_out : file->zs.total_in;
     }
 #endif
     return (long)ftell(file->file);
@@ -307,16 +350,16 @@ static const char *
 NYTP_type_of_offset(NYTP_file file) {
     switch (FILE_STATE(file)) {
     case NYTP_FILE_STDIO:
-	return "";
+        return "";
     case NYTP_FILE_DEFLATE:
-	return " in compressed output data";
-	break;
+        return " in compressed output data";
+        break;
     case NYTP_FILE_INFLATE:
-	return " in compressed input data";
-	break;
+        return " in compressed input data";
+        break;
     default:
-	return Perl_form_nocontext(" in stream in unknown state %d",
-				   FILE_STATE(file));
+        return Perl_form_nocontext(" in stream in unknown state %d",
+                                   FILE_STATE(file));
     }
 }
 
@@ -329,20 +372,20 @@ compressed_io_croak(NYTP_file file, const char *function) {
 
     switch (FILE_STATE(file)) {
     case NYTP_FILE_STDIO:
-	what = "stdio";
-	break;
+        what = "stdio";
+        break;
     case NYTP_FILE_DEFLATE:
-	what = "compressed output";
-	break;
+        what = "compressed output";
+        break;
     case NYTP_FILE_INFLATE:
-	what = "compressed input";
-	break;
+        what = "compressed input";
+        break;
     default:
-	croak("Can't use function %s() on a stream of type %d at offset %ld",
-	      function, FILE_STATE(file), NYTP_tell(file));
+        croak("Can't use function %s() on a stream of type %d at offset %ld",
+              function, FILE_STATE(file), NYTP_tell(file));
     }
     croak("Can't use function %s() on a %s stream at offset %ld", function,
-	  what, NYTP_tell(file));
+          what, NYTP_tell(file));
 }
 
 #ifdef HAS_ZLIB
@@ -351,7 +394,7 @@ NYTP_start_deflate(NYTP_file file) {
     int status;
 
     if (FILE_STATE(file) != NYTP_FILE_STDIO) {
-	compressed_io_croak(in, "NYTP_start_deflate");
+        compressed_io_croak(in, "NYTP_start_deflate");
     }
     FILE_STATE(file) = NYTP_FILE_DEFLATE;
     file->zs.next_in = (Bytef *) file->large_buffer;
@@ -363,9 +406,9 @@ NYTP_start_deflate(NYTP_file file) {
     file->zs.opaque = 0;
 
     status = deflateInit2(&(file->zs), compression_level, Z_DEFLATED, 15,
-		       9 /* memLevel */, Z_DEFAULT_STRATEGY);
+                       9 /* memLevel */, Z_DEFAULT_STRATEGY);
     if (status != Z_OK) {
-	croak("deflateInit2 failed, error %d (%s)", status, file->zs.msg);
+        croak("deflateInit2 failed, error %d (%s)", status, file->zs.msg);
     }
 }
 
@@ -373,7 +416,7 @@ static void
 NYTP_start_inflate(NYTP_file file) {
     int status;
     if (FILE_STATE(file) != NYTP_FILE_STDIO) {
-	compressed_io_croak(in, "NYTP_start_inflate");
+        compressed_io_croak(in, "NYTP_start_inflate");
     }
     FILE_STATE(file) = NYTP_FILE_INFLATE;
 
@@ -387,7 +430,7 @@ NYTP_start_inflate(NYTP_file file) {
 
     status = inflateInit2(&(file->zs), 15);
     if (status != Z_OK) {
-	croak("inflateInit2 failed, error %d (%s)", status, file->zs.msg);
+        croak("inflateInit2 failed, error %d (%s)", status, file->zs.msg);
     }
 }
 #endif
@@ -398,7 +441,7 @@ NYTP_open(const char *name, const char *mode) {
     NYTP_file file;
 
     if (!raw_file)
-	return NULL;
+        return NULL;
 
     Newx(file, 1, NYTP_file_t);
     file->file = raw_file;
@@ -418,7 +461,7 @@ NYTP_open(const char *name, const char *mode) {
 static char *
 NYTP_gets(NYTP_file ifile, char *buffer, unsigned int len) {
     if (FILE_STATE(ifile) != NYTP_FILE_STDIO) {
-	compressed_io_croak(ifile, "NYTP_gets");
+        compressed_io_croak(ifile, "NYTP_gets");
     }
 
     return fgets(buffer, len, ifile->file);
@@ -437,55 +480,55 @@ grab_input(NYTP_file ifile) {
 #endif
 
     while (1) {
-	int status;
+        int status;
 
-	if (ifile->zs.avail_in == 0 && !ifile->stdio_at_eof) {
-	    size_t got = fread(ifile->small_buffer, 1,
-			       NYTP_FILE_SMALL_BUFFER_SIZE, ifile->file);
+        if (ifile->zs.avail_in == 0 && !ifile->stdio_at_eof) {
+            size_t got = fread(ifile->small_buffer, 1,
+                               NYTP_FILE_SMALL_BUFFER_SIZE, ifile->file);
 
-	    if (got == 0) {
-		if (!feof(ifile->file)) {
-		    dTHX;
-		    croak("grab_input failed: %d (%s)", errno, strerror(errno));
-		}
-		ifile->stdio_at_eof = TRUE;
-	    }
+            if (got == 0) {
+                if (!feof(ifile->file)) {
+                    dTHX;
+                    croak("grab_input failed: %d (%s)", errno, strerror(errno));
+                }
+                ifile->stdio_at_eof = TRUE;
+            }
 
-	    ifile->zs.avail_in = got;
-	    ifile->zs.next_in = (Bytef *) ifile->small_buffer;
-	}
-
-#ifdef DEBUG_INFLATE
-	fprintf(stderr, "grab_input predef  next_in= %p avail_in= %08x\n"
-	                "                   next_out=%p avail_out=%08x"
-		" eof=%d,%d\n", ifile->zs.next_in, ifile->zs.avail_in,
-		ifile->zs.next_out, ifile->zs.avail_out, ifile->stdio_at_eof,
-		ifile->zlib_at_eof);
-#endif
-
-	status = inflate(&(ifile->zs), Z_NO_FLUSH);
+            ifile->zs.avail_in = got;
+            ifile->zs.next_in = (Bytef *) ifile->small_buffer;
+        }
 
 #ifdef DEBUG_INFLATE
-	fprintf(stderr, "grab_input postdef next_in= %p avail_in= %08x\n"
-	                "                   next_out=%p avail_out=%08x "
-		"status=%d\n", ifile->zs.next_in, ifile->zs.avail_in,
-		ifile->zs.next_out, ifile->zs.avail_out, status);
+        fprintf(stderr, "grab_input predef  next_in= %p avail_in= %08x\n"
+                        "                   next_out=%p avail_out=%08x"
+                " eof=%d,%d\n", ifile->zs.next_in, ifile->zs.avail_in,
+                ifile->zs.next_out, ifile->zs.avail_out, ifile->stdio_at_eof,
+                ifile->zlib_at_eof);
 #endif
 
-	if (!(status == Z_OK || status == Z_STREAM_END)) {
-	    if (ifile->stdio_at_eof)
-		croak("inflate failed, error %d (%s) at end of input file - is"
-		      " it truncated?", status, ifile->zs.msg);
-	    croak("inflate failed, error %d (%s) at offset %ld in input file",
-		  status, ifile->zs.msg, (long)ftell(ifile->file));
-	}
+        status = inflate(&(ifile->zs), Z_NO_FLUSH);
 
-	if (ifile->zs.avail_out == 0 || status == Z_STREAM_END) {
-	    if (status == Z_STREAM_END) {
-		ifile->zlib_at_eof = TRUE;
-	    }
-	    return;
-	}
+#ifdef DEBUG_INFLATE
+        fprintf(stderr, "grab_input postdef next_in= %p avail_in= %08x\n"
+                        "                   next_out=%p avail_out=%08x "
+                "status=%d\n", ifile->zs.next_in, ifile->zs.avail_in,
+                ifile->zs.next_out, ifile->zs.avail_out, status);
+#endif
+
+        if (!(status == Z_OK || status == Z_STREAM_END)) {
+            if (ifile->stdio_at_eof)
+                croak("inflate failed, error %d (%s) at end of input file - is"
+                      " it truncated?", status, ifile->zs.msg);
+            croak("inflate failed, error %d (%s) at offset %ld in input file",
+                  status, ifile->zs.msg, (long)ftell(ifile->file));
+        }
+
+        if (ifile->zs.avail_out == 0 || status == Z_STREAM_END) {
+            if (status == Z_STREAM_END) {
+                ifile->zlib_at_eof = TRUE;
+            }
+            return;
+        }
     }
 }
 
@@ -498,23 +541,23 @@ NYTP_read_unchecked(NYTP_file ifile, void *buffer, size_t len) {
     size_t result = 0;
 #endif
     if (FILE_STATE(ifile) == NYTP_FILE_STDIO) {
-	return fread(buffer, 1, len, ifile->file);
+        return fread(buffer, 1, len, ifile->file);
     }
     else if (FILE_STATE(ifile) != NYTP_FILE_INFLATE) {
-	compressed_io_croak(ifile, "NYTP_read");
-	return 0;
+        compressed_io_croak(ifile, "NYTP_read");
+        return 0;
     }
 #ifdef HAS_ZLIB
     while (1) {
-	unsigned char *p = ifile->large_buffer + ifile->count;
-	unsigned int remaining = ((unsigned char *) ifile->zs.next_out) - p;
+        unsigned char *p = ifile->large_buffer + ifile->count;
+        unsigned int remaining = ((unsigned char *) ifile->zs.next_out) - p;
 
-	if (remaining >= len) {
-	    Copy(p, buffer, len, unsigned char);
-	    ifile->count += len;
-	    result += len;
-	    return result;
-	}
+        if (remaining >= len) {
+            Copy(p, buffer, len, unsigned char);
+            ifile->count += len;
+            result += len;
+            return result;
+        }
         Copy(p, buffer, remaining, unsigned char);
         ifile->count = NYTP_FILE_LARGE_BUFFER_SIZE;
         result += remaining;
@@ -529,7 +572,7 @@ NYTP_read_unchecked(NYTP_file ifile, void *buffer, size_t len) {
 
 
 static size_t
-NYTP_read(NYTP_file ifile, void *buffer, size_t len, char *what) {
+NYTP_read(NYTP_file ifile, void *buffer, size_t len, const char *what) {
     size_t got = NYTP_read_unchecked(ifile, buffer, len);
     if (got != len) {
         croak("Profile format error whilst reading %s at %ld%s: expected %ld got %ld, %s",
@@ -550,10 +593,10 @@ sync_avail_out_to_ftell(NYTP_file ofile) {
     const long result = ftell(ofile->file);
     const unsigned long where = result < 0 ? 0 : result;
     ofile->zs.avail_out =
-	NYTP_FILE_SMALL_BUFFER_SIZE - where % NYTP_FILE_SMALL_BUFFER_SIZE;
+        NYTP_FILE_SMALL_BUFFER_SIZE - where % NYTP_FILE_SMALL_BUFFER_SIZE;
 #ifdef DEBUG_DEFLATE
     fprintf(stderr, "sync_avail_out_to_ftell pos=%ld, avail_out=%lu\n",
-	    result, (unsigned long) ofile->zs.avail_out);
+            result, (unsigned long) ofile->zs.avail_out);
 #endif
 }
 
@@ -566,59 +609,59 @@ flush_output(NYTP_file ofile, int flush) {
     fprintf(stderr, "flush_output enter   flush = %d\n", flush);
 #endif
     while (1) {
-	int status;
+        int status;
 #ifdef DEBUG_DEFLATE
-	fprintf(stderr, "flush_output predef  next_in= %p avail_in= %08x\n"
-	                "                     next_out=%p avail_out=%08x"
-		" flush=%d\n", ofile->zs.next_in, ofile->zs.avail_in,
-		ofile->zs.next_out, ofile->zs.avail_out, flush);
+        fprintf(stderr, "flush_output predef  next_in= %p avail_in= %08x\n"
+                        "                     next_out=%p avail_out=%08x"
+                " flush=%d\n", ofile->zs.next_in, ofile->zs.avail_in,
+                ofile->zs.next_out, ofile->zs.avail_out, flush);
 #endif
-	status = deflate(&(ofile->zs), flush);
+        status = deflate(&(ofile->zs), flush);
 
 #ifdef DEBUG_DEFLATE
-	fprintf(stderr, "flush_output postdef next_in= %p avail_in= %08x\n"
-	                "                     next_out=%p avail_out=%08x "
-		"status=%d\n", ofile->zs.next_in, ofile->zs.avail_in,
-		ofile->zs.next_out, ofile->zs.avail_out, status);
+        fprintf(stderr, "flush_output postdef next_in= %p avail_in= %08x\n"
+                        "                     next_out=%p avail_out=%08x "
+                "status=%d\n", ofile->zs.next_in, ofile->zs.avail_in,
+                ofile->zs.next_out, ofile->zs.avail_out, status);
 #endif
       
-	if (status == Z_OK || status == Z_STREAM_END) {
-	    if (ofile->zs.avail_out == 0 || flush != Z_NO_FLUSH) {
-		int terminate
-		    = ofile->zs.avail_in == 0 && ofile->zs.avail_out > 0;
-		size_t avail = ((unsigned char *) ofile->zs.next_out)
-		    - ofile->small_buffer;
-		const unsigned char *where = ofile->small_buffer;
+        if (status == Z_OK || status == Z_STREAM_END) {
+            if (ofile->zs.avail_out == 0 || flush != Z_NO_FLUSH) {
+                int terminate
+                    = ofile->zs.avail_in == 0 && ofile->zs.avail_out > 0;
+                size_t avail = ((unsigned char *) ofile->zs.next_out)
+                    - ofile->small_buffer;
+                const unsigned char *where = ofile->small_buffer;
 
-		while (avail > 0) {
-		    size_t count = fwrite(where, 1, avail, ofile->file);
+                while (avail > 0) {
+                    size_t count = fwrite(where, 1, avail, ofile->file);
 
-		    if (count > 0) {
-			where += count;
-			avail -= count;
-		    } else {
-			dTHX;
-			croak("fwrite in flush error %d: %s", errno,
-			      strerror(errno));
-		    }
-		}
-		ofile->zs.next_out = (Bytef *) ofile->small_buffer;
-		ofile->zs.avail_out = NYTP_FILE_SMALL_BUFFER_SIZE;
-		if (terminate) {
-		    ofile->zs.avail_in = 0;
-		    if (flush == Z_SYNC_FLUSH) {
-			sync_avail_out_to_ftell(ofile);
-		    }
-		    return;
-		}
-	    } else {
-		ofile->zs.avail_in = 0;
-		return;
-	    }
-	} else {
-	    croak("deflate failed, error %d (%s) in %d", status, ofile->zs.msg,
-		  getpid());
-	}
+                    if (count > 0) {
+                        where += count;
+                        avail -= count;
+                    } else {
+                        dTHX;
+                        croak("fwrite in flush error %d: %s", errno,
+                              strerror(errno));
+                    }
+                }
+                ofile->zs.next_out = (Bytef *) ofile->small_buffer;
+                ofile->zs.avail_out = NYTP_FILE_SMALL_BUFFER_SIZE;
+                if (terminate) {
+                    ofile->zs.avail_in = 0;
+                    if (flush == Z_SYNC_FLUSH) {
+                        sync_avail_out_to_ftell(ofile);
+                    }
+                    return;
+                }
+            } else {
+                ofile->zs.avail_in = 0;
+                return;
+            }
+        } else {
+            croak("deflate failed, error %d (%s) in %d", status, ofile->zs.msg,
+                  getpid());
+        }
     }
 }
 #endif
@@ -629,7 +672,7 @@ NYTP_write(NYTP_file ofile, const void *buffer, size_t len) {
     size_t result = 0;
 #endif
     if (FILE_STATE(ofile) == NYTP_FILE_STDIO) {
-	if (fwrite(buffer, 1, len, ofile->file) < 1) {
+        if (fwrite(buffer, 1, len, ofile->file) < 1) {
             dTHX;
             croak("fwrite error %d: %s", errno,
                     strerror(errno));
@@ -637,30 +680,30 @@ NYTP_write(NYTP_file ofile, const void *buffer, size_t len) {
         return len;
     }
     else if (FILE_STATE(ofile) != NYTP_FILE_DEFLATE) {
-	compressed_io_croak(ofile, "NYTP_write");
-	return 0;
+        compressed_io_croak(ofile, "NYTP_write");
+        return 0;
     }
 #ifdef HAS_ZLIB
     while (1) {
-	unsigned int remaining
-	    = NYTP_FILE_LARGE_BUFFER_SIZE - ofile->zs.avail_in;
-	unsigned char *p = ofile->large_buffer + ofile->zs.avail_in;
+        unsigned int remaining
+            = NYTP_FILE_LARGE_BUFFER_SIZE - ofile->zs.avail_in;
+        unsigned char *p = ofile->large_buffer + ofile->zs.avail_in;
 
-	if (remaining >= len) {
-	    Copy(buffer, p, len, unsigned char);
-	    ofile->zs.avail_in += len;
-	    result += len;
-	    return result;
-	} else {
-	    /* Copy what we can, then flush the buffer. Lather, rinse, repeat.
-	     */
-	    Copy(buffer, p, remaining, unsigned char);
-	    ofile->zs.avail_in = NYTP_FILE_LARGE_BUFFER_SIZE;
-	    result += remaining;
-	    len -= remaining;
-	    buffer = (void *)(remaining + (char *)buffer);
-	    flush_output(ofile, Z_NO_FLUSH);
-	}
+        if (remaining >= len) {
+            Copy(buffer, p, len, unsigned char);
+            ofile->zs.avail_in += len;
+            result += len;
+            return result;
+        } else {
+            /* Copy what we can, then flush the buffer. Lather, rinse, repeat.
+             */
+            Copy(buffer, p, remaining, unsigned char);
+            ofile->zs.avail_in = NYTP_FILE_LARGE_BUFFER_SIZE;
+            result += remaining;
+            len -= remaining;
+            buffer = (void *)(remaining + (char *)buffer);
+            flush_output(ofile, Z_NO_FLUSH);
+        }
     }
 #endif
 }
@@ -671,7 +714,7 @@ NYTP_printf(NYTP_file ofile, const char *format, ...) {
     va_list args;
 
     if (FILE_STATE(ofile) != NYTP_FILE_STDIO) {
-	compressed_io_croak(ofile, "NYTP_printf");
+        compressed_io_croak(ofile, "NYTP_printf");
     }
 
     va_start(args, format);
@@ -685,7 +728,7 @@ static int
 NYTP_flush(NYTP_file file) {
 #ifdef HAS_ZLIB
     if (FILE_STATE(file) == NYTP_FILE_DEFLATE) {
-	flush_output(file, Z_SYNC_FLUSH);
+        flush_output(file, Z_SYNC_FLUSH);
     }
 #endif
     return fflush(file->file);
@@ -695,7 +738,7 @@ static int
 NYTP_eof(NYTP_file ifile) {
 #ifdef HAS_ZLIB
     if (FILE_STATE(ifile) == NYTP_FILE_INFLATE) {
-	return ifile->zlib_at_eof;
+        return ifile->zlib_at_eof;
     }
 #endif
     return feof(ifile->file);
@@ -706,7 +749,7 @@ NYTP_fstrerror(NYTP_file file) {
     dTHX;
 #ifdef HAS_ZLIB
     if (FILE_STATE(file) == NYTP_FILE_DEFLATE || FILE_STATE(file) == NYTP_FILE_INFLATE) {
-	return file->zs.msg;
+        return file->zs.msg;
     }
 #endif
     return strerror(errno);
@@ -718,35 +761,35 @@ NYTP_close(NYTP_file file, int discard) {
 
 #ifdef HAS_ZLIB
     if (!discard && FILE_STATE(file) == NYTP_FILE_DEFLATE) {
-	const double ratio = file->zs.total_in / (double) file->zs.total_out;
-	flush_output(file, Z_FINISH);
-	fprintf(raw_file, "#\n"
-		"# Total uncompressed bytes %lu\n"
-		"# Total compressed bytes %lu\n"
-		"# Compression ratio 1:%2f, data shrunk by %.2f%%\n",
-		file->zs.total_in, file->zs.total_out, ratio,
-		100 * (1 - 1 / ratio));
+        const double ratio = file->zs.total_in / (double) file->zs.total_out;
+        flush_output(file, Z_FINISH);
+        fprintf(raw_file, "#\n"
+                "# Total uncompressed bytes %lu\n"
+                "# Total compressed bytes %lu\n"
+                "# Compression ratio 1:%2f, data shrunk by %.2f%%\n",
+                file->zs.total_in, file->zs.total_out, ratio,
+                100 * (1 - 1 / ratio));
     }
 
     if (FILE_STATE(file) == NYTP_FILE_DEFLATE) {
-	int status = deflateEnd(&(file->zs));
-	if (status != Z_OK) {
-	    if (discard && status == Z_DATA_ERROR) {
-		/* deflateEnd returns Z_OK if success, Z_STREAM_ERROR if the
-		   stream state was inconsistent, Z_DATA_ERROR if the stream
-		   was freed prematurely (some input or output was discarded).
-		*/
-	    } else {
-		croak("deflateEnd failed, error %d (%s) in %d", status,
-		      file->zs.msg, getpid());
-	    }
-	}
+        int status = deflateEnd(&(file->zs));
+        if (status != Z_OK) {
+            if (discard && status == Z_DATA_ERROR) {
+                /* deflateEnd returns Z_OK if success, Z_STREAM_ERROR if the
+                   stream state was inconsistent, Z_DATA_ERROR if the stream
+                   was freed prematurely (some input or output was discarded).
+                */
+            } else {
+                croak("deflateEnd failed, error %d (%s) in %d", status,
+                      file->zs.msg, getpid());
+            }
+        }
     }
     else if (FILE_STATE(file) == NYTP_FILE_INFLATE) {
-	int err = inflateEnd(&(file->zs));
-	if (err != Z_OK) {
-	    croak("inflateEnd failed, error %d (%s)", err, file->zs.msg);
-	}
+        int err = inflateEnd(&(file->zs));
+        if (err != Z_OK) {
+            croak("inflateEnd failed, error %d (%s)", err, file->zs.msg);
+        }
     }
 #endif
 
@@ -758,7 +801,7 @@ NYTP_close(NYTP_file file, int discard) {
     if (discard) {
         /* close the underlying fd first so any buffered data gets discarded
          * when fclose is called below */
-	close(fileno(raw_file));
+        close(fileno(raw_file));
     }
 
     return fclose(raw_file);
@@ -778,7 +821,7 @@ gettimeofday_nv(void)
         (*u2time)(aTHX_ &time_of_day);
         return time_of_day[0] + (time_of_day[1] / 1000000.0);
     }
-    return 0.0;
+    return (NV)time();
 #endif
 }
 
@@ -817,13 +860,13 @@ output_header(pTHX)
 #ifdef HAS_ZLIB
     if (compression_level) {
         const unsigned char tag = NYTP_TAG_START_DEFLATE;
-	NYTP_printf(out, "# Compressed at level %d with zlib %s\n",
-		    compression_level, zlibVersion());
-	NYTP_write(out, &tag, sizeof(tag));
-	NYTP_start_deflate(out);
+        NYTP_printf(out, "# Compressed at level %d with zlib %s\n",
+                    compression_level, zlibVersion());
+        NYTP_write(out, &tag, sizeof(tag));
+        NYTP_start_deflate(out);
     }
 #endif
-	
+        
     output_tag_int(NYTP_TAG_PID_START, getpid());
     output_int(getppid());
     output_nv(gettimeofday_nv());
@@ -858,7 +901,7 @@ read_str(pTHX_ SV *sv) {
 
     if (NYTP_TAG_STRING != tag && NYTP_TAG_STRING_UTF8 != tag)
         croak("File format error at offset %ld%s, expected string tag but found %d ('%c')",
-	      NYTP_tell(in)-1, NYTP_type_of_offset(in), tag, tag);
+              NYTP_tell(in)-1, NYTP_type_of_offset(in), tag, tag);
 
     len = read_int();
     if (sv) {
@@ -1139,10 +1182,11 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
                         *p = '/';
                     ++p;
                 }
-                if (p[-1] != '/') {
+                if (p[-1] != '/')
 #else
-                if (strNE(file_name_abs, "/")) {
+                if (strNE(file_name_abs, "/"))
 #endif
+                {
                     if (strnEQ(file_name, "./", 2))
                         ++file_name;
                     else
@@ -1163,13 +1207,14 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
          * or the command line -e '...code...'
          * then think about writing out the source code */
         if (found->eval_fid
-        || (found->key_len > 10 && strnEQ(found->key, "/loader/0x", 10))
+        || (found->key_len > 10 && found->key[9] == 'x' && strnEQ(found->key, "/loader/0x", 10))
         || (found->key_len == 1 && strnEQ(found->key, "-",  1))
         || (found->key_len == 2 && strnEQ(found->key, "-e", 2))
+        || (profile_opts & NYTP_OPTf_SAVESRC)
         ) {
+            /* source only available if PERLDB_LINE or PERLDB_SAVESRC is true */
             src_av = GvAV(gv_fetchfile(found->key));
             if (!src_av && trace_level >= 3)
-                /* source lines are only saved if PERLDB_LINE is true */
                 warn("No source available for fid %d%s\n",
                     found->id, use_db_sub ? "" : ", set use_db_sub=1 option");
         }
@@ -1228,14 +1273,14 @@ output_tag_int(unsigned char tag, unsigned int i)
     U8 *p = buffer;
 
     if (tag != NYTP_TAG_NO_TAG)
-	*p++ = tag;
+        *p++ = tag;
 
     /* general case. handles all integers */
     if (i < 0x80) {                               /* < 8 bits */
-	*p++ = (U8)i;
+        *p++ = (U8)i;
     }
     else if (i < 0x4000) {                        /* < 15 bits */
-	*p++ = (U8)((i >> 8) | 0x80);
+        *p++ = (U8)((i >> 8) | 0x80);
         *p++ = (U8)i;
     }
     else if (i < 0x200000) {                      /* < 22 bits */
@@ -1563,11 +1608,16 @@ closest_cop(pTHX_ const COP *cop, const OP *o)
 static void
 DB_stmt(pTHX_ OP *op)
 {
-    int saved_errno = errno;
+    int saved_errno;
     char *file;
     unsigned int elapsed;
     unsigned int overflow;
     COP *cop;
+
+    if (!is_profiling || !profile_stmts) {
+        return;
+    }
+    saved_errno = errno;
 
     if (usecputime) {
         times(&end_ctime);
@@ -1582,17 +1632,12 @@ DB_stmt(pTHX_ OP *op)
     if (overflow)                                 /* XXX later output overflow to file */
         warn("profile time overflow of %d seconds discarded", overflow);
 
-    if (!out || !is_profiling || !profile_stmts) {
-        SETERRNO(saved_errno, 0);
-        return;
-    }
-
     reinit_if_forked(aTHX);
 
     if (last_executed_fid) {
 
         output_tag_int((unsigned char)((profile_blocks)
-			? NYTP_TAG_TIME_BLOCK : NYTP_TAG_TIME_LINE), elapsed);
+                        ? NYTP_TAG_TIME_BLOCK : NYTP_TAG_TIME_LINE), elapsed);
         output_int(last_executed_fid);
         output_int(last_executed_line);
         if (profile_blocks) {
@@ -1660,6 +1705,7 @@ DB_stmt(pTHX_ OP *op)
     cumulative_overhead_ticks += elapsed;
 
     SETERRNO(saved_errno, 0);
+    return;
 }
 
 
@@ -1694,6 +1740,13 @@ DB_leave(pTHX_ OP *op)
      */
     NYTP_write(out, &tag, sizeof(tag));
 
+    /* special cases */
+    if (last_executed_line == prev_last_executed_line
+    &&  last_executed_fid  == prev_last_executed_fid
+    ) {
+        /* XXX OP_UNSTACK needs help */
+    }
+
     if (trace_level >= 4) {
         warn("left %u:%u via %s back to %s at %u:%u (b%u s%u) - discounting next statement%s\n",
             prev_last_executed_fid, prev_last_executed_line,
@@ -1702,6 +1755,7 @@ DB_leave(pTHX_ OP *op)
             (op) ? "" : ", LEAVING PERL"
         );
     }
+
     SETERRNO(saved_errno, 0);
 }
 
@@ -1710,7 +1764,7 @@ DB_leave(pTHX_ OP *op)
  * Sets or toggles the option specified by 'option'.
  */
 static void
-set_option(const char* option, const char* value)
+set_option(pTHX_ const char* option, const char* value)
 {
 
     if (strEQ(option, "file")) {
@@ -1728,22 +1782,36 @@ set_option(const char* option, const char* value)
             ? profile_opts |  NYTP_OPTf_ADDPID
             : profile_opts & ~NYTP_OPTf_ADDPID;
     }
+    else if (strEQ(option, "optimize") || strEQ(option, "optimise")) {
+        profile_opts = (atoi(value))
+            ? profile_opts |  NYTP_OPTf_OPTIMIZE
+            : profile_opts & ~NYTP_OPTf_OPTIMIZE;
+    }
+    else if (strEQ(option, "savesrc")) {
+        profile_opts = (atoi(value))
+            ? profile_opts |  NYTP_OPTf_SAVESRC
+            : profile_opts & ~NYTP_OPTf_SAVESRC;
+        if (profile_opts & NYTP_OPTf_SAVESRC) {
+            /* ask perl to keep the source lines so we can copy them */
+            PL_perldb |= PERLDBf_SAVESRC | PERLDBf_SAVESRC_NOSUBS;
+        }
+    }
     else {
-	struct NYTP_int_options_t *opt_p = options;
-	const struct NYTP_int_options_t *const opt_end
-	    = options + sizeof(options) / sizeof (struct NYTP_int_options_t);
-	bool found = FALSE;
-	do {
-	    if (strEQ(option, opt_p->option_name)) {
-		opt_p->option_value = atoi(value);
-		found = TRUE;
-		break;
-	    }
-	} while (++opt_p < opt_end);
-	if (!found) {
-	    warn("Unknown NYTProf option: %s\n", option);
-	    return;
-	}
+        struct NYTP_int_options_t *opt_p = options;
+        const struct NYTP_int_options_t *const opt_end
+            = options + sizeof(options) / sizeof (struct NYTP_int_options_t);
+        bool found = FALSE;
+        do {
+            if (strEQ(option, opt_p->option_name)) {
+                opt_p->option_value = atoi(value);
+                found = TRUE;
+                break;
+            }
+        } while (++opt_p < opt_end);
+        if (!found) {
+            warn("Unknown NYTProf option: '%s'\n", option);
+            return;
+        }
     }
     if (trace_level)
         warn("# %s=%s\n", option, value);
@@ -1760,7 +1828,7 @@ open_output_file(pTHX_ char *filename)
     char filename_buf[MAXPATHLEN];
     /* 'x' is a GNU C lib extension for O_EXCL which gives us a little
      * extra protection, but it isn't POSIX compliant */
-    char *mode = "wbx";
+    const char *mode = "wbx";
     /* most systems that don't support it will silently ignore it
      * but for some we need to remove it to avoid an error */
 #ifdef WIN32
@@ -1781,7 +1849,7 @@ open_output_file(pTHX_ char *filename)
     out = NYTP_open(filename, mode);
     if (!out) {
         int fopen_errno = errno;
-        char *hint = "";
+        const char *hint = "";
         if (fopen_errno==EEXIST && !(profile_opts & NYTP_OPTf_ADDPID))
             hint = " (enable addpid option to protect against concurrent writes)";
         disable_profile(aTHX);
@@ -1825,15 +1893,6 @@ reinit_if_forked(pTHX)
 /******************************************
  * Sub caller and inclusive time tracking
  ******************************************/
-
-#define NYTP_SCi_CALL_COUNT  0   /* count of calls to sub */    
-#define NYTP_SCi_INCL_RTIME  1   /* inclusive real time in sub */    
-#define NYTP_SCi_EXCL_RTIME  2   /* exclusive real time in sub */    
-#define NYTP_SCi_INCL_UTIME  3   /* incl user cpu time in sub */
-#define NYTP_SCi_INCL_STIME  4   /* incl sys  cpu time in sub */
-#define NYTP_SCi_RECI_RTIME  5   /* recursive incl real time in sub */
-#define NYTP_SCi_REC_DEPTH   6   /* max recursion call depth */
-#define NYTP_SCi_elements    7   /* highest index, plus 1 */
 
 static AV *
 new_sub_call_info_av(pTHX)
@@ -2009,6 +2068,8 @@ pp_entersub_profiler(pTHX)
     sub_call_start_t sub_call_start;
 
     if (profile_subs && is_profiling) {
+        if (!profile_stmts)
+            reinit_if_forked(aTHX);
         get_time_of_day(sub_call_start.sub_call_time);
         sub_call_start.current_overhead_ticks = cumulative_overhead_ticks;
         sub_call_start.current_subr_secs = cumulative_subr_secs;
@@ -2016,9 +2077,9 @@ pp_entersub_profiler(pTHX)
 
     /*
      * for normal subs pp_entersub enters the sub
-     * and returns the first op *within* the sub (typically a dbstate).
+     * and returns the first op *within* the sub (typically a nextstate/dbstate).
      * for XS subs pp_entersub executes the entire sub
-     * and returning the op *after* the sub (PL_op->op_next)
+     * and returns the op *after* the sub (PL_op->op_next)
      */
     op = run_original_op(OP_ENTERSUB);            /* may croak */
 
@@ -2028,17 +2089,16 @@ pp_entersub_profiler(pTHX)
         /* get line, file, and fid for statement *before* the call */
 
         char *file = OutCopFILE(prev_cop);
-        unsigned int fid = (file == last_executed_fileptr)
-            ? last_executed_fid
-            : get_file_id(aTHX_ file, strlen(file), NYTP_FIDf_VIA_SUB);
+        unsigned int fid;
         /* XXX could use same closest_cop as DB_stmt() but it doesn't seem
          * to be needed here. Line is 0 only when call is from embedded
          * C code like mod_perl (at least in my testing so far)
          */
         int line = CopLINE(prev_cop);
         char fid_line_key[50];
-        int fid_line_key_len = my_snprintf(fid_line_key, sizeof(fid_line_key), "%u:%d", fid, line);
+        int fid_line_key_len;
         SV *subname_sv = newSV(0);
+        char *subname_pv;
         SV *sv_tmp;
         char *stash_name = NULL;
         CV *cv;
@@ -2050,39 +2110,64 @@ pp_entersub_profiler(pTHX)
             is_xs = 0;
         }
         else {                                    /* have returned from XS so use sub_sv for name */
-            is_xs = 1;
             /* determine the original fully qualified name for sub */
             /* CV or NULL */
             cv = (CV *)resolve_sub(aTHX_ sub_sv, subname_sv);
+            is_xs = 1;
         }
 
-        if (!cv && !SvOK(subname_sv)) {
-            /* should never get here as pp_entersub would have croaked */
-            const char *what = (is_xs) ? "xs" : "sub";
-            warn("unknown entersub %s '%s'", what, SvPV_nolen(sub_sv));
-            if (trace_level)
-                sv_dump(sub_sv);
-            sv_setpvf(subname_sv, "(unknown %s %s)", what, SvPV_nolen(sub_sv));
-        }
-        else if (cv && CvGV(cv) && GvSTASH(CvGV(cv))) {
-            /* for a plain call of an imported sub the GV is of the current
-             * package, so we dig to find the original package
-             */
+        if (cv && CvGV(cv)) {
             GV *gv = CvGV(cv);
-            stash_name = HvNAME(GvSTASH(gv));
-            sv_setpvf(subname_sv, "%s::%s", stash_name, GvNAME(gv));
-        }
-        else if (!SvOK(subname_sv)) {
-            /* unnamed CV, e.g. seen in mod_perl. XXX do better? */
-            sv_setpvn(subname_sv, "__ANON__", 8);
-            if (trace_level) {
-                warn("unknown entersub %s assumed to be anon cv '%s'", (is_xs) ? "xs" : "sub", SvPV_nolen(sub_sv));
-                sv_dump(sub_sv);
+            /* Class::MOP can create CvGV where SvTYPE of GV is SVt_NULL */
+            if (SvTYPE(gv) == SVt_PVGV && GvSTASH(gv)) {
+                /* for a plain call of an imported sub the GV is of the current
+                * package, so we dig to find the original package
+                */
+                stash_name = HvNAME(GvSTASH(gv));
+                sv_setpvf(subname_sv, "%s::%s", stash_name, GvNAME(gv));
+            }
+            else if (trace_level) {
+                warn("I'm confused about CV %p", cv);
+                /* looks like Class::MOP doesn't give the CV GV stash a name */
+                if (trace_level >= 2)
+                    sv_dump((SV*)cv); /* coredumps in Perl_do_gvgv_dump, looks line GvXPVGV is false, presumably on a Class::MOP wierdo sub */
             }
         }
 
+        if (!SvOK(subname_sv)) {
+
+            if (!cv) {
+                /* should never get here as pp_entersub would have croaked */
+                const char *what = (is_xs) ? "xs" : "sub";
+                warn("unknown entersub %s '%s'", what, SvPV_nolen(sub_sv));
+                if (trace_level)
+                    sv_dump(sub_sv);
+                sv_setpvf(subname_sv, "(unknown %s %s)", what, SvPV_nolen(sub_sv));
+            }
+            else {
+                /* unnamed CV, e.g. seen in mod_perl/Class::MOP. XXX do better? */
+                stash_name = HvNAME(CvSTASH(cv));
+                sv_setpvf(subname_sv, "%s::__UNKNOWN__[0x%lx]",
+                    (stash_name)?stash_name:"__UNKNOWN__", (unsigned long)cv);
+                if (trace_level) {
+                    warn("unknown entersub %s assumed to be anon cv '%s'", (is_xs) ? "xs" : "sub", SvPV_nolen(sub_sv));
+                    sv_dump(sub_sv);
+                }
+            }
+        }
+        subname_pv = SvPV_nolen(subname_sv);
+
+        /* ignore our own DB::_INIT sub - only shows up with 5.8.9+ & 5.10.1+ */
+        if (is_xs && *subname_pv == 'D' && strEQ(subname_pv, "DB::_INIT"))
+            goto skip_sub_profile;
+
+        fid = (file == last_executed_fileptr)
+            ? last_executed_fid
+            : get_file_id(aTHX_ file, strlen(file), NYTP_FIDf_VIA_SUB);
+        fid_line_key_len = sprintf(fid_line_key, "%u:%d", fid, line);
+
         /* { subname => { "fid:line" => [ count, incl_time ] } } */
-        sv_tmp = *hv_fetch(sub_callers_hv, SvPV_nolen(subname_sv),
+        sv_tmp = *hv_fetch(sub_callers_hv, subname_pv,
             (I32)SvCUR(subname_sv), 1);
 
         if (!SvROK(sv_tmp)) { /* autoviv hash ref - is first call of this subname from anywhere */
@@ -2101,10 +2186,10 @@ pp_entersub_profiler(pTHX)
                      * The reader can try to associate the xsubs with the
                      * corresonding .pm file using the package part of the subname.
                      */
-                    SV *sv = *hv_fetch(GvHV(PL_DBsub), SvPV_nolen(subname_sv), (I32)SvCUR(subname_sv), 1);
+                    SV *sv = *hv_fetch(GvHV(PL_DBsub), subname_pv, (I32)SvCUR(subname_sv), 1);
                     sv_setpv(sv, ":0-0"); /* empty file name */
                     if (trace_level >= 2)
-                        warn("Adding fake DBsub entry for '%s' xsub\n", SvPV_nolen(subname_sv));
+                        warn("Adding fake DBsub entry for '%s' xsub\n", subname_pv);
                 }
             }
         }
@@ -2131,7 +2216,7 @@ pp_entersub_profiler(pTHX)
 
         if (trace_level >= 3)
             fprintf(stderr, " ->%s %s from %d:%d (d%d, oh %gt, sub %gs)\n",
-                (is_xs) ? "xsub" : " sub", SvPV_nolen(subname_sv), fid, line,
+                (is_xs) ? "xsub" : " sub", subname_pv, fid, line,
                 sub_call_start.call_depth,
                 sub_call_start.current_overhead_ticks,
                 sub_call_start.current_subr_secs
@@ -2155,6 +2240,7 @@ pp_entersub_profiler(pTHX)
         else {
             sv_free(subname_sv);
         }
+        skip_sub_profile:
         SETERRNO(saved_errno, 0);
     }
 
@@ -2197,6 +2283,7 @@ pp_exit_profiler(pTHX)                            /* handles OP_EXIT, OP_EXEC, e
 static int
 enable_profile(pTHX)
 {
+    /* enable the run-time aspects to profiling */
     int prev_is_profiling = is_profiling;
     if (!out) {
         warn("enable_profile: NYTProf not active");
@@ -2302,6 +2389,10 @@ init_profiler(pTHX)
     }
 #endif
 
+    if (profile_opts & NYTP_OPTf_OPTIMIZE)
+         PL_perldb &= ~PERLDBf_NOOPT;
+    else PL_perldb |=  PERLDBf_NOOPT;
+
     if (trace_level)
         warn("NYTProf init pid %d, clock %d%s\n", last_pid, profile_clock,
             profile_zero ? ", zero=1" : "");
@@ -2330,7 +2421,7 @@ init_profiler(pTHX)
     /* redirect opcodes for statement profiling */
     Newxc(PL_ppaddr_orig, OP_max, void *, orig_ppaddr_t);
     Copy(PL_ppaddr, PL_ppaddr_orig, OP_max, void *);
-    if (!use_db_sub) {
+    if (profile_stmts && !use_db_sub) {
         PL_ppaddr[OP_NEXTSTATE]  = pp_stmt_profiler;
         PL_ppaddr[OP_DBSTATE]    = pp_stmt_profiler;
 #ifdef OP_SETSTATE
@@ -2626,31 +2717,31 @@ read_int()
         newint = d;
     }
     else {
-	unsigned char buffer[4];
-	unsigned char *p = buffer;
+        unsigned char buffer[4];
+        unsigned char *p = buffer;
         unsigned int length;
 
-	if (d < 0xC0) {                          /* 14 bits */
-	    newint = d & 0x7F;
-	    length = 1;
-	}
-	else if (d < 0xE0) {                          /* 21 bits */
-	    newint = d & 0x1F;
-	    length = 2;
-	}
-	else if (d < 0xFF) {                          /* 28 bits */
-	    newint = d & 0xF;
-	    length = 3;
-	}
-	else if (d == 0xFF) {                         /* 32 bits */
-	    newint = 0;
-	    length = 4;
-	}
-	NYTP_read(in, buffer, length, "integer");
-	while (length--) {
-	    newint <<= 8;
-	    newint |= *p++;
-	}
+        if (d < 0xC0) {                          /* 14 bits */
+            newint = d & 0x7F;
+            length = 1;
+        }
+        else if (d < 0xE0) {                          /* 21 bits */
+            newint = d & 0x1F;
+            length = 2;
+        }
+        else if (d < 0xFF) {                          /* 28 bits */
+            newint = d & 0xF;
+            length = 3;
+        }
+        else if (d == 0xFF) {                         /* 32 bits */
+            newint = 0;
+            length = 4;
+        }
+        NYTP_read(in, buffer, length, "integer");
+        while (length--) {
+            newint <<= 8;
+            newint |= *p++;
+        }
     }
     return newint;
 }
@@ -2668,6 +2759,17 @@ read_nv()
      */
     NYTP_read(in, (unsigned char *)&nv, sizeof(NV), "float");
     return nv;
+}
+
+
+SV *
+normalize_eval_seqn(SV *sv) {
+    /* look for 'eval ' with instr()
+     * if present then check it's preceeded by '(' or '_' (for '(re_eval')
+     * and followed by one or more digits then ')'
+     * if so then edit sv inplace to replace 'eval <digits>' part with 'eval 0'
+     */
+    return sv;
 }
 
 
@@ -2700,11 +2802,36 @@ lookup_subinfo_av(pTHX_ SV *subname_sv, HV *sub_subinfo_hv)
 
 
 static void
-store_attrib_sv(pTHX_ HV *attr_hv, char *text, SV *value_sv)
+store_attrib_sv(pTHX_ HV *attr_hv, const char *text, SV *value_sv)
 {
     (void)hv_store(attr_hv, text, (I32)strlen(text), value_sv, 0);
     if (trace_level >= 1)
         warn(": %s = '%s'\n", text, SvPV_nolen(value_sv));
+}
+
+static int
+eval_outer_fid(pTHX_
+    AV *fid_fileinfo_av,
+    unsigned int fid,
+    int recurse,
+    unsigned int *eval_file_num_ptr,
+    unsigned int *eval_line_num_ptr
+) {
+    AV *av;
+    SV *fid_info_rvav = *av_fetch(fid_fileinfo_av, fid, 1);
+    if (!SvROK(fid_info_rvav)) /* should never happen */
+        return 0;
+    av = (AV *)SvRV(fid_info_rvav);
+    fid = (unsigned int)SvUV(*av_fetch(av,NYTP_FIDi_EVAL_FID,1));
+    if (!fid)
+        return 0;
+    if (eval_file_num_ptr)
+        *eval_file_num_ptr = fid;
+    if (eval_line_num_ptr)
+        *eval_line_num_ptr = (unsigned int)SvUV(*av_fetch(av,NYTP_FIDi_EVAL_LINE,1));
+    if (recurse)
+        eval_outer_fid(aTHX_ fid_fileinfo_av, fid, recurse, eval_file_num_ptr, eval_line_num_ptr);
+    return 1;
 }
 
 
@@ -2734,6 +2861,7 @@ load_profile_data_from_stream(SV *cb)
     NV total_stmts_duration = 0.0;
     int total_stmts_measured = 0;
     int total_stmts_discounted = 0;
+    int total_sub_calls = 0;
     HV *profile_hv;
     HV* profile_modes = newHV();
     HV *live_pids_hv = newHV();
@@ -2744,8 +2872,8 @@ load_profile_data_from_stream(SV *cb)
     AV* fid_block_time_av = NULL;
     AV* fid_sub_time_av = NULL;
     HV* sub_subinfo_hv = newHV();
-    HV* sub_callers_hv = newHV();
     SV *tmp_str_sv = newSVpvn("",0);
+    HV *file_info_stash = gv_stashpv("Devel::NYTProf::FileInfo", GV_ADDWARN);
 
     /* these times don't reflect profile_enable & profile_disable calls */
     NV profiler_start_time = 0.0;
@@ -2765,7 +2893,7 @@ load_profile_data_from_stream(SV *cb)
     av_extend(fid_line_time_av, 64);
 
     if (FILE_STATE(in) != NYTP_FILE_STDIO) {
-	compressed_io_croak(in, "load_profile_data_from_stream");
+        compressed_io_croak(in, "load_profile_data_from_stream");
     }
     if (2 != fscanf(in->file, "NYTProf %d %d\n", &file_major, &file_minor)) {
         croak("Profile format error while parsing header");
@@ -2776,47 +2904,47 @@ load_profile_data_from_stream(SV *cb)
 
     if (cb) {
         input_chunk_seqn_sv = save_scalar(gv_fetchpv(".", GV_ADD, SVt_IV));
-	sv_setuv(input_chunk_seqn_sv, input_chunk_seqn);
+        sv_setuv(input_chunk_seqn_sv, input_chunk_seqn);
 
-	/* these tags are frequent enough that we reuse the same SV in all calls */
-	cb_DISCOUNT_tag = sv_2mortal(newSVpvs("DISCOUNT"));
-	cb_TIME_BLOCK_tag = sv_2mortal(newSVpvs("TIME_BLOCK"));
-	cb_TIME_LINE_tag = sv_2mortal(newSVpvs("TIME_LINE"));
-	SvREADONLY_on(cb_DISCOUNT_tag);
-	SvREADONLY_on(cb_TIME_BLOCK_tag);
-	SvREADONLY_on(cb_TIME_LINE_tag);
+        /* these tags are frequent enough that we reuse the same SV in all calls */
+        cb_DISCOUNT_tag = sv_2mortal(newSVpvs("DISCOUNT"));
+        cb_TIME_BLOCK_tag = sv_2mortal(newSVpvs("TIME_BLOCK"));
+        cb_TIME_LINE_tag = sv_2mortal(newSVpvs("TIME_LINE"));
+        SvREADONLY_on(cb_DISCOUNT_tag);
+        SvREADONLY_on(cb_TIME_BLOCK_tag);
+        SvREADONLY_on(cb_TIME_LINE_tag);
 
-	for (i = 0; i < C_ARRAY_LENGTH(cb_args); i++)
-	    cb_args[i] = sv_newmortal();
+        for (i = 0; i < C_ARRAY_LENGTH(cb_args); i++)
+            cb_args[i] = sv_newmortal();
 
 
         PUSHMARK(SP);
 
-	i = 0;
-	sv_setpvs(cb_args[i], "VERSION");  XPUSHs(cb_args[i++]);
-	sv_setiv(cb_args[i], file_major);  XPUSHs(cb_args[i++]);
-	sv_setiv(cb_args[i], file_minor);  XPUSHs(cb_args[i++]);
+        i = 0;
+        sv_setpvs(cb_args[i], "VERSION");  XPUSHs(cb_args[i++]);
+        sv_setiv(cb_args[i], file_major);  XPUSHs(cb_args[i++]);
+        sv_setiv(cb_args[i], file_minor);  XPUSHs(cb_args[i++]);
 
-	PUTBACK;
-	call_sv(cb, G_DISCARD);
+        PUTBACK;
+        call_sv(cb, G_DISCARD);
     }
 
     while (1) {
-	/* Loop "forever" until EOF. We can only check the EOF flag *after* we
-	   attempt a read.  */
-	char c;
+        /* Loop "forever" until EOF. We can only check the EOF flag *after* we
+           attempt a read.  */
+        char c;
 
-	if (NYTP_read_unchecked(in, &c, sizeof(c)) != sizeof(c)) {
-	  if (NYTP_eof(in))
-	    break;
-	  croak("Profile format error '%s' whilst reading tag at %ld",
-		NYTP_fstrerror(in), NYTP_tell(in));
-	}
+        if (NYTP_read_unchecked(in, &c, sizeof(c)) != sizeof(c)) {
+          if (NYTP_eof(in))
+            break;
+          croak("Profile format error '%s' whilst reading tag at %ld",
+                NYTP_fstrerror(in), NYTP_tell(in));
+        }
 
         input_chunk_seqn++;
-	if (cb) {
-	    sv_setuv(input_chunk_seqn_sv, input_chunk_seqn);
-	}
+        if (cb) {
+            sv_setuv(input_chunk_seqn_sv, input_chunk_seqn);
+        }
 
         if (trace_level >= 6)
             warn("Chunk %lu token is %d ('%c') at %ld%s\n", input_chunk_seqn, c, c, NYTP_tell(in)-1, NYTP_type_of_offset(in));
@@ -2824,14 +2952,16 @@ load_profile_data_from_stream(SV *cb)
         switch (c) {
             case NYTP_TAG_DISCOUNT:
             {
-		if (cb) {
-		    PUSHMARK(SP);
-		    XPUSHs(cb_DISCOUNT_tag);
-		    PUTBACK;
-		    call_sv(cb, G_DISCARD);
-		    break;
-		}
+                if (cb) {
+                    PUSHMARK(SP);
+                    XPUSHs(cb_DISCOUNT_tag);
+                    PUTBACK;
+                    call_sv(cb, G_DISCARD);
+                    break;
+                }
 
+                if (trace_level >= 4)
+                    warn("discounting next statement after %u:%d\n", last_file_num, last_line_num);
                 if (statement_discount)
                     warn("multiple statement discount after %u:%d\n", last_file_num, last_line_num);
                 ++statement_discount;
@@ -2851,42 +2981,39 @@ load_profile_data_from_stream(SV *cb)
                 unsigned int file_num = read_int();
                 unsigned int line_num = read_int();
 
-		if (cb) {
-		    PUSHMARK(SP);
+                if (cb) {
+                    PUSHMARK(SP);
 
-		    XPUSHs(c == NYTP_TAG_TIME_BLOCK ? cb_TIME_BLOCK_tag : cb_TIME_LINE_tag);
+                    XPUSHs(c == NYTP_TAG_TIME_BLOCK ? cb_TIME_BLOCK_tag : cb_TIME_LINE_tag);
 
-		    i = 0;
-		    sv_setiv(cb_args[i], eval_file_num);  XPUSHs(cb_args[i++]);
-		    sv_setiv(cb_args[i], eval_line_num);  XPUSHs(cb_args[i++]);
-		    sv_setiv(cb_args[i], ticks);          XPUSHs(cb_args[i++]);
-		    sv_setiv(cb_args[i], file_num);       XPUSHs(cb_args[i++]);
-		    sv_setiv(cb_args[i], line_num);       XPUSHs(cb_args[i++]);
+                    i = 0;
+                    sv_setiv(cb_args[i], eval_file_num);  XPUSHs(cb_args[i++]);
+                    sv_setiv(cb_args[i], eval_line_num);  XPUSHs(cb_args[i++]);
+                    sv_setiv(cb_args[i], ticks);          XPUSHs(cb_args[i++]);
+                    sv_setiv(cb_args[i], file_num);       XPUSHs(cb_args[i++]);
+                    sv_setiv(cb_args[i], line_num);       XPUSHs(cb_args[i++]);
 
-		    if (c == NYTP_TAG_TIME_BLOCK) {
-			sv_setiv(cb_args[i], read_int()); XPUSHs(cb_args[i++]); /* block_line_num */
-			sv_setiv(cb_args[i], read_int()); XPUSHs(cb_args[i++]); /* sub_line_num */
-		    }
+                    if (c == NYTP_TAG_TIME_BLOCK) {
+                        sv_setiv(cb_args[i], read_int()); XPUSHs(cb_args[i++]); /* block_line_num */
+                        sv_setiv(cb_args[i], read_int()); XPUSHs(cb_args[i++]); /* sub_line_num */
+                    }
 
-		    PUTBACK;
-		    call_sv(cb, G_DISCARD);
-		    break;
-		}
+                    PUTBACK;
+                    call_sv(cb, G_DISCARD);
+                    break;
+                }
 
                 seconds  = (NV)ticks / ticks_per_sec;
 
                 fid_info_rvav = *av_fetch(fid_fileinfo_av, file_num, 1);
-                if (!SvROK(fid_info_rvav)) {
-                    /* only warn once */
-                    if (!SvOK(fid_info_rvav)) {
+                if (!SvROK(fid_info_rvav)) {    /* should never happen */
+                    if (!SvOK(fid_info_rvav)) { /* only warn once */
                         warn("Fid %u used but not defined", file_num);
                         sv_setsv(fid_info_rvav, &PL_sv_no);
                     }
                 }
                 else {
-                    AV *fid_av = (AV *)SvRV(fid_info_rvav);
-                    eval_file_num = (unsigned int)SvUV(*av_fetch(fid_av,1,1));
-                    eval_line_num = (unsigned int)SvUV(*av_fetch(fid_av,2,1));
+                    eval_outer_fid(aTHX_ fid_fileinfo_av, file_num, 1, &eval_file_num, &eval_line_num);
                 }
 
                 if (eval_file_num) {              /* fid is an eval */
@@ -2895,10 +3022,10 @@ load_profile_data_from_stream(SV *cb)
                     file_num = eval_file_num;
                 }
                 if (trace_level >= 3) {
-                    char *new_file_name = "";
-                    if (file_num != last_file_num && SvOK(fid_info_rvav))
-                        new_file_name = SvPV_nolen(*av_fetch((AV *)SvRV(fid_info_rvav), 0, 1));
-                    warn("Read %d:%-4d %2u ticks%s%s\n",
+                    const char *new_file_name = "";
+                    if (file_num != last_file_num && SvROK(fid_info_rvav))
+                        new_file_name = SvPV_nolen(*av_fetch((AV *)SvRV(fid_info_rvav), NYTP_FIDi_FILENAME, 1));
+                    warn("Read %d:%-4d %2u ticks%s %s\n",
                         file_num, line_num, ticks, trace_note, new_file_name);
                 }
 
@@ -2933,12 +3060,14 @@ load_profile_data_from_stream(SV *cb)
                 total_stmts_duration += seconds;
                 statement_discount = 0;
                 last_file_num = file_num;
+                last_line_num = line_num;
                 break;
             }
 
             case NYTP_TAG_NEW_FID:                             /* file */
             {
                 AV *av;
+                SV *rv;
                 SV *filename_sv;
                 unsigned int file_num      = read_int();
                 unsigned int eval_file_num = read_int();
@@ -2948,26 +3077,28 @@ load_profile_data_from_stream(SV *cb)
                 unsigned int file_mtime    = read_int();
 
                 filename_sv = read_str(aTHX_ NULL);
+                if (eval_file_num)
+                    normalize_eval_seqn(filename_sv);
 
-		if (cb) {
-		    PUSHMARK(SP);
+                if (cb) {
+                    PUSHMARK(SP);
 
-		    i = 0;
-		    sv_setpvs(cb_args[i], "NEW_FID");    XPUSHs(cb_args[i++]);
-		    sv_setiv(cb_args[i], file_num);      XPUSHs(cb_args[i++]);
-		    sv_setiv(cb_args[i], eval_file_num); XPUSHs(cb_args[i++]);
-		    sv_setiv(cb_args[i], eval_line_num); XPUSHs(cb_args[i++]);
-		    sv_setiv(cb_args[i], fid_flags);     XPUSHs(cb_args[i++]);
-		    sv_setiv(cb_args[i], file_size);     XPUSHs(cb_args[i++]);
-		    sv_setiv(cb_args[i], file_mtime);    XPUSHs(cb_args[i++]);
-		    assert(i <= C_ARRAY_LENGTH(cb_args));
+                    i = 0;
+                    sv_setpvs(cb_args[i], "NEW_FID");    XPUSHs(cb_args[i++]);
+                    sv_setiv(cb_args[i], file_num);      XPUSHs(cb_args[i++]);
+                    sv_setiv(cb_args[i], eval_file_num); XPUSHs(cb_args[i++]);
+                    sv_setiv(cb_args[i], eval_line_num); XPUSHs(cb_args[i++]);
+                    sv_setiv(cb_args[i], fid_flags);     XPUSHs(cb_args[i++]);
+                    sv_setiv(cb_args[i], file_size);     XPUSHs(cb_args[i++]);
+                    sv_setiv(cb_args[i], file_mtime);    XPUSHs(cb_args[i++]);
+                    assert(i <= C_ARRAY_LENGTH(cb_args));
 
-		    XPUSHs(sv_2mortal(filename_sv));
+                    XPUSHs(sv_2mortal(filename_sv));
 
-		    PUTBACK;
-		    call_sv(cb, G_DISCARD);
-		    break;
-		}
+                    PUTBACK;
+                    call_sv(cb, G_DISCARD);
+                    break;
+                }
 
                 if (trace_level >= 2) {
                     warn("Fid %2u is %s (eval %u:%u) 0x%x sz%u mt%u\n",
@@ -2986,17 +3117,36 @@ load_profile_data_from_stream(SV *cb)
                 /* [ name, eval_file_num, eval_line_num, fid, flags, size, mtime, ... ]
                  */
                 av = newAV();
-                /* drop newline */
-                av_store(av, 0, filename_sv); /* av now owns the sv */
-                av_store(av, 1, (eval_file_num) ? newSVuv(eval_file_num) : &PL_sv_no);
-                av_store(av, 2, (eval_file_num) ? newSVuv(eval_line_num) : &PL_sv_no);
-                av_store(av, 3, newSVuv(file_num));
-                av_store(av, 4, newSVuv(fid_flags));
-                av_store(av, 5, newSVuv(file_size));
-                av_store(av, 6, newSVuv(file_mtime));
-                /* 7: profile ref */
+                rv = newRV_noinc((SV*)av);
+                sv_bless(rv, file_info_stash);
+                av_store(fid_fileinfo_av, file_num, rv);
 
-                av_store(fid_fileinfo_av, file_num, newRV_noinc((SV*)av));
+                av_store(av, NYTP_FIDi_FILENAME, filename_sv); /* av now owns the sv */
+                av_store(av, NYTP_FIDi_EVAL_FID,  (eval_file_num) ? newSVuv(eval_file_num) : &PL_sv_no);
+                av_store(av, NYTP_FIDi_EVAL_LINE, (eval_file_num) ? newSVuv(eval_line_num) : &PL_sv_no);
+                if (eval_file_num) {
+                    SV *has_evals;
+                    SV *eval_fi = *av_fetch(fid_fileinfo_av, eval_file_num, 1);
+                    /* this eval fid points to the fid that contained the eval */
+                    av_store(av, NYTP_FIDi_EVAL_FI, sv_rvweaken(newSVsv(eval_fi)));
+                    /* the fid that contained the eval has a list of eval fids */
+                    has_evals = *av_fetch((AV *)SvRV(eval_fi), NYTP_FIDi_HAS_EVALS, 1);
+                    if (!SvROK(has_evals)) /* autoviv */
+                        sv_setsv(has_evals, newRV_noinc((SV*)newAV()));
+                    av_push((AV *)SvRV(has_evals), sv_rvweaken(newSVsv(rv)));
+                }
+                else {
+                    av_store(av, NYTP_FIDi_EVAL_FI,   &PL_sv_undef);
+                }
+                av_store(av, NYTP_FIDi_FID,       newSVuv(file_num));
+                av_store(av, NYTP_FIDi_FLAGS,     newSVuv(fid_flags));
+                av_store(av, NYTP_FIDi_FILESIZE,  newSVuv(file_size));
+                av_store(av, NYTP_FIDi_FILEMTIME, newSVuv(file_mtime));
+                av_store(av, NYTP_FIDi_PROFILE,   &PL_sv_undef);
+                av_store(av, NYTP_FIDi_HAS_EVALS, &PL_sv_undef);
+                av_store(av, NYTP_FIDi_SUBS_DEFINED, newRV_noinc((SV*)newHV()));
+                av_store(av, NYTP_FIDi_SUBS_CALLED,  newRV_noinc((SV*)newHV()));
+
                 break;
             }
 
@@ -3007,20 +3157,20 @@ load_profile_data_from_stream(SV *cb)
                 SV *src = read_str(aTHX_ NULL);
                 AV *file_av;
 
-		if (cb) {
-		    PUSHMARK(SP);
+                if (cb) {
+                    PUSHMARK(SP);
 
-		    i = 0;
-		    sv_setpvs(cb_args[i], "SRC_LINE");  XPUSHs(cb_args[i++]);
-		    sv_setuv(cb_args[i], file_num);     XPUSHs(cb_args[i++]);
-		    sv_setuv(cb_args[i], line_num);     XPUSHs(cb_args[i++]);
+                    i = 0;
+                    sv_setpvs(cb_args[i], "SRC_LINE");  XPUSHs(cb_args[i++]);
+                    sv_setuv(cb_args[i], file_num);     XPUSHs(cb_args[i++]);
+                    sv_setuv(cb_args[i], line_num);     XPUSHs(cb_args[i++]);
 
-		    XPUSHs(sv_2mortal(src));
+                    XPUSHs(sv_2mortal(src));
 
-		    PUTBACK;
-		    call_sv(cb, G_DISCARD);
-		    break;
-		}
+                    PUTBACK;
+                    call_sv(cb, G_DISCARD);
+                    break;
+                }
 
                 /* first line in the file seen */
                 if (!av_exists(fid_srclines_av, file_num)) {
@@ -3042,40 +3192,52 @@ load_profile_data_from_stream(SV *cb)
             case NYTP_TAG_SUB_LINE_RANGE:
             {
                 AV *av;
+                SV *sv;
                 unsigned int fid        = read_int();
                 unsigned int first_line = read_int();
                 unsigned int last_line  = read_int();
-                SV *subname_sv = read_str(aTHX_ tmp_str_sv);
+                SV *subname_sv = normalize_eval_seqn(read_str(aTHX_ tmp_str_sv));
+                STRLEN subname_len;
+                char *subname_pv;
 
-		if (cb) {
-		    PUSHMARK(SP);
+                if (cb) {
+                    PUSHMARK(SP);
 
-		    i = 0;
-		    sv_setpvs(cb_args[i], "SUB_LINE_RANGE"); XPUSHs(cb_args[i++]);
-		    sv_setuv(cb_args[i], fid);               XPUSHs(cb_args[i++]);
-		    sv_setuv(cb_args[i], first_line);        XPUSHs(cb_args[i++]);
-		    sv_setuv(cb_args[i], last_line);         XPUSHs(cb_args[i++]);
-		    sv_setsv(cb_args[i], subname_sv);        XPUSHs(cb_args[i++]);
+                    i = 0;
+                    sv_setpvs(cb_args[i], "SUB_LINE_RANGE"); XPUSHs(cb_args[i++]);
+                    sv_setuv(cb_args[i], fid);               XPUSHs(cb_args[i++]);
+                    sv_setuv(cb_args[i], first_line);        XPUSHs(cb_args[i++]);
+                    sv_setuv(cb_args[i], last_line);         XPUSHs(cb_args[i++]);
+                    sv_setsv(cb_args[i], subname_sv);        XPUSHs(cb_args[i++]);
 
-		    PUTBACK;
-		    call_sv(cb, G_DISCARD);
-		    break;
-		}
+                    PUTBACK;
+                    call_sv(cb, G_DISCARD);
+                    break;
+                }
 
+                subname_pv = SvPV(subname_sv, subname_len);
                 if (trace_level >= 2)
                     warn("Sub %s fid %u lines %u..%u\n",
-                        SvPV_nolen(subname_sv), fid, first_line, last_line);
+                        subname_pv, fid, first_line, last_line);
                 av = lookup_subinfo_av(aTHX_ subname_sv, sub_subinfo_hv);
-                sv_setuv(*av_fetch(av, 0, 1), fid);
-                sv_setuv(*av_fetch(av, 1, 1), first_line);
-                sv_setuv(*av_fetch(av, 2, 1), last_line);
-                sv_setuv(*av_fetch(av, 3, 1),   0); /* cal count */
-                sv_setnv(*av_fetch(av, 4, 1), 0.0); /* incl_time */
-                sv_setnv(*av_fetch(av, 5, 1), 0.0); /* excl_time */
-                sv_setsv(*av_fetch(av, 6, 1), subname_sv);
-                sv_setsv(*av_fetch(av, 6, 1), &PL_sv_undef); /* ref to profile */
-                sv_setuv(*av_fetch(av, 8, 1),   0); /* rec_depth */
-                sv_setnv(*av_fetch(av, 9, 1), 0.0); /* reci_time */
+                if (SvOK(*av_fetch(av, NYTP_SIi_FID, 1)))
+                    warn("Sub %s already defined!", subname_pv);
+                sv_setuv(*av_fetch(av, NYTP_SIi_FID,        1), fid);
+                sv_setuv(*av_fetch(av, NYTP_SIi_FIRST_LINE, 1), first_line);
+                sv_setuv(*av_fetch(av, NYTP_SIi_LAST_LINE,  1), last_line);
+                sv_setuv(*av_fetch(av, NYTP_SIi_CALL_COUNT, 1),   0); /* call count */
+                sv_setnv(*av_fetch(av, NYTP_SIi_INCL_RTIME, 1), 0.0); /* incl_time */
+                sv_setnv(*av_fetch(av, NYTP_SIi_EXCL_RTIME, 1), 0.0); /* excl_time */
+                sv_setsv(*av_fetch(av, NYTP_SIi_SUB_NAME,   1), subname_sv);
+                sv_setsv(*av_fetch(av, NYTP_SIi_PROFILE,    1), &PL_sv_undef); /* ref to profile */
+                sv_setuv(*av_fetch(av, NYTP_SIi_REC_DEPTH,  1),   0); /* rec_depth */
+                sv_setnv(*av_fetch(av, NYTP_SIi_RECI_RTIME, 1), 0.0); /* reci_time */
+
+                /* add sub to NYTP_FIDi_SUBS_DEFINED hash */
+                sv = SvRV(*av_fetch(fid_fileinfo_av, fid, 1));
+                sv = SvRV(*av_fetch((AV *)sv, NYTP_FIDi_SUBS_DEFINED, 1));
+                (void)hv_store((HV *)sv, subname_pv, subname_len, newRV((SV*)av), 0);
+
                 break;
             }
 
@@ -3083,7 +3245,6 @@ load_profile_data_from_stream(SV *cb)
             {
                 char text[MAXPATHLEN*2];
                 SV *sv;
-                HE *he;
                 SV *subname_sv;
                 AV *subinfo_av;
                 int len;
@@ -3096,29 +3257,29 @@ load_profile_data_from_stream(SV *cb)
                 NV scpu_time       = read_nv();
                 NV reci_time       = (file_minor >= 1) ? read_nv()  : 0;
                 UV rec_depth       = (file_minor >= 1) ? read_int() : 0;
-                subname_sv = read_str(aTHX_ tmp_str_sv);
+                subname_sv = normalize_eval_seqn(read_str(aTHX_ tmp_str_sv));
 
-		if (cb) {
-		    PUSHMARK(SP);
+                if (cb) {
+                    PUSHMARK(SP);
 
-		    i = 0;
-		    sv_setpvs(cb_args[i], "SUB_CALLERS"); XPUSHs(cb_args[i++]);
-		    sv_setuv(cb_args[i], fid);            XPUSHs(cb_args[i++]);
-		    sv_setuv(cb_args[i], line);           XPUSHs(cb_args[i++]);
-		    sv_setuv(cb_args[i], count);          XPUSHs(cb_args[i++]);
-		    sv_setnv(cb_args[i], incl_time);      XPUSHs(cb_args[i++]);
-		    sv_setnv(cb_args[i], excl_time);      XPUSHs(cb_args[i++]);
-		    sv_setnv(cb_args[i], ucpu_time);      XPUSHs(cb_args[i++]);
-		    sv_setnv(cb_args[i], scpu_time);      XPUSHs(cb_args[i++]);
-		    sv_setnv(cb_args[i], reci_time);      XPUSHs(cb_args[i++]);
-		    sv_setiv(cb_args[i], rec_depth);      XPUSHs(cb_args[i++]);
-		    sv_setsv(cb_args[i], subname_sv);     XPUSHs(cb_args[i++]);
-		    assert(i <= C_ARRAY_LENGTH(cb_args));
+                    i = 0;
+                    sv_setpvs(cb_args[i], "SUB_CALLERS"); XPUSHs(cb_args[i++]);
+                    sv_setuv(cb_args[i], fid);            XPUSHs(cb_args[i++]);
+                    sv_setuv(cb_args[i], line);           XPUSHs(cb_args[i++]);
+                    sv_setuv(cb_args[i], count);          XPUSHs(cb_args[i++]);
+                    sv_setnv(cb_args[i], incl_time);      XPUSHs(cb_args[i++]);
+                    sv_setnv(cb_args[i], excl_time);      XPUSHs(cb_args[i++]);
+                    sv_setnv(cb_args[i], ucpu_time);      XPUSHs(cb_args[i++]);
+                    sv_setnv(cb_args[i], scpu_time);      XPUSHs(cb_args[i++]);
+                    sv_setnv(cb_args[i], reci_time);      XPUSHs(cb_args[i++]);
+                    sv_setiv(cb_args[i], rec_depth);      XPUSHs(cb_args[i++]);
+                    sv_setsv(cb_args[i], subname_sv);     XPUSHs(cb_args[i++]);
+                    assert(i <= C_ARRAY_LENGTH(cb_args));
 
-		    PUTBACK;
-		    call_sv(cb, G_DISCARD);
-		    break;
-		}
+                    PUTBACK;
+                    call_sv(cb, G_DISCARD);
+                    break;
+                }
 
                 if (trace_level >= 3)
                     warn("Sub %s called by fid %u line %u: count %d, incl %f, excl %f, ucpu %f scpu %f\n",
@@ -3126,22 +3287,26 @@ load_profile_data_from_stream(SV *cb)
 
                 subinfo_av = lookup_subinfo_av(aTHX_ subname_sv, sub_subinfo_hv);
 
-                /* { 'pkg::sub' => { fid => { line => [ count, incl_time, excl_time ] } } } */
-                he = hv_fetch_ent(sub_callers_hv, subname_sv, 1, 0);
-                sv = HeVAL(he);
+                /* { caller_fid => { caller_line => [ count, incl_time, excl_time ] } } */
+                sv = *av_fetch(subinfo_av, NYTP_SIi_CALLED_BY, 1);
                 if (!SvROK(sv))                   /* autoviv */
                     sv_setsv(sv, newRV_noinc((SV*)newHV()));
 
-                len = my_snprintf(text, sizeof(text), "%u", fid);
+                len = sprintf(text, "%u", fid);
                 sv = *hv_fetch((HV*)SvRV(sv), text, len, 1);
                 if (!SvROK(sv))                   /* autoviv */
                     sv_setsv(sv, newRV_noinc((SV*)newHV()));
 
                 if (fid) {
-                    len = my_snprintf(text, sizeof(text), "%u", line);
+                    SV *fi;
+                    len = sprintf(text, "%u", line);
+
                     sv = *hv_fetch((HV*)SvRV(sv), text, len, 1);
                     if (!SvROK(sv))               /* autoviv */
                         sv_setsv(sv, newRV_noinc((SV*)newAV()));
+                    else /* XXX the code below should accumulate instead of set values */
+                        warn("sub caller info for %s %d:%d already exists!",
+                            SvPV_nolen(subname_sv), fid, line);
                     sv = SvRV(sv);
                     sv_setuv(*av_fetch((AV *)sv, NYTP_SCi_CALL_COUNT, 1), count);
                     sv_setnv(*av_fetch((AV *)sv, NYTP_SCi_INCL_RTIME, 1), incl_time);
@@ -3150,6 +3315,16 @@ load_profile_data_from_stream(SV *cb)
                     sv_setnv(*av_fetch((AV *)sv, NYTP_SCi_INCL_STIME, 1), scpu_time);
                     sv_setnv(*av_fetch((AV *)sv, NYTP_SCi_RECI_RTIME, 1), reci_time);
                     sv_setuv(*av_fetch((AV *)sv, NYTP_SCi_REC_DEPTH,  1), rec_depth);
+
+                    /* add sub call to NYTP_FIDi_SUBS_CALLED hash of fid making the call */
+                    /* => { line => { subname => [ ... ] } } */
+                    fi = SvRV(*av_fetch(fid_fileinfo_av, fid, 1));
+                    fi = *av_fetch((AV *)fi, NYTP_FIDi_SUBS_CALLED, 1);
+                    fi = *hv_fetch((HV*)SvRV(fi), text, len, 1);
+                    if (!SvROK(fi))               /* autoviv */
+                        sv_setsv(fi, newRV_noinc((SV*)newHV()));
+                    fi = HeVAL(hv_fetch_ent((HV *)SvRV(fi), subname_sv, 1, 0));
+                    sv_setsv(fi, newRV(sv));
                 }
                 else {                            /* is meta-data about sub */
                     /* line == 0: is_xs - set line range to 0,0 as marker */
@@ -3175,6 +3350,7 @@ load_profile_data_from_stream(SV *cb)
                 sv = *av_fetch(subinfo_av, 9, 1);
                 sv_setnv(sv, reci_time + (SvOK(sv) ? SvNV(sv) : 0.0));
 
+                total_sub_calls += count;
                 break;
             }
 
@@ -3183,24 +3359,24 @@ load_profile_data_from_stream(SV *cb)
                 char text[MAXPATHLEN*2];
                 unsigned int pid  = read_int();
                 unsigned int ppid = read_int();
-                int len = my_snprintf(text, sizeof(text), "%d", pid);
+                int len = sprintf(text, "%d", pid);
                 profiler_start_time = (file_minor >= 1) ? read_nv() : 0;
 
-		if (cb) {
-		    PUSHMARK(SP);
+                if (cb) {
+                    PUSHMARK(SP);
 
-		    i = 0;
-		    sv_setpvs(cb_args[i], "PID_START");   XPUSHs(cb_args[i++]);
-		    sv_setuv(cb_args[i], pid);            XPUSHs(cb_args[i++]);
-		    sv_setuv(cb_args[i], ppid);           XPUSHs(cb_args[i++]);
-		    if (file_minor >= 1) {
-			sv_setnv(cb_args[i], profiler_start_time); XPUSHs(cb_args[i++]);
-		    }
+                    i = 0;
+                    sv_setpvs(cb_args[i], "PID_START");   XPUSHs(cb_args[i++]);
+                    sv_setuv(cb_args[i], pid);            XPUSHs(cb_args[i++]);
+                    sv_setuv(cb_args[i], ppid);           XPUSHs(cb_args[i++]);
+                    if (file_minor >= 1) {
+                        sv_setnv(cb_args[i], profiler_start_time); XPUSHs(cb_args[i++]);
+                    }
 
-		    PUTBACK;
-		    call_sv(cb, G_DISCARD);
-		    break;
-		}
+                    PUTBACK;
+                    call_sv(cb, G_DISCARD);
+                    break;
+                }
 
                 (void)hv_store(live_pids_hv, text, len, newSVuv(ppid), 0);
                 if (trace_level)
@@ -3216,23 +3392,23 @@ load_profile_data_from_stream(SV *cb)
             {
                 char text[MAXPATHLEN*2];
                 unsigned int pid = read_int();
-                int len = my_snprintf(text, sizeof(text), "%d", pid);
+                int len = sprintf(text, "%d", pid);
                 profiler_end_time = (file_minor >= 1) ? read_nv() : 0;
 
-		if (cb) {
-		    PUSHMARK(SP);
+                if (cb) {
+                    PUSHMARK(SP);
 
-		    i = 0;
-		    sv_setpvs(cb_args[i], "PID_END");  XPUSHs(cb_args[i++]);
-		    sv_setuv(cb_args[i], pid);         XPUSHs(cb_args[i++]);
-		    if (file_minor >= 1) {
-			sv_setnv(cb_args[i], profiler_end_time);  XPUSHs(cb_args[i++]);
-		    }
+                    i = 0;
+                    sv_setpvs(cb_args[i], "PID_END");  XPUSHs(cb_args[i++]);
+                    sv_setuv(cb_args[i], pid);         XPUSHs(cb_args[i++]);
+                    if (file_minor >= 1) {
+                        sv_setnv(cb_args[i], profiler_end_time);  XPUSHs(cb_args[i++]);
+                    }
 
-		    PUTBACK;
-		    call_sv(cb, G_DISCARD);
-		    break;
-		}
+                    PUTBACK;
+                    call_sv(cb, G_DISCARD);
+                    break;
+                }
 
                 if (!hv_delete(live_pids_hv, text, len, 0))
                     warn("Inconsistent pids in profile data (pid %d not introduced)",
@@ -3265,17 +3441,17 @@ load_profile_data_from_stream(SV *cb)
                 *value++ = '\0';
                 value_sv = newSVpvn(value, end-value);
 
-		if (cb) {
-		    PUSHMARK(SP);
+                if (cb) {
+                    PUSHMARK(SP);
 
-		    i = 0;
-		    sv_setpvs(cb_args[i], "ATTRIBUTE");  XPUSHs(cb_args[i++]);
-		    sv_setpv(cb_args[i], text);          XPUSHs(cb_args[i++]);
-		    sv_setsv(cb_args[i], value_sv);      XPUSHs(cb_args[i++]);
+                    i = 0;
+                    sv_setpvs(cb_args[i], "ATTRIBUTE");  XPUSHs(cb_args[i++]);
+                    sv_setpv(cb_args[i], text);          XPUSHs(cb_args[i++]);
+                    sv_setsv(cb_args[i], value_sv);      XPUSHs(cb_args[i++]);
 
-		    PUTBACK;
-		    call_sv(cb, G_DISCARD);
-		}
+                    PUTBACK;
+                    call_sv(cb, G_DISCARD);
+                }
 
                 store_attrib_sv(aTHX_ attr_hv, text, value_sv);
                 if ('t' == *text && strEQ(text, "ticks_per_sec")) {
@@ -3297,62 +3473,61 @@ load_profile_data_from_stream(SV *cb)
                     /* probably EOF */
                     croak("Profile format error reading comment");
 
-		if (cb) {
-		    PUSHMARK(SP);
+                if (cb) {
+                    PUSHMARK(SP);
 
-		    i = 0;
-		    sv_setpvs(cb_args[i], "COMMENT"); XPUSHs(cb_args[i++]);
-		    sv_setpv(cb_args[i], text);       XPUSHs(cb_args[i++]);
+                    i = 0;
+                    sv_setpvs(cb_args[i], "COMMENT"); XPUSHs(cb_args[i++]);
+                    sv_setpv(cb_args[i], text);       XPUSHs(cb_args[i++]);
 
-		    PUTBACK;
-		    call_sv(cb, G_DISCARD);
-		    break;
-		}
+                    PUTBACK;
+                    call_sv(cb, G_DISCARD);
+                    break;
+                }
 
                 if (trace_level >= 1)
                     warn("# %s", text);           /* includes \n */
                 break;
             }
 
-	    case NYTP_TAG_START_DEFLATE:
-	    {
+            case NYTP_TAG_START_DEFLATE:
+            {
 #ifdef HAS_ZLIB
-	        if (cb) {
-		    PUSHMARK(SP);
+                if (cb) {
+                    PUSHMARK(SP);
 
-		    i = 0;
-		    sv_setpvs(cb_args[i], "START_DEFLATE"); XPUSHs(cb_args[i++]);
+                    i = 0;
+                    sv_setpvs(cb_args[i], "START_DEFLATE"); XPUSHs(cb_args[i++]);
 
-		    PUTBACK;
-		    call_sv(cb, G_DISCARD);
-		}
-		NYTP_start_inflate(in);
+                    PUTBACK;
+                    call_sv(cb, G_DISCARD);
+                }
+                NYTP_start_inflate(in);
 #else
                 croak("File uses compression but compression is not supported by this build of NYTProf");
 #endif
-		break;
-	    }
+                break;
+            }
 
             default:
                 croak("File format error: token %d ('%c'), chunk %lu, pos %ld%s",
-		      c, c, input_chunk_seqn, NYTP_tell(in)-1, NYTP_type_of_offset(in));
+                      c, c, input_chunk_seqn, NYTP_tell(in)-1, NYTP_type_of_offset(in));
         }
     }
 
     if (cb) {
-	SvREFCNT_dec(profile_modes);
-	SvREFCNT_dec(live_pids_hv);
-	SvREFCNT_dec(attr_hv);
-	SvREFCNT_dec(fid_fileinfo_av);
-	SvREFCNT_dec(fid_srclines_av);
-	SvREFCNT_dec(fid_line_time_av);
-	SvREFCNT_dec(fid_block_time_av);
-	SvREFCNT_dec(fid_sub_time_av);
-	SvREFCNT_dec(sub_subinfo_hv);
-	SvREFCNT_dec(sub_callers_hv);
-	SvREFCNT_dec(tmp_str_sv);
+        SvREFCNT_dec(profile_modes);
+        SvREFCNT_dec(live_pids_hv);
+        SvREFCNT_dec(attr_hv);
+        SvREFCNT_dec(fid_fileinfo_av);
+        SvREFCNT_dec(fid_srclines_av);
+        SvREFCNT_dec(fid_line_time_av);
+        SvREFCNT_dec(fid_block_time_av);
+        SvREFCNT_dec(fid_sub_time_av);
+        SvREFCNT_dec(sub_subinfo_hv);
+        SvREFCNT_dec(tmp_str_sv);
 
-	return newHV(); /* dummy */
+        return newHV(); /* dummy */
     }
 
     if (HvKEYS(live_pids_hv)) {
@@ -3362,9 +3537,12 @@ load_profile_data_from_stream(SV *cb)
     sv_free((SV*)live_pids_hv);
     sv_free(tmp_str_sv);
 
+    if (statement_discount) /* discard unused statement_discount */
+        total_stmts_discounted -= statement_discount;
     store_attrib_sv(aTHX_ attr_hv, "total_stmts_measured",   newSVnv(total_stmts_measured));
     store_attrib_sv(aTHX_ attr_hv, "total_stmts_discounted", newSVnv(total_stmts_discounted));
     store_attrib_sv(aTHX_ attr_hv, "total_stmts_duration",   newSVnv(total_stmts_duration));
+    store_attrib_sv(aTHX_ attr_hv, "total_sub_calls",        newSVnv(total_sub_calls));
 
     if (1) {
         int show_summary_stats = (trace_level >= 1);
@@ -3399,7 +3577,6 @@ load_profile_data_from_stream(SV *cb)
         (void)hv_stores(profile_modes, "fid_sub_time", newSVpvf("sub"));
     }
     (void)hv_stores(profile_hv, "sub_subinfo",      newRV_noinc((SV*)sub_subinfo_hv));
-    (void)hv_stores(profile_hv, "sub_caller",       newRV_noinc((SV*)sub_callers_hv));
     (void)hv_stores(profile_hv, "profile_modes",    newRV_noinc((SV*)profile_modes));
     return profile_hv;
 }
@@ -3409,19 +3586,48 @@ load_profile_data_from_stream(SV *cb)
  * Perl XS Code Below Here         *
  ***********************************/
 
-MODULE = Devel::NYTProf     PACKAGE = Devel::NYTProf
+MODULE = Devel::NYTProf     PACKAGE = Devel::NYTProf::Constants
 
 PROTOTYPES: DISABLE
 
-I32
-constant()
-    PROTOTYPE:
-    ALIAS:
-        NYTP_FIDf_IS_PMC = NYTP_FIDf_IS_PMC
-    CODE:
-    RETVAL = ix;
-    OUTPUT:
-    RETVAL
+BOOT:
+    {
+    HV *stash = gv_stashpv("Devel::NYTProf::Constants", GV_ADDWARN);
+    newCONSTSUB(stash, "NYTP_FIDf_IS_PMC", newSViv(NYTP_FIDf_IS_PMC));
+    /* NYTP_FIDi_* */
+    newCONSTSUB(stash, "NYTP_FIDi_FILENAME",  newSViv(NYTP_FIDi_FILENAME));
+    newCONSTSUB(stash, "NYTP_FIDi_EVAL_FID",  newSViv(NYTP_FIDi_EVAL_FID));
+    newCONSTSUB(stash, "NYTP_FIDi_EVAL_LINE", newSViv(NYTP_FIDi_EVAL_LINE));
+    newCONSTSUB(stash, "NYTP_FIDi_FID",       newSViv(NYTP_FIDi_FID));
+    newCONSTSUB(stash, "NYTP_FIDi_FLAGS",     newSViv(NYTP_FIDi_FLAGS));
+    newCONSTSUB(stash, "NYTP_FIDi_FILESIZE",  newSViv(NYTP_FIDi_FILESIZE));
+    newCONSTSUB(stash, "NYTP_FIDi_FILEMTIME", newSViv(NYTP_FIDi_FILEMTIME));
+    newCONSTSUB(stash, "NYTP_FIDi_PROFILE",   newSViv(NYTP_FIDi_PROFILE));
+    newCONSTSUB(stash, "NYTP_FIDi_EVAL_FI",   newSViv(NYTP_FIDi_EVAL_FI));
+    newCONSTSUB(stash, "NYTP_FIDi_HAS_EVALS", newSViv(NYTP_FIDi_HAS_EVALS));
+    newCONSTSUB(stash, "NYTP_FIDi_SUBS_DEFINED", newSViv(NYTP_FIDi_SUBS_DEFINED));
+    newCONSTSUB(stash, "NYTP_FIDi_SUBS_CALLED",  newSViv(NYTP_FIDi_SUBS_CALLED));
+    /* NYTP_SIi_* */
+    newCONSTSUB(stash, "NYTP_SIi_FID",          newSViv(NYTP_SIi_FID));
+    newCONSTSUB(stash, "NYTP_SIi_FIRST_LINE",   newSViv(NYTP_SIi_FIRST_LINE));
+    newCONSTSUB(stash, "NYTP_SIi_LAST_LINE",    newSViv(NYTP_SIi_LAST_LINE));
+    newCONSTSUB(stash, "NYTP_SIi_CALL_COUNT",   newSViv(NYTP_SIi_CALL_COUNT));
+    newCONSTSUB(stash, "NYTP_SIi_INCL_RTIME",   newSViv(NYTP_SIi_INCL_RTIME));
+    newCONSTSUB(stash, "NYTP_SIi_EXCL_RTIME",   newSViv(NYTP_SIi_EXCL_RTIME));
+    newCONSTSUB(stash, "NYTP_SIi_SUB_NAME",     newSViv(NYTP_SIi_SUB_NAME));
+    newCONSTSUB(stash, "NYTP_SIi_PROFILE",      newSViv(NYTP_SIi_PROFILE));
+    newCONSTSUB(stash, "NYTP_SIi_REC_DEPTH",    newSViv(NYTP_SIi_REC_DEPTH));
+    newCONSTSUB(stash, "NYTP_SIi_RECI_RTIME",   newSViv(NYTP_SIi_RECI_RTIME));
+    newCONSTSUB(stash, "NYTP_SIi_CALLED_BY",    newSViv(NYTP_SIi_CALLED_BY));
+    /* NYTP_SCi_* */
+    newCONSTSUB(stash, "NYTP_SCi_CALL_COUNT",   newSViv(NYTP_SCi_CALL_COUNT));
+    newCONSTSUB(stash, "NYTP_SCi_INCL_RTIME",   newSViv(NYTP_SCi_INCL_RTIME));
+    newCONSTSUB(stash, "NYTP_SCi_EXCL_RTIME",   newSViv(NYTP_SCi_EXCL_RTIME));
+    newCONSTSUB(stash, "NYTP_SCi_INCL_UTIME",   newSViv(NYTP_SCi_INCL_UTIME));
+    newCONSTSUB(stash, "NYTP_SCi_INCL_STIME",   newSViv(NYTP_SCi_INCL_STIME));
+    newCONSTSUB(stash, "NYTP_SCi_RECI_RTIME",   newSViv(NYTP_SCi_RECI_RTIME));
+    newCONSTSUB(stash, "NYTP_SCi_REC_DEPTH",    newSViv(NYTP_SCi_REC_DEPTH));
+}
 
 
 MODULE = Devel::NYTProf     PACKAGE = Devel::NYTProf::Test
@@ -3450,6 +3656,8 @@ CODE:
 
 void
 set_option(const char *opt, const char *value)
+    C_ARGS:
+    aTHX, opt, value
 
 int
 init_profiler()

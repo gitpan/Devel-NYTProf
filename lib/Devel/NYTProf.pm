@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 583 2008-11-01 08:06:13Z tim.bunce $
+## $Id: NYTProf.pm 625 2008-11-27 09:36:16Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
@@ -283,6 +283,35 @@ Specify at which phase of program execution the profiler should be enabled:
 The start=no option is handy if you want to explicitly control profiling
 by calling DB::enable_profile() and DB::disable_profile() yourself.
 
+=head2 optimize=0
+
+Disable the perl optimizer.
+
+By default NYTProf leaves perl's optimizer enabled.  That gives you more
+accurate profile timing overall, but can lead to I<odd> statement counts for
+individual sets of lines. That's because the perl's peephole optimizer has
+effectively rewritten the statements but you can't see what the rewritten
+version looks like.
+
+For example:
+
+  1     if (...) {
+  2         return;
+  3     }
+
+may be rewritten as
+
+  1    return if (...)
+
+so the profile won't show a statement count for line 2 in your source code
+because the C<return> was merged into the C<if> statement on the preceeding line.
+
+Using the C<optimize=0> option disables the optimizer so you'll get lower
+overall performance but more accurately assigned statement counts.
+
+If you find any other examples of the effect of optimizer on NYTProf output
+(other than performance, obviously) please let us know.
+
 =head2 subs=0
 
 Set to 0 to disable the collection of subroutine caller and timing details.
@@ -325,6 +354,22 @@ default. Also effectively sets C<leave=0> (see above).
 The default 'opcode redirection' technique can't profile subroutines that were
 compiled before NYTProf was loaded. So using use_db_sub=1 can be useful in
 cases where you can't load the profiler early in the life of the application.
+
+=head2 savesrc=1
+
+Save a copy of all source code into the profile data file. This makes the file
+self-contained, so the reporting tools no longer depend on having the original
+source code files available. So it also insulates you from later changes to
+those files that would normally make the reports out of sync with the data.
+
+By default NYTProf saved some source code: the arguments to the C<perl -e>
+option, the script fed to perl via STDIN when using C<perl ->, and the source
+code of string evals. (Currently string eval  source code isn't available in
+the reports. Patches welcome.)
+
+If you're using perl 5.10.0 or 5.8.8 (or earlier) then you need to also enable
+the C<use_db_sub=1> option otherwise perl doesn't make the source code
+available to NYTProf. Perl 5.8.9 and 5.10.1+ don't require that.
 
 =head2 usecputime=1
 
@@ -521,16 +566,21 @@ http://sean.chittenden.org/news/2008/06/01/
 C<Devel::NYTProf> is not currently thread safe. If you'd be interested in
 helping to make it thread safe then please get in touch with us.
 
-=head2 For perl versions before 5.8.8 it may change what caller() returns
+=head2 For perl < 5.8.8 it may change what caller() returns
 
-For example, the Readonly module croaks with an "Invalid tie" when profiled with
+For example, the L<Readonly> module croaks with "Invalid tie" when profiled with
 perl versions before 5.8.8. That's because L<Readonly> explicitly checking for
-certain values from caller().
+certain values from caller(). The L<NEXT> module is also affected.
 
-=head2 Calls made via operator overloading
+=head2 For perl < 5.10.1 it can't see calls made via operator overloading
 
-Calls made via operator overloading are not noticed by any subroutine profiler.
-Though the statements executed by the code in the overload subs are profiled.
+For perl versions prior to 5.8.9 and 5.10.1, calls made via operator
+overloading are not noticed by the I<subroutine> profiler.  Though the
+statements executed by the code in the overload subs are profiled.
+
+The effect is that time in the subroutines that handle overloading is
+accumulated by any subroutines that trigger overloading (so it is measured,
+but the cost is dispersed across possibly many calling locations).
 
 =head2 goto
 
