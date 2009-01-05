@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 660 2009-01-03 12:03:28Z tim.bunce $
+ * $Id: NYTProf.xs 662 2009-01-05 09:33:19Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -2203,7 +2203,7 @@ pp_entersub_profiler(pTHX)
             sub_call_start.sub_av = av;
 
             if (stash_name) /* note that a sub in this package was called */
-                hv_fetch(pkg_fids_hv, stash_name, (I32)strlen(stash_name), 1);
+                (void)hv_fetch(pkg_fids_hv, stash_name, (I32)strlen(stash_name), 1);
         }
         else {
             sub_call_start.sub_av = (AV *)SvRV(sv_tmp);
@@ -2231,6 +2231,7 @@ pp_entersub_profiler(pTHX)
             }
             else {
                 /* copy struct to save stack (very efficient) */
+                /* XXX "warning: cast from pointer to integer of different size" with use64bitall=define */
                 I32 save_ix = SSNEWa(sizeof(sub_call_start), MEM_ALIGNBYTES);
                 Copy(&sub_call_start, SSPTR(save_ix, sub_call_start_t *), 1, sub_call_start_t);
                 /* defer acculumating time spent until we leave the sub */
@@ -2763,12 +2764,49 @@ read_nv()
 
 
 SV *
-normalize_eval_seqn(SV *sv) {
-    /* look for 'eval ' with instr()
-     * if present then check it's preceeded by '(' or '_' (for '(re_eval')
-     * and followed by one or more digits then ')'
-     * if so then edit sv inplace to replace 'eval <digits>' part with 'eval 0'
+normalize_eval_seqn(pTHX_ SV *sv) {
+    /* in-place-edit any eval sequence numbers to 0 */
+    int found = 0;
+    STRLEN len;
+    char *start = SvPV(sv, len);
+    char *src = start;
+    char *dst = start;
+
+    return sv;  /* XXX currently disabled */
+
+    if (len < 5)
+        return sv;
+
+    /* effectively does $sv =~ s/(?<!$assert) \s \d+/eval 0/xg;
+     * where $assert is qr/\((?:re_)?eval/ so it only matches '(eval ' and '(re_eval '
      */
+    while (*src) {
+        if (*src == ' ' && isdigit(*(src+1)) &&
+            (  (src-start >= 5 && strnEQ(src-5,    "(eval ", 6))
+            || (src-start >= 8 && strnEQ(src-8, "(re_eval ", 8)) )
+        ) {
+            ++found;
+            if (trace_level >= 5)
+                warn("found eval at '%s' in %s", src, start);
+            *dst++ = ' ';
+            *dst++ = '0';
+             src++; /* skip space */
+             src++; /* skip first digit */
+            while (isdigit(*src)) { /* skip any extra digits */
+                ++src;
+            }
+        }
+        else {
+            *dst++ = *src++;
+        }
+    }
+    if (found) {
+        *dst++ = '\0';
+        SvCUR_set(sv, strlen(start));
+        if (trace_level >= 5)
+            warn("edited it to: %s", start);
+    }
+
     return sv;
 }
 
@@ -3078,7 +3116,7 @@ load_profile_data_from_stream(SV *cb)
 
                 filename_sv = read_str(aTHX_ NULL);
                 if (eval_file_num)
-                    normalize_eval_seqn(filename_sv);
+                    normalize_eval_seqn(aTHX_ filename_sv);
 
                 if (cb) {
                     PUSHMARK(SP);
@@ -3196,7 +3234,7 @@ load_profile_data_from_stream(SV *cb)
                 unsigned int fid        = read_int();
                 unsigned int first_line = read_int();
                 unsigned int last_line  = read_int();
-                SV *subname_sv = normalize_eval_seqn(read_str(aTHX_ tmp_str_sv));
+                SV *subname_sv = normalize_eval_seqn(aTHX_ read_str(aTHX_ tmp_str_sv));
                 STRLEN subname_len;
                 char *subname_pv;
 
@@ -3257,7 +3295,7 @@ load_profile_data_from_stream(SV *cb)
                 NV scpu_time       = read_nv();
                 NV reci_time       = (file_minor >= 1) ? read_nv()  : 0;
                 UV rec_depth       = (file_minor >= 1) ? read_int() : 0;
-                subname_sv = normalize_eval_seqn(read_str(aTHX_ tmp_str_sv));
+                subname_sv = normalize_eval_seqn(aTHX_ read_str(aTHX_ tmp_str_sv));
 
                 if (cb) {
                     PUSHMARK(SP);
@@ -3657,7 +3695,7 @@ CODE:
 void
 set_option(const char *opt, const char *value)
     C_ARGS:
-    aTHX, opt, value
+    aTHX_ opt, value
 
 int
 init_profiler()
