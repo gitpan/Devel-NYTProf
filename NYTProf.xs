@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 662 2009-01-05 09:33:19Z tim.bunce $
+ * $Id: NYTProf.xs 670 2009-01-19 14:04:11Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -282,7 +282,7 @@ static unsigned int last_executed_fid;
 static        char *last_executed_fileptr;
 static unsigned int last_block_line;
 static unsigned int last_sub_line;
-static unsigned int is_profiling;
+static unsigned int is_profiling;       /* disable_profile() & enable_profile() */
 static Pid_t last_pid;
 static NV cumulative_overhead_ticks = 0.0;
 static NV cumulative_subr_secs = 0.0;
@@ -298,9 +298,9 @@ static void output_nv(NV nv);
 static unsigned int read_int(void);
 static SV *read_str(pTHX_ SV *sv);
 static unsigned int get_file_id(pTHX_ char*, STRLEN, int created_via);
-static void DB_stmt(pTHX_ OP *op);
+static void DB_stmt(pTHX_ COP *cop, OP *op);
 static void set_option(pTHX_ const char*, const char*);
-static int enable_profile(pTHX);
+static int enable_profile(pTHX_ char *file);
 static int disable_profile(pTHX);
 static void finish_profile(pTHX);
 static void open_output_file(pTHX_ char *);
@@ -1249,10 +1249,11 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
             }
         }
     }
-    else if (trace_level >= 4) {
+    else        /* didn't insert a new entry */
+    if (trace_level >= 4) {
         if (found)
-            warn("fid %d: %.*s\n",   found->id, found->key_len, found->key);
-        else warn("fid %d: %.*s NOT FOUND\n", 0,  entry.key_len,  entry.key);
+             warn("fid %d: %.*s\n",  found->id, found->key_len, found->key);
+        else warn("fid -: %.*s HAS NO FID\n", 0, entry.key_len,  entry.key);
     }
 
     return (found) ? found->id : 0;
@@ -1606,13 +1607,12 @@ closest_cop(pTHX_ const COP *cop, const OP *o)
  * Main statement profiling function. Called before each breakable statement.
  */
 static void
-DB_stmt(pTHX_ OP *op)
+DB_stmt(pTHX_ COP *cop, OP *op)
 {
     int saved_errno;
     char *file;
     unsigned int elapsed;
     unsigned int overflow;
-    COP *cop;
 
     if (!is_profiling || !profile_stmts) {
         return;
@@ -1649,7 +1649,8 @@ DB_stmt(pTHX_ OP *op)
                 last_executed_line, elapsed, last_block_line, last_sub_line);
     }
 
-    cop = PL_curcop_nytprof;
+    if (!cop)
+        cop = PL_curcop_nytprof;
     if ( (last_executed_line = CopLINE(cop)) == 0 ) {
         /* Might be a cop that has been optimised away.  We can try to find such a
          * cop by searching through the optree starting from the sibling of PL_curcop.
@@ -1732,7 +1733,7 @@ DB_leave(pTHX_ OP *op)
      * (earlier than it would have been done)
      * and switch back to measuring the 'calling' statement
      */
-    DB_stmt(aTHX_ op);
+    DB_stmt(aTHX_ NULL, op);
 
     /* output a 'discount' marker to indicate the next statement time shouldn't
      * increment the count (because the time is not for a new statement but simply
@@ -1862,11 +1863,31 @@ open_output_file(pTHX_ char *filename)
 }
 
 
+static void
+close_output_file(pTHX) {
+    if (!out)
+        return;
+
+    write_sub_line_ranges(aTHX);
+    write_sub_callers(aTHX);
+    /* mark end of profile data for last_pid pid
+     * which is the pid that this file relates to
+     */
+    output_tag_int(NYTP_TAG_PID_END, last_pid);
+    output_nv(gettimeofday_nv());
+
+    if (-1 == NYTP_close(out, 0))
+        warn("Error closing profile data file: %s", strerror(errno));
+    out = NULL;
+}
+
+
 static int
 reinit_if_forked(pTHX)
 {
     if (getpid() == last_pid)
         return 0;                                 /* not forked */
+
     /* we're now the child process */
     if (trace_level >= 1)
         warn("New pid %d (was %d)\n", getpid(), last_pid);
@@ -2066,8 +2087,9 @@ pp_entersub_profiler(pTHX)
     dSP;
     SV *sub_sv = *SP;
     sub_call_start_t sub_call_start;
+    int profile_sub_call = (profile_subs && is_profiling);
 
-    if (profile_subs && is_profiling) {
+    if (profile_sub_call) {
         if (!profile_stmts)
             reinit_if_forked(aTHX);
         get_time_of_day(sub_call_start.sub_call_time);
@@ -2083,7 +2105,7 @@ pp_entersub_profiler(pTHX)
      */
     op = run_original_op(OP_ENTERSUB);            /* may croak */
 
-    if (profile_subs && is_profiling) {
+    if (profile_sub_call) {
         int saved_errno = errno;
 
         /* get line, file, and fid for statement *before* the call */
@@ -2253,7 +2275,7 @@ static OP *
 pp_stmt_profiler(pTHX)                            /* handles OP_DBSTATE, OP_SETSTATE, etc */
 {
     OP *op = run_original_op(PL_op->op_type);
-    DB_stmt(aTHX_ op);
+    DB_stmt(aTHX_ NULL, op);
     return op;
 }
 
@@ -2277,25 +2299,34 @@ pp_exit_profiler(pTHX)                            /* handles OP_EXIT, OP_EXEC, e
 }
 
 
-/************************************
- * Shared Reader,NYTProf Functions  *
- ************************************/
-
 static int
-enable_profile(pTHX)
+enable_profile(pTHX_ char *file)
 {
     /* enable the run-time aspects to profiling */
     int prev_is_profiling = is_profiling;
+
     if (!out) {
         warn("enable_profile: NYTProf not active");
         return 0;
     }
+
     if (trace_level)
-        warn("NYTProf enable_profile%s", (prev_is_profiling)?" (already enabled)":"");
-    is_profiling = 1;
-    last_executed_fileptr = NULL;
-    if (use_db_sub)
+        warn("NYTProf enable_profile (previously %s) to %s",
+            prev_is_profiling ? "enabled" : "disabled",
+            (file && *file) ? file : PROF_output_file);
+
+    if (file && *file && strNE(file, PROF_output_file)) {
+        /* caller wants output to go to a new file */
+        close_output_file(aTHX);
+        strncpy(PROF_output_file, file, sizeof(PROF_output_file)-1);
+        open_output_file(aTHX_ PROF_output_file);
+    }
+
+    last_executed_fileptr = NULL;   /* discard cached OutCopFILE   */
+    is_profiling = 1;               /* enable NYTProf profilers    */
+    if (use_db_sub)                 /* set PL_DBsingle if required */
         sv_setiv(PL_DBsingle, 1);
+
     return prev_is_profiling;
 }
 
@@ -2312,7 +2343,8 @@ disable_profile(pTHX)
         is_profiling = 0;
     }
     if (trace_level)
-        warn("NYTProf disable_profile %d->%d", prev_is_profiling, is_profiling);
+        warn("NYTProf disable_profile (previously %s)",
+            prev_is_profiling ? "enabled" : "disabled");
     return prev_is_profiling;
 }
 
@@ -2328,24 +2360,11 @@ finish_profile(pTHX)
 
     /* write data for final statement, unless DB_leave has already */
     if (!profile_leave || use_db_sub)
-        DB_stmt(aTHX_ NULL);
+        DB_stmt(aTHX_ NULL, NULL);
 
     disable_profile(aTHX);
 
-    if (out) {
-        write_sub_line_ranges(aTHX);
-        write_sub_callers(aTHX);
-
-        /* mark end of profile data for last_pid pid
-         * (which is the pid that relates to the out filehandle)
-         */
-        output_tag_int(NYTP_TAG_PID_END, last_pid);
-        output_nv(gettimeofday_nv());
-
-        if (-1 == NYTP_close(out, 0))
-            warn("Error closing profile data file: %s", strerror(errno));
-        out = NULL;
-    }
+    close_output_file(aTHX);
 
     SETERRNO(saved_errno, 0);
 }
@@ -2460,7 +2479,7 @@ init_profiler(pTHX)
     if (!PL_initav)  PL_initav  = newAV();
     if (!PL_endav)   PL_endav   = newAV();
     if (profile_start == NYTP_START_BEGIN) {
-        enable_profile(aTHX);
+        enable_profile(aTHX_ NULL);
     }
     /* else handled by _INIT */
     /* defer some init until INIT phase */
@@ -2772,8 +2791,6 @@ normalize_eval_seqn(pTHX_ SV *sv) {
     char *src = start;
     char *dst = start;
 
-    return sv;  /* XXX currently disabled */
-
     if (len < 5)
         return sv;
 
@@ -2827,12 +2844,9 @@ lookup_subinfo_av(pTHX_ SV *subname_sv, HV *sub_subinfo_hv)
          * 1: start_line - may be undef if not known and not known to be xs
          * 2: end_line - ditto
          */
-        /* call count */
-        sv_setuv(*av_fetch(av, 3, 1), 0);
-        /* incl_time */
-        sv_setnv(*av_fetch(av, 4, 1), 0);
-        /* excl_time */
-        sv_setnv(*av_fetch(av, 5, 1), 0);
+        sv_setuv(*av_fetch(av, NYTP_SIi_CALL_COUNT, 1), 0);
+        sv_setnv(*av_fetch(av, NYTP_SIi_INCL_RTIME, 1), 0);
+        sv_setnv(*av_fetch(av, NYTP_SIi_EXCL_RTIME, 1), 0);
         sv_setsv(sv, rv);
     }
     return (AV *)SvRV(sv);
@@ -3258,18 +3272,28 @@ load_profile_data_from_stream(SV *cb)
                     warn("Sub %s fid %u lines %u..%u\n",
                         subname_pv, fid, first_line, last_line);
                 av = lookup_subinfo_av(aTHX_ subname_sv, sub_subinfo_hv);
-                if (SvOK(*av_fetch(av, NYTP_SIi_FID, 1)))
-                    warn("Sub %s already defined!", subname_pv);
-                sv_setuv(*av_fetch(av, NYTP_SIi_FID,        1), fid);
-                sv_setuv(*av_fetch(av, NYTP_SIi_FIRST_LINE, 1), first_line);
-                sv_setuv(*av_fetch(av, NYTP_SIi_LAST_LINE,  1), last_line);
-                sv_setuv(*av_fetch(av, NYTP_SIi_CALL_COUNT, 1),   0); /* call count */
-                sv_setnv(*av_fetch(av, NYTP_SIi_INCL_RTIME, 1), 0.0); /* incl_time */
-                sv_setnv(*av_fetch(av, NYTP_SIi_EXCL_RTIME, 1), 0.0); /* excl_time */
-                sv_setsv(*av_fetch(av, NYTP_SIi_SUB_NAME,   1), subname_sv);
-                sv_setsv(*av_fetch(av, NYTP_SIi_PROFILE,    1), &PL_sv_undef); /* ref to profile */
-                sv_setuv(*av_fetch(av, NYTP_SIi_REC_DEPTH,  1),   0); /* rec_depth */
-                sv_setnv(*av_fetch(av, NYTP_SIi_RECI_RTIME, 1), 0.0); /* reci_time */
+                if (SvOK(*av_fetch(av, NYTP_SIi_FID, 1))) {
+                    /* should only happen for anon subs in string evals */
+                    /* so we warn for other cases */
+                    if (!instr(subname_pv, "__ANON__[(eval"))
+                        warn("Sub %s already defined!", subname_pv);
+                    /* XXX we simply discard fid etc here,
+                     * though the fileinfo NYTP_FIDi_SUBS_DEFINED hash does get
+                     * an entry for the sub from each fid (ie eval) that defines it
+                     */
+                }
+                else {
+                    sv_setuv(*av_fetch(av, NYTP_SIi_FID,        1), fid);
+                    sv_setuv(*av_fetch(av, NYTP_SIi_FIRST_LINE, 1), first_line);
+                    sv_setuv(*av_fetch(av, NYTP_SIi_LAST_LINE,  1), last_line);
+                    sv_setuv(*av_fetch(av, NYTP_SIi_CALL_COUNT, 1),   0); /* call count */
+                    sv_setnv(*av_fetch(av, NYTP_SIi_INCL_RTIME, 1), 0.0); /* incl_time */
+                    sv_setnv(*av_fetch(av, NYTP_SIi_EXCL_RTIME, 1), 0.0); /* excl_time */
+                    sv_setsv(*av_fetch(av, NYTP_SIi_SUB_NAME,   1), subname_sv);
+                    sv_setsv(*av_fetch(av, NYTP_SIi_PROFILE,    1), &PL_sv_undef); /* ref to profile */
+                    sv_setuv(*av_fetch(av, NYTP_SIi_REC_DEPTH,  1),   0); /* rec_depth */
+                    sv_setnv(*av_fetch(av, NYTP_SIi_RECI_RTIME, 1), 0.0); /* reci_time */
+                }
 
                 /* add sub to NYTP_FIDi_SUBS_DEFINED hash */
                 sv = SvRV(*av_fetch(fid_fileinfo_av, fid, 1));
@@ -3337,22 +3361,31 @@ load_profile_data_from_stream(SV *cb)
 
                 if (fid) {
                     SV *fi;
+                    AV *av;
                     len = sprintf(text, "%u", line);
 
                     sv = *hv_fetch((HV*)SvRV(sv), text, len, 1);
                     if (!SvROK(sv))               /* autoviv */
                         sv_setsv(sv, newRV_noinc((SV*)newAV()));
-                    else /* XXX the code below should accumulate instead of set values */
-                        warn("sub caller info for %s %d:%d already exists!",
+                    else if (!instr(SvPV_nolen(subname_sv), "__ANON__[(eval") || trace_level)
+                        warn("Merging extra sub caller info for %s %d:%d",
                             SvPV_nolen(subname_sv), fid, line);
-                    sv = SvRV(sv);
-                    sv_setuv(*av_fetch((AV *)sv, NYTP_SCi_CALL_COUNT, 1), count);
-                    sv_setnv(*av_fetch((AV *)sv, NYTP_SCi_INCL_RTIME, 1), incl_time);
-                    sv_setnv(*av_fetch((AV *)sv, NYTP_SCi_EXCL_RTIME, 1), excl_time);
-                    sv_setnv(*av_fetch((AV *)sv, NYTP_SCi_INCL_UTIME, 1), ucpu_time);
-                    sv_setnv(*av_fetch((AV *)sv, NYTP_SCi_INCL_STIME, 1), scpu_time);
-                    sv_setnv(*av_fetch((AV *)sv, NYTP_SCi_RECI_RTIME, 1), reci_time);
-                    sv_setuv(*av_fetch((AV *)sv, NYTP_SCi_REC_DEPTH,  1), rec_depth);
+                    av = (AV *)SvRV(sv);
+                    sv = *av_fetch(av, NYTP_SCi_CALL_COUNT, 1);
+                    sv_setuv(sv, (SvOK(sv)) ? SvUV(sv) + count : count);
+                    sv = *av_fetch(av, NYTP_SCi_INCL_RTIME, 1);
+                    sv_setnv(sv, (SvOK(sv)) ? SvNV(sv) + incl_time : incl_time);
+                    sv = *av_fetch(av, NYTP_SCi_EXCL_RTIME, 1);
+                    sv_setnv(sv, (SvOK(sv)) ? SvNV(sv) + excl_time : excl_time);
+                    sv = *av_fetch(av, NYTP_SCi_INCL_UTIME, 1);
+                    sv_setnv(sv, (SvOK(sv)) ? SvNV(sv) + ucpu_time : ucpu_time);
+                    sv = *av_fetch(av, NYTP_SCi_INCL_STIME, 1);
+                    sv_setnv(sv, (SvOK(sv)) ? SvNV(sv) + scpu_time : scpu_time);
+                    sv = *av_fetch(av, NYTP_SCi_RECI_RTIME, 1);
+                    sv_setnv(sv, (SvOK(sv)) ? SvNV(sv) + scpu_time : reci_time);
+                    sv = *av_fetch(av, NYTP_SCi_REC_DEPTH,  1);
+                    if (!SvOK(sv) || SvUV(sv) < rec_depth) /* max() */
+                        sv_setuv(sv, rec_depth);
 
                     /* add sub call to NYTP_FIDi_SUBS_CALLED hash of fid making the call */
                     /* => { line => { subname => [ ... ] } } */
@@ -3362,12 +3395,12 @@ load_profile_data_from_stream(SV *cb)
                     if (!SvROK(fi))               /* autoviv */
                         sv_setsv(fi, newRV_noinc((SV*)newHV()));
                     fi = HeVAL(hv_fetch_ent((HV *)SvRV(fi), subname_sv, 1, 0));
-                    sv_setsv(fi, newRV(sv));
+                    sv_setsv(fi, newRV((SV *)av));
                 }
                 else {                            /* is meta-data about sub */
                     /* line == 0: is_xs - set line range to 0,0 as marker */
-                    sv_setiv(*av_fetch(subinfo_av, 1, 1), 0);
-                    sv_setiv(*av_fetch(subinfo_av, 2, 1), 0);
+                    sv_setiv(*av_fetch(subinfo_av, NYTP_SIi_FIRST_LINE, 1), 0);
+                    sv_setiv(*av_fetch(subinfo_av, NYTP_SIi_LAST_LINE,  1), 0);
                 }
 
                 /* accumulate per-sub totals into subinfo */
@@ -3688,7 +3721,7 @@ CODE:
     /* this sub gets aliased as "DB::DB" by NYTProf.pm if use_db_sub is true */
     PERL_UNUSED_VAR(items);
     if (use_db_sub)
-        DB_stmt(aTHX_ PL_op);
+        DB_stmt(aTHX_ NULL, PL_op);
     else if (1||trace_level)
         warn("DB called needlessly");
 
@@ -3703,9 +3736,16 @@ init_profiler()
     aTHX
 
 int
-enable_profile()
+enable_profile(char *file = NULL)
     C_ARGS:
-    aTHX
+    aTHX_ file
+    POSTCALL:
+    /* if profiler was previously disabled */
+    /* then arrange for the enable_profile call to be noted */
+    if (!RETVAL) {
+        DB_stmt(aTHX_ PL_curcop, PL_op);
+    }
+
 
 int
 disable_profile()
@@ -3726,7 +3766,7 @@ void
 _INIT()
     CODE:
     if (profile_start == NYTP_START_INIT)  {
-        enable_profile(aTHX);
+        enable_profile(aTHX_ NULL);
     }
     else if (profile_start == NYTP_START_END) {
         SV *enable_profile_sv = (SV *)get_cv("DB::enable_profile", GV_ADDWARN);

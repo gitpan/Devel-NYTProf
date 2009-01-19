@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-# $Id: Makefile.PL 575 2008-10-29 22:40:49Z tim.bunce $
+# $Id: Makefile.PL 669 2009-01-19 14:00:06Z tim.bunce $
 ###########################################################
 
 use 5.008001;
@@ -118,7 +118,7 @@ WriteMakefile(
     clean => { FILES => join " ",
 		"nytprof demo-out",
 		map { ("t/$_", "xt/$_") }
-			qw(nytprof_t.out nytprof.out *.outdir test*.*.new auto)
+			qw(nytprof nytprof*.out *.outdir test*.*.new auto)
     },
     dist  => {
         DIST_DEFAULT => 'clean distcheck disttest tardist',

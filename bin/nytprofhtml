@@ -7,7 +7,7 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ##########################################################
-# $Id: nytprofhtml 660 2009-01-03 12:03:28Z tim.bunce $
+# $Id: nytprofhtml 665 2009-01-05 23:05:37Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -759,12 +759,12 @@ sub file_table {
         print OUT qq{<tr class="index">};
 
         print OUT determine_severity($filestats->{'calls'},     undef, 0,
-            sprintf("%.1f%%", $filestats->{'calls'}/$allCalls*100)
+            ($allCalls) ? sprintf("%.1f%%", $filestats->{'calls'}/$allCalls*100) : ''
         );
         $t_stmt_exec += $filestats->{'calls'};
 
         print OUT determine_severity($filestats->{'time'},      $dev_time, 1,
-            sprintf("%.1f%%", $filestats->{'time'}/$allTimes*100)
+            ($allTimes) ? sprintf("%.1f%%", $filestats->{'time'}/$allTimes*100) : ''
         );
         $t_stmt_time += $filestats->{'time'};
 

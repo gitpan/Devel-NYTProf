@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: Reader.pm 626 2008-11-28 08:26:45Z tim.bunce $
+## $Id: Reader.pm 668 2009-01-09 23:55:09Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Reader;
 
@@ -111,9 +111,6 @@ sub new {
 
     bless($self, $class);
     $self->{profile} = Devel::NYTProf::Data->new({filename => $self->{file}});
-
-    # a hack for testing/debugging
-    exit $ENV{NYTPROF_EXIT_AFTER_LOAD} if defined $ENV{NYTPROF_EXIT_AFTER_LOAD};
 
     return $self;
 }

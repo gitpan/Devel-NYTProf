@@ -2,7 +2,7 @@
 
 Devel::NYTProf::Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2009-01-03 12:03:28 +0000 (Sat, 03 Jan 2009) $ $Revision: 660 $)
+(As of $Date: 2009-01-05 23:05:37 +0000 (Mon, 05 Jan 2009) $ $Revision: 665 $)
 
 =head2 Changes in Devel::NYTProf 2.08
 
@@ -14,6 +14,9 @@ Core:
 
   Added savesrc=1 option to copy source code into the profile
     so reports are not affected by changes to the source files.
+
+  Added ability for DB::enable_profile() to specify a new file
+    for profile data to be written to.
 
 Reporting:
 

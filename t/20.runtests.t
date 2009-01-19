@@ -7,7 +7,7 @@
 ## README file and at http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: 20.runtests.t 647 2008-12-09 16:17:52Z tim.bunce $
+## $Id: 20.runtests.t 667 2009-01-07 12:06:52Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -120,7 +120,7 @@ for my $leave (@test_opt_leave) {
 
 sub run_all_tests {
     my ($env) = @_;
-    print "# Running tests with options: { @{[ %$env ]} }\n";
+    warn "# Running tests with options: { @{[ %$env ]} }\n";
     for my $test (@tests) {
         run_test($test, $env);
     }
@@ -295,6 +295,11 @@ sub verify_csv_report {
         }
     }
 
+    # if it was slower than expected then we're very generous, to allow for
+    # slow systems, e.g. cpan-testers running in cpu-starved virtual machines.
+    my $max_time_overrun_percentage = ($ENV{AUTOMATED_TESTING}) ? 300 : 200;
+    my $max_time_underrun_percentage = 95;
+
     my @accuracy_errors;
     $index = 0;
     my $limit = scalar(@got) - 1;
@@ -318,14 +323,9 @@ sub verify_csv_report {
 
             # Test aproximate times
             push @accuracy_errors,
-                "$test line $index: got $t0 expected approx $expected for time ($percent%)"
-
-                # if it was faster than expected then it should only be slightly faster
-                if ($percent < 95)
-
-                # if it was slower than expected then we're much more generous, to allow for
-                # slow systems, e.g. cpan-testers running in cpu-starved virtual machines.
-                or ($percent > 200);
+                  "$test line $index: got $t0 expected approx $expected for time ($percent%)"
+                if ($percent < $max_time_underrun_percentage)
+                or ($percent > $max_time_overrun_percentage);
 
             my $tc = $t0 / $c0;
             push @accuracy_errors, "$test line $index: got $tc0 expected ~$tc for time/calls"
