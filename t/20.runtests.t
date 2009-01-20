@@ -7,7 +7,7 @@
 ## README file and at http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: 20.runtests.t 667 2009-01-07 12:06:52Z tim.bunce $
+## $Id: 20.runtests.t 674 2009-01-20 13:04:11Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -178,19 +178,14 @@ exit 0;
 
 sub run_command {
     my ($cmd) = @_;
-    print "NYTPROF=$ENV{NYTPROF}\n" if $opts{v} && $ENV{NYTPROF};
+    warn "NYTPROF=$ENV{NYTPROF}\n" if $opts{v} && $ENV{NYTPROF};
     local $ENV{PERL5LIB} = $perl5lib;
-    my $ok;
-    if ($opts{v}) {
-        print "$cmd\n";
-        $ok = (system($cmd) == 0);
-    }
-    else {
-        open(RV, "$cmd |") or die "Can't execute $cmd: $!\n";
-        my @results = <RV>;
-        $ok = close RV;
-    }
-    warn "Error status $? from $cmd\n" if not $ok;
+    warn "$cmd\n" if $opts{v};
+    local *RV;
+    open(RV, "$cmd |") or die "Can't execute $cmd: $!\n";
+    my @results = <RV>;
+    my $ok = close RV;
+    warn "Error status $? from $cmd!\n\n" if not $ok;
     return $ok;
 }
 
@@ -402,7 +397,7 @@ sub profile_datafiles {
 sub unlink_old_profile_datafiles {
     my ($filename) = @_;
     my @profile_datafiles = profile_datafiles($filename);
-    warn "Unlinking old @profile_datafiles\n"
+    print "Unlinking old @profile_datafiles\n"
         if @profile_datafiles and $opts{v};
     1 while unlink @profile_datafiles;
 }
