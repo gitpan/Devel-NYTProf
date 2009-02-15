@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                Devel-NYTProf
-version:             2.07
+version:             2.08
 abstract:            Powerful feature-rich perl source code profiler
 license:             perl
 author:              
