@@ -13,7 +13,7 @@ use base qw(Exporter);
 our @EXPORT = qw(run_test_group);
 
 use Devel::NYTProf::Reader;
-use Devel::NYTProf::Util qw(strip_prefix_from_paths);
+use Devel::NYTProf::Util qw(strip_prefix_from_paths html_safe_filename);
 
 
 my $profile_datafile = 'nytprof_t.out';     # non-default to test override works
@@ -25,7 +25,7 @@ my %opts = (
     profperlopts => '-d:NYTProf',
     html         => $ENV{NYTPROF_TEST_HTML},
 );
-GetOptions(\%opts, qw/p=s I=s v|verbose d|debug html open profperlopts=s leave=i use_db_sub=i/)
+GetOptions(\%opts, qw/p=s I=s v|verbose d|debug html open profperlopts=s leave=i use_db_sub=i savesrc=i compress=i abort/)
     or exit 1;
 
 $opts{v}    ||= $opts{d};
@@ -63,15 +63,23 @@ $perl = ".$perl" if $perl =~ m|^\./|;
 
 my @test_opt_leave      = (defined $opts{leave})      ? ($opts{leave})      : (1, 0);
 my @test_opt_use_db_sub = (defined $opts{use_db_sub}) ? ($opts{use_db_sub}) : (0, 1);
+my @test_opt_savesrc    = (defined $opts{savesrc})    ? ($opts{savesrc})    : (0, 1);
+my @test_opt_compress   = (defined $opts{compress})   ? ($opts{compress})   : (0, 1);
 
 # build @env_combinations
 my @env_combinations;
 for my $leave (@test_opt_leave) {
     for my $use_db_sub (@test_opt_use_db_sub) {
-        push @env_combinations, {
-            start      => 'init',
-            leave      => $leave,
-            use_db_sub => $use_db_sub,
+        for my $savesrc (@test_opt_savesrc) {
+            for my $compress (@test_opt_compress) {
+                push @env_combinations, {
+                    start      => 'init',
+                    leave      => $leave,
+                    use_db_sub => $use_db_sub,
+                    savesrc    => $savesrc,
+                    compress   => $compress,
+                }
+            }
         }
     }
 }
@@ -109,8 +117,14 @@ sub run_test_group {
     ok($^O eq "MSWin32" ? -f $nytprofcsv : -x $nytprofcsv, "Found nytprofcsv as $nytprofcsv");
 
     for my $env (@env_combinations) {
+
+        my %env = (%$env, %NYTPROF_TEST);
+        local $ENV{NYTPROF} = join ":", map {"$_=$env{$_}"} sort keys %env;
+        my $context = "NYTPROF=$ENV{NYTPROF}\n";
+        ($opts{v}) ? warn $context : print $context;
+
         for my $test (@tests) {
-            run_test_with_env($test, $env);
+            run_test($test);
         }
 
         if ($test_code) {
@@ -126,11 +140,9 @@ sub run_test_group {
     }
 }
 
-sub run_test_with_env {
-    my ($test, $env, $test_code) = @_;
 
-    my %env = (%$env, %NYTPROF_TEST);
-    local $ENV{NYTPROF} = join ":", map {"$_=$env{$_}"} sort keys %env;
+sub run_test {
+    my ($test) = @_;
 
     #print $test . '.'x (20 - length $test);
     $test =~ / (.+?) \. (?:(\d)\.)? (\w+) $/x or do {
@@ -167,10 +179,17 @@ sub run_test_with_env {
     else {
         warn "Unrecognized extension '$type' on test file '$test'\n";
     }
+
+    if ($opts{abort}) {
+        my $test_builder = Test::More->builder;
+        my @summary = $test_builder->summary;
+        BAIL_OUT("Aborting after test failure")
+            if grep { !$_ } @summary;
+    }
 }
 
 sub run_command {
-    my ($cmd) = @_;
+    my ($cmd, $show_stdout) = @_;
     warn "NYTPROF=$ENV{NYTPROF}\n" if $opts{v} && $ENV{NYTPROF};
     local $ENV{PERL5LIB} = $perl5lib;
     warn "$cmd\n" if $opts{v};
@@ -178,7 +197,12 @@ sub run_command {
     open(RV, "$cmd |") or die "Can't execute $cmd: $!\n";
     my @results = <RV>;
     my $ok = close RV;
-    warn "Error status $? from $cmd!\n\n" if not $ok;
+    if (not $ok) {
+        warn "Error status $? from $cmd!\n";
+        warn "NYTPROF=$ENV{NYTPROF}\n" if $ENV{NYTPROF} and not $opts{v};
+        $show_stdout = 1;
+    }
+    if ($show_stdout) { warn $_ for @results }
     return $ok;
 }
 
@@ -259,6 +283,7 @@ sub verify_csv_report {
     # foo.pm => foo.pm.csv is tested by foo.pm.x
     $csvfile =~ s/\.x//;
     $csvfile .= ".p" unless $csvfile =~ /\.p/;
+    $csvfile = html_safe_filename($csvfile);
     $csvfile = "$outdir/${csvfile}-line.csv";
     unlink $csvfile;
 
@@ -398,4 +423,4 @@ sub unlink_old_profile_datafiles {
 
 1;
 
-# vim:ts=8:sw=2
+# vim:ts=8:sw=4

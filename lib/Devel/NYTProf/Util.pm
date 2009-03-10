@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Util.pm 646 2008-12-09 16:00:18Z tim.bunce $
+# $Id: Util.pm 691 2009-03-05 14:37:52Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Util;
 
@@ -216,8 +216,13 @@ sub calculate_median_absolute_deviation {
 
 sub html_safe_filename {
     my ($fname) = @_;
-    $fname =~ s{ ^[/\\] }{}x;                      # remove leading / or \
-    $fname =~ s{  [/\\] }{-}xg;                    # replace / and \ with html safe -
+    # replace / and \ with html safe '-', we also do a bunch of other
+    # chars, especially ':' for Windows, to make the namer simpler and safer
+    # also remove dots to keep VMS happy
+    $fname =~ s{  [-/\\:\*\?"'<>|.]+ }{-}xg;
+    # remove any leading or trailing '-' chars
+    $fname =~ s{^-}{};
+    $fname =~ s{-$}{};
     return $fname;
 }
 

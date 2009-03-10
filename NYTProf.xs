@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 679 2009-01-30 18:03:22Z dubiously $
+ * $Id: NYTProf.xs 709 2009-03-09 10:27:47Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -29,6 +29,9 @@
 
 #if !defined(OutCopFILE)
 #    define OutCopFILE CopFILE
+#endif
+#ifndef gv_fetchfile_flags
+#define gv_fetchfile_flags(str, len, flags) gv_fetchfile(str)
 #endif
 
 #ifndef OP_SETSTATE
@@ -76,6 +79,9 @@
 #define NYTP_FIDf_IS_PMC         0x0001 /* .pm probably really loaded as .pmc */
 #define NYTP_FIDf_VIA_STMT       0x0002 /* fid first seen by stmt profiler */
 #define NYTP_FIDf_VIA_SUB        0x0004 /* fid first seen by sub profiler */
+#define NYTP_FIDf_IS_AUTOSPLIT   0x0008 /* fid is cone of the 'parent' fid it was autosplit from */
+#define NYTP_FIDf_HAS_SRC        0x0010 /* src is available to profiler */
+#define NYTP_FIDf_SAVE_SRC       0x0020 /* src will be saved by profiler, if NYTP_FIDf_HAS_SRC also set */
 
 #define NYTP_TAG_ATTRIBUTE       ':'    /* :name=value\n */
 #define NYTP_TAG_COMMENT         '#'    /* till newline */
@@ -134,6 +140,8 @@
 /* Hash table definitions */
 #define MAX_HASH_SIZE 512
 
+static int next_fid = 1;         /* 0 is reserved */
+
 typedef struct hash_entry
 {
     unsigned int id;
@@ -147,6 +155,7 @@ typedef struct hash_entry
     unsigned int fid_flags;
     char *key_abs;
     void* next_inserted;                          /* linked list in insertion order */
+    /* update autosplit logic in get_file_id if fields are added or changed */
 } Hash_entry;
 
 typedef struct hash_table
@@ -306,6 +315,7 @@ static void finish_profile(pTHX);
 static void open_output_file(pTHX_ char *);
 static int reinit_if_forked(pTHX);
 static void write_cached_fids(void);
+static void write_src_of_files(pTHX);
 static void write_sub_line_ranges(pTHX);
 static void write_sub_callers(pTHX);
 static HV *load_profile_data_from_stream(SV* cb);
@@ -672,10 +682,14 @@ NYTP_write(NYTP_file ofile, const void *buffer, size_t len) {
     size_t result = 0;
 #endif
     if (FILE_STATE(ofile) == NYTP_FILE_STDIO) {
+        /* fwrite with len==0 is problematic */
+        /* http://www.opengroup.org/platform/resolutions/bwg98-007.html */
+        if (len == 0)
+            return len;
         if (fwrite(buffer, 1, len, ofile->file) < 1) {
             dTHX;
-            croak("fwrite error %d: %s", errno,
-                    strerror(errno));
+            croak("fwrite error %d writing %ld bytes to fd%d: %s",
+                errno, (long)len, fileno(ofile->file), strerror(errno));
         }
         return len;
     }
@@ -955,7 +969,6 @@ hash (char* _str, unsigned int len)
 static char
 hash_op (Hash_entry entry, Hash_entry** retval, bool insert)
 {
-    static int next_fid = 1;                      /* 0 is reserved */
     unsigned long h = hash(entry.key, entry.key_len) % hashtable.size;
 
     Hash_entry* found = hashtable.table[h];
@@ -1093,9 +1106,17 @@ write_cached_fids()
 {
     Hash_entry *e = hashtable.first_inserted;
     while (e) {
-        emit_fid(e);
+        if ( !(e->fid_flags & NYTP_FIDf_IS_AUTOSPLIT) )
+            emit_fid(e);
         e = (Hash_entry *)e->next_inserted;
     }
+}
+
+
+static Hash_entry *
+find_autosplit_parent(pTHX_ char* file_name)
+{
+    return NULL;
 }
 
 
@@ -1113,150 +1134,161 @@ static unsigned int
 get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
 {
 
-    Hash_entry entry, *found;
+    Hash_entry entry, *found, *parent_entry;
+    AV *src_av = Nullav;
 
-    /* AutoLoader adds some information to Perl's internal file name that we have
-       to remove or else the file path will be borked */
-    if (')' == file_name[file_name_len - 1]) {
-        char* new_end = strstr(file_name, " (autosplit ");
-        if (new_end)
-            file_name_len = new_end - file_name;
-    }
     entry.key = file_name;
     entry.key_len = (unsigned int)file_name_len;
 
     /* inserted new entry */
-    if (1 == hash_op(entry, &found, (bool)(created_via ? 1 : 0))) {
-        AV *src_av = Nullav;
-
-        /* if this is a synthetic filename for an 'eval'
-         * ie "(eval 42)[/some/filename.pl:line]"
-         * then ensure we've already generated an id for the underlying
-         * filename
-         */
-        if ('(' == file_name[0] && ']' == file_name[file_name_len-1]) {
-            char *start = strchr(file_name, '[');
-            const char *colon = ":";
-            /* can't use strchr here (not nul terminated) so use rninstr */
-            char *end = rninstr(file_name, file_name+file_name_len-1, colon, colon+1);
-
-            if (!start || !end || start > end) {    /* should never happen */
-                warn("NYTProf unsupported filename syntax '%s'", file_name);
-                return 0;
-            }
-            ++start;                              /* move past [ */
-            /* recurse */
-            found->eval_fid = get_file_id(aTHX_ start, end - start, created_via);
-            found->eval_line_num = atoi(end+1);
+    if (1 != hash_op(entry, &found, (bool)(created_via ? 1 : 0))) {
+        if (trace_level >= 4) {
+            if (found)
+                 warn("fid %d: %.*s\n",  found->id, found->key_len, found->key);
+            else warn("fid -: %.*s HAS NO FID\n",    entry.key_len,  entry.key);
         }
+        return (found) ? found->id : 0;
+    }
 
-        /* determine absolute path if file_name is relative */
-        found->key_abs = NULL;
-        if (!found->eval_fid &&
-            !(file_name_len==1 && strEQ(file_name,"-" )) &&
-            !(file_name_len==2 && strEQ(file_name,"-e")) &&
-#ifdef WIN32
-            /* XXX should we check for UNC names too? */
-            (file_name_len < 3 || !isALPHA(file_name[0]) || file_name[1] != ':' ||
-             (file_name[2] != '/' && file_name[2] != '\\'))
-#else
-            *file_name != '/'
-#endif
-           )
-        {
-            char file_name_abs[MAXPATHLEN * 2];
-            /* Note that the current directory may have changed
-             * between loading the file and profiling it.
-             * We don't use realpath() or similar here because we want to
-             * keep the view of symlinks etc. as the program saw them.
-             */
-            if (!getcwd(file_name_abs, sizeof(file_name_abs))) {
-                /* eg permission */
-                warn("getcwd: %s\n", strerror(errno));
-            }
-            else {
-#ifdef WIN32
-                char *p = file_name_abs;
-                while (*p) {
-                    if ('\\' == *p)
-                        *p = '/';
-                    ++p;
-                }
-                if (p[-1] != '/')
-#else
-                if (strNE(file_name_abs, "/"))
-#endif
-                {
-                    if (strnEQ(file_name, "./", 2))
-                        ++file_name;
-                    else
-                        strcat(file_name_abs, "/");
-                }
-                strncat(file_name_abs, file_name, file_name_len);
-                found->key_abs = strdup(file_name_abs);
-            }
+    /* if this is a synthetic filename for an 'eval'
+     * ie "(eval 42)[/some/filename.pl:line]"
+     * then ensure we've already generated an id for the underlying
+     * filename
+     */
+    if ('(' == file_name[0] && ']' == file_name[file_name_len-1]) {
+        char *start = strchr(file_name, '[');
+        const char *colon = ":";
+        /* can't use strchr here (not nul terminated) so use rninstr */
+        char *end = rninstr(file_name, file_name+file_name_len-1, colon, colon+1);
+
+        if (!start || !end || start > end) {    /* should never happen */
+            warn("NYTProf unsupported filename syntax '%s'", file_name);
+            return 0;
         }
+        ++start;                              /* move past [ */
+        /* recurse */
+        found->eval_fid = get_file_id(aTHX_ start, end - start, created_via);
+        found->eval_line_num = atoi(end+1);
+    }
 
-        if (fid_is_pmc(aTHX_ found))
-            found->fid_flags |= NYTP_FIDf_IS_PMC;
-        found->fid_flags |= created_via; /* NYTP_FIDf_VIA_STMT or NYTP_FIDf_VIA_SUB */
-
-        emit_fid(found);
-
-        /* if it's a string eval or a synthetic filename from CODE ref in @INC,
-         * or the command line -e '...code...'
-         * then think about writing out the source code */
-        if (found->eval_fid
-        || (found->key_len > 10 && found->key[9] == 'x' && strnEQ(found->key, "/loader/0x", 10))
-        || (found->key_len == 1 && strnEQ(found->key, "-",  1))
-        || (found->key_len == 2 && strnEQ(found->key, "-e", 2))
-        || (profile_opts & NYTP_OPTf_SAVESRC)
-        ) {
-            /* source only available if PERLDB_LINE or PERLDB_SAVESRC is true */
-            src_av = GvAV(gv_fetchfile(found->key));
-            if (!src_av && trace_level >= 3)
-                warn("No source available for fid %d%s\n",
-                    found->id, use_db_sub ? "" : ", set use_db_sub=1 option");
-        }
-
-        if (trace_level >= 2) {
-            /* including last_executed_fid can be handy for tracking down how
-             * a file got loaded */
-            warn("New fid %2u (after %2u:%-4u) %x e%u:%u %.*s %s%s\n",
+    /* if the file is an autosplit, with a file_name like
+     * "../../lib/POSIX.pm (autosplit into ../../lib/auto/POSIX/errno.al)"
+     * then we want it to have the same fid as the file it was split from.
+     * Thankfully that file will almost certainly be in the fid hash,
+     * so we can find it and copy the details.
+     * We do this after the string eval check above in the (untested) hope
+     * that string evals inside autoloaded subs get treated properly! XXX
+     */
+    if (   ')' == file_name[file_name_len-1]
+        && strstr(file_name, " (autosplit ")
+        && (parent_entry = find_autosplit_parent(aTHX_ file_name))
+    ) {
+        /* copy some details from parent_entry to found */
+        found->id            = parent_entry->id;
+        found->eval_fid      = parent_entry->eval_fid;
+        found->eval_line_num = parent_entry->eval_line_num;
+        found->file_size     = parent_entry->file_size;
+        found->file_mtime    = parent_entry->file_mtime;
+        found->fid_flags     = parent_entry->fid_flags;
+        /* prevent write_cached_fids() from writing this fid */
+        found->fid_flags |= NYTP_FIDf_IS_AUTOSPLIT;
+        /* avoid a gap in the fid sequence */
+        --next_fid;
+        /* write a log message if tracing */
+        if (trace_level >= 2)
+            warn("Old fid %2u (after %2u:%-4u) %x e%u:%u %.*s %s\n",
                 found->id, last_executed_fid, last_executed_line,
                 found->fid_flags, found->eval_fid, found->eval_line_num,
-                found->key_len, found->key, (found->key_abs) ? found->key_abs : "",
-                src_av ? ", with src" : ""
-            );
-        }
+                found->key_len, found->key, (found->key_abs) ? found->key_abs : "");
+        /* bail out without calling emit_fid() */
+        return found->id;
+    }
 
-        if (src_av) {
-            I32 lines = av_len(src_av);
-            int line;
-            if (trace_level >= 4)
-                warn("fid %d has %ld src lines", found->id, (long)lines+1);
-            for (line = 1; line <= lines; ++line) { /* lines start at 1 */
-                SV **svp = av_fetch(src_av, line, 0);
-                STRLEN len = 0;
-                char *src = (svp) ? SvPV(*svp, len) : "";
-                /* outputting the tag and fid for each (non empty) line
-                 * is a little inefficient, but not enough to worry about */
-                output_tag_int(NYTP_TAG_SRC_LINE, found->id);
-                output_int(line);
-                output_str(src, (I32)len);    /* includes newline */
-                if (trace_level >= 5)
-                    warn("fid %d src line %d: %s", found->id, line, src);
+    /* determine absolute path if file_name is relative */
+    found->key_abs = NULL;
+    if (!found->eval_fid &&
+        !(file_name_len==1 && strEQ(file_name,"-" )) &&
+        !(file_name_len==2 && strEQ(file_name,"-e")) &&
+#ifdef WIN32
+        /* XXX should we check for UNC names too? */
+        (file_name_len < 3 || !isALPHA(file_name[0]) || file_name[1] != ':' ||
+            (file_name[2] != '/' && file_name[2] != '\\'))
+#else
+        *file_name != '/'
+#endif
+        )
+    {
+        char file_name_abs[MAXPATHLEN * 2];
+        /* Note that the current directory may have changed
+            * between loading the file and profiling it.
+            * We don't use realpath() or similar here because we want to
+            * keep the view of symlinks etc. as the program saw them.
+            */
+        if (!getcwd(file_name_abs, sizeof(file_name_abs))) {
+            /* eg permission */
+            warn("getcwd: %s\n", strerror(errno));
+        }
+        else {
+#ifdef WIN32
+            char *p = file_name_abs;
+            while (*p) {
+                if ('\\' == *p)
+                    *p = '/';
+                ++p;
             }
+            if (p[-1] != '/')
+#else
+            if (strNE(file_name_abs, "/"))
+#endif
+            {
+                if (strnEQ(file_name, "./", 2))
+                    ++file_name;
+                else
+                    strcat(file_name_abs, "/");
+            }
+            strncat(file_name_abs, file_name, file_name_len);
+            found->key_abs = strdup(file_name_abs);
         }
     }
-    else        /* didn't insert a new entry */
-    if (trace_level >= 4) {
-        if (found)
-             warn("fid %d: %.*s\n",  found->id, found->key_len, found->key);
-        else warn("fid -: %.*s HAS NO FID\n",    entry.key_len,  entry.key);
+
+    if (fid_is_pmc(aTHX_ found))
+        found->fid_flags |= NYTP_FIDf_IS_PMC;
+    found->fid_flags |= created_via; /* NYTP_FIDf_VIA_STMT or NYTP_FIDf_VIA_SUB */
+
+    /* is source code available? */
+    /* source only available if PERLDB_LINE or PERLDB_SAVESRC is true */
+    /* which we set if savesrc option is enabled */
+    if ( (src_av = GvAV(gv_fetchfile_flags(found->key, found->key_len, 0))) )
+        found->fid_flags |= NYTP_FIDf_HAS_SRC;
+
+    /* if it's a string eval or a synthetic filename from CODE ref in @INC,
+     * or the command line -e '...code...'
+     * then we'd like to save the src (NYTP_FIDf_HAS_SRC) if it's available
+     */
+    if (found->eval_fid
+    || (found->key_len > 10 && found->key[9] == 'x' && strnEQ(found->key, "/loader/0x", 10))
+    || (found->key_len == 1 && strnEQ(found->key, "-",  1))
+    || (found->key_len == 2 && strnEQ(found->key, "-e", 2))
+    || (profile_opts & NYTP_OPTf_SAVESRC)
+    ) {
+        found->fid_flags |= NYTP_FIDf_SAVE_SRC;
     }
 
-    return (found) ? found->id : 0;
+    emit_fid(found);
+
+    if (trace_level >= 2) {
+        /* including last_executed_fid can be handy for tracking down how
+            * a file got loaded */
+        warn("New fid %2u (after %2u:%-4u) %x e%u:%u %.*s %s %s,%s\n",
+            found->id, last_executed_fid, last_executed_line,
+            found->fid_flags, found->eval_fid, found->eval_line_num,
+            found->key_len, found->key, (found->key_abs) ? found->key_abs : "",
+            (found->fid_flags & NYTP_FIDf_HAS_SRC)  ? "has src" : "no src",
+            (found->fid_flags & NYTP_FIDf_SAVE_SRC) ? "save src" : "won't save"
+        );
+    }
+
+    return found->id;
 }
 
 
@@ -1438,7 +1470,7 @@ start_cop_of_context(pTHX_ PERL_CONTEXT *cx)
         }
         o = o->op_next;
     }
-    if (trace_level >= 1) {
+    if (trace_level >= 3) {
         warn("\tstart_cop_of_context: can't find next cop for %s line %ld\n",
             block_type[CxTYPE(cx)], (long)CopLINE(PL_curcop_nytprof));
         do_op_dump(1, PerlIO_stderr(), start_op);
@@ -1792,10 +1824,6 @@ set_option(pTHX_ const char* option, const char* value)
         profile_opts = (atoi(value))
             ? profile_opts |  NYTP_OPTf_SAVESRC
             : profile_opts & ~NYTP_OPTf_SAVESRC;
-        if (profile_opts & NYTP_OPTf_SAVESRC) {
-            /* ask perl to keep the source lines so we can copy them */
-            PL_perldb |= PERLDBf_SAVESRC | PERLDBf_SAVESRC_NOSUBS;
-        }
     }
     else if (strEQ(option, "zero")) {
         profile_zero = atoi(value);
@@ -1838,6 +1866,9 @@ open_output_file(pTHX_ char *filename)
 #ifdef WIN32
     mode = "wb";
 #endif
+#ifdef VMS
+    mode = "wb";
+#endif
 
     if ((profile_opts & NYTP_OPTf_ADDPID)
     || out /* already opened so assume forking */
@@ -1871,6 +1902,7 @@ close_output_file(pTHX) {
     if (!out)
         return;
 
+    write_src_of_files(aTHX);
     write_sub_line_ranges(aTHX);
     write_sub_callers(aTHX);
     /* mark end of profile data for last_pid pid
@@ -2420,6 +2452,11 @@ init_profiler(pTHX)
          PL_perldb &= ~PERLDBf_NOOPT;
     else PL_perldb |=  PERLDBf_NOOPT;
 
+    if (profile_opts & NYTP_OPTf_SAVESRC) {
+        /* ask perl to keep the source lines so we can copy them */
+        PL_perldb |= PERLDBf_SAVESRC | PERLDBf_SAVESRC_NOSUBS;
+    }
+
     if (trace_level)
         warn("NYTProf init pid %d, clock %d%s\n", last_pid, profile_clock,
             profile_zero ? ", zero=1" : "");
@@ -2725,6 +2762,67 @@ write_sub_callers(pTHX)
                     sc[NYTP_SCi_REC_DEPTH], sc[NYTP_SCi_RECI_RTIME]);
         }
     }
+}
+
+
+static void
+write_src_of_files(pTHX)
+{
+    Hash_entry *e;
+    int t_has_src  = 0;
+    int t_save_src = 0;
+    int t_no_src = 0;
+    long t_lines = 0;
+
+    if (trace_level >= 1)
+        warn("writing file source code\n");
+
+    for (e = hashtable.first_inserted; e; e = (Hash_entry *)e->next_inserted) {
+        I32 lines;
+        int line;
+        AV *src_av = GvAV(gv_fetchfile_flags(e->key, e->key_len, 0));
+
+        if ( !(e->fid_flags & NYTP_FIDf_HAS_SRC) ) {
+            ++t_no_src;
+            if (src_av) /* sanity check */
+                warn("fid %d has src but NYTP_FIDf_HAS_SRC not set! (%.*s)",
+                    e->id, e->key_len, e->key);
+            continue;
+        }
+        if (!src_av) { /* sanity check */
+            ++t_no_src;
+            warn("fid %d has no src but NYTP_FIDf_HAS_SRC is set! (%.*s)",
+                e->id, e->key_len, e->key);
+            continue;
+        }
+        ++t_has_src;
+
+        if ( !(e->fid_flags & NYTP_FIDf_SAVE_SRC) ) {
+            continue;
+        }
+        ++t_save_src;
+
+        lines = av_len(src_av);
+        if (trace_level >= 4)
+            warn("fid %d has %ld src lines", e->id, (long)lines);
+        for (line = 1; line <= lines; ++line) { /* lines start at 1 */
+            SV **svp = av_fetch(src_av, line, 0);
+            STRLEN len = 0;
+            char *src = (svp) ? SvPV(*svp, len) : "";
+            /* outputting the tag and fid for each (non empty) line
+                * is a little inefficient, but not enough to worry about */
+            output_tag_int(NYTP_TAG_SRC_LINE, e->id);
+            output_int(line);
+            output_str(src, (I32)len);    /* includes newline */
+            if (trace_level >= 5)
+                warn("fid %d src line %d: %s", e->id, line, src);
+            ++t_lines;
+        }
+    }
+
+    if (trace_level >= 1)
+        warn("wrote %d source lines for %d files (%d skipped without savesrc option, %d others had no source available)\n",
+            t_lines, t_save_src, t_has_src-t_save_src, t_no_src);
 }
 
 
@@ -3676,7 +3774,13 @@ PROTOTYPES: DISABLE
 BOOT:
     {
     HV *stash = gv_stashpv("Devel::NYTProf::Constants", GV_ADDWARN);
-    newCONSTSUB(stash, "NYTP_FIDf_IS_PMC", newSViv(NYTP_FIDf_IS_PMC));
+    /* NYTP_FIDf_* */
+    newCONSTSUB(stash, "NYTP_FIDf_IS_PMC",       newSViv(NYTP_FIDf_IS_PMC));
+    newCONSTSUB(stash, "NYTP_FIDf_VIA_STMT",     newSViv(NYTP_FIDf_VIA_STMT));
+    newCONSTSUB(stash, "NYTP_FIDf_VIA_SUB",      newSViv(NYTP_FIDf_VIA_SUB));
+    newCONSTSUB(stash, "NYTP_FIDf_IS_AUTOSPLIT", newSViv(NYTP_FIDf_IS_AUTOSPLIT));
+    newCONSTSUB(stash, "NYTP_FIDf_HAS_SRC",      newSViv(NYTP_FIDf_HAS_SRC));
+    newCONSTSUB(stash, "NYTP_FIDf_SAVE_SRC",     newSViv(NYTP_FIDf_SAVE_SRC));
     /* NYTP_FIDi_* */
     newCONSTSUB(stash, "NYTP_FIDi_FILENAME",  newSViv(NYTP_FIDi_FILENAME));
     newCONSTSUB(stash, "NYTP_FIDi_EVAL_FID",  newSViv(NYTP_FIDi_EVAL_FID));
