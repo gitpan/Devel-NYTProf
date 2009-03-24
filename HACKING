@@ -1,5 +1,5 @@
 # vim: ts=8 sw=2 sts=0 noexpandtab:
-# $Id: HACKING 687 2009-03-03 21:34:18Z tim.bunce $
+# $Id: HACKING 717 2009-03-23 12:12:25Z tim.bunce $
 
 HACKING Devel::NYTProf
 ======================
@@ -361,3 +361,12 @@ name when generating the profile.
 Monitor and report when method cache is invalidated. Watch generation number
 and output a tag when it changes. Report locations of changes. Highlight those
 that happen after INIT phase.
+
+Fix testing of t/*.pm_x files which are currently being ignored.
+
+The autosplit handling doesn't address the naming of pseudo-fids from string
+evals, like "(eval 0)[test14.pm (autosplit into auto/test14/bar.al):17]"
+The 'file name' for the eval fid needs to be edited when read in to remove the
+' (autosplit...', but care should be taken to not remove the text for evals in
+autosplit files for which we've not been able to alias to the parent.
+
