@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 715 2009-03-23 11:27:08Z tim.bunce $
+ * $Id: NYTProf.xs 720 2009-03-25 14:58:10Z thatsafunnyname $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -1287,12 +1287,13 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
             if (strNE(file_name_abs, "/"))
 #endif
             {
-                if (strnEQ(file_name, "./", 2))
+                if (strnEQ(file_name, "./", 2)) {
                     ++file_name;
-                else
+                } else {
 #ifndef VMS
                     strcat(file_name_abs, "/");
 #endif
+                }
             }
             strncat(file_name_abs, file_name, file_name_len);
             found->key_abs = strdup(file_name_abs);
