@@ -2,9 +2,9 @@
 
 Devel::NYTProf::Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2009-03-24 09:15:31 +0000 (Tue, 24 Mar 2009) $ $Revision: 718 $)
+(As of $Date: 2009-03-29 22:48:55 +0100 (Sun, 29 Mar 2009) $ $Revision: 733 $)
 
-=head2 Changes in Devel::NYTProf 2.09 (svn r718) 24th March 2009
+=head2 Changes in Devel::NYTProf 2.09 (svn r733) 29th March 2009
 
   Added support for modules using AutoLoader, e.g., POSIX & Storable,
     to fix the "Unable to open '... (autosplit into ...)'" warnings.
