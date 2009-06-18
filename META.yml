@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                Devel-NYTProf
-version:             2.09
+version:             2.10
 abstract:            Powerful feature-rich perl source code profiler
 license:             perl
 author:              
@@ -10,7 +10,7 @@ distribution_type:   module
 requires:     
     Getopt::Long:                  0
     List::Util:                    0
-    Test::More:                    0
+    Test::More:                    0.81_01
     XSLoader:                      0
 meta-spec:
     url:     http://module-build.sourceforge.net/META-spec-v1.3.html

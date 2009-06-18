@@ -8,6 +8,7 @@ Makefile.PL
 NYTProf.xs
 README
 benchmark.pl
+bin/nytprofcg
 bin/nytprofcsv
 bin/nytprofhtml
 demo/README
@@ -16,12 +17,12 @@ demo/demo-run.pl
 demo/exclusive-sub-time.pl
 lib/Devel/NYTProf.pm
 lib/Devel/NYTProf/Apache.pm
-lib/Devel/NYTProf/Core.pm
 lib/Devel/NYTProf/Constants.pm
+lib/Devel/NYTProf/Core.pm
 lib/Devel/NYTProf/Data.pm
 lib/Devel/NYTProf/FileInfo.pm
-lib/Devel/NYTProf/Reader.pm
 lib/Devel/NYTProf/ReadStream.pm
+lib/Devel/NYTProf/Reader.pm
 lib/Devel/NYTProf/SubInfo.pm
 lib/Devel/NYTProf/Test.pm
 lib/Devel/NYTProf/Util.pm
@@ -37,6 +38,7 @@ t/00-load.t
 t/22-readstream-v20.out
 t/22-readstream.t
 t/30-util.t
+t/31-env.t
 t/50-errno.t
 t/80-version.t
 t/90-pod.t
@@ -112,8 +114,10 @@ t/test21-streval3.t
 t/test21-streval3.x
 t/test22-strevala.p
 t/test22-strevala.rdt
-t/test22-strevala.p
 t/test22-strevala.t
+t/test23-strevall.p
+t/test23-strevall.t
+t/test23-strevall.rdt
 t/test30-fork-0.p
 t/test30-fork-0.rdt
 t/test30-fork-0.t

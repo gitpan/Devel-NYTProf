@@ -7,20 +7,21 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Core.pm 719 2009-03-24 09:21:49Z tim.bunce $
+# $Id: Core.pm 774 2009-06-18 20:44:25Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Core;
 
 
 use XSLoader;
 
-our $VERSION = '2.09';    # increment with XS changes too
+our $VERSION = '2.10';    # increment with XS changes too
 
 XSLoader::load('Devel::NYTProf', $VERSION);
 
 if (my $NYTPROF = $ENV{NYTPROF}) {
-    for my $optval (split /:/, $NYTPROF) {
-        my ($opt, $val) = split /=/, $optval, 2;
+    for my $optval ( $NYTPROF =~ /((?:[^\\:]+|\\.)+)/g) {
+        my ($opt, $val) = $optval =~ /^((?:[^\\=]+|\\.)+)=((?:[^\\=]+|\\.)+)\z/;
+        s/\\(.)/$1/g for $opt, $val;
         DB::set_option($opt, $val);
     }
 }

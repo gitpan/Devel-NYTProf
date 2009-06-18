@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 733 2009-03-29 21:48:55Z tim.bunce $
+ * $Id: NYTProf.xs 773 2009-06-18 20:29:43Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -85,7 +85,8 @@
 #define NYTP_FIDf_IS_AUTOSPLIT   0x0008 /* fid is an autosplit (see AutoLoader) */
 #define NYTP_FIDf_HAS_SRC        0x0010 /* src is available to profiler */
 #define NYTP_FIDf_SAVE_SRC       0x0020 /* src will be saved by profiler, if NYTP_FIDf_HAS_SRC also set */
-#define NYTP_FIDf_IS_ALIAS       0x0040 /* fid is cone of the 'parent' fid it was autosplit from */
+#define NYTP_FIDf_IS_ALIAS       0x0040 /* fid is clone of the 'parent' fid it was autosplit from */
+#define NYTP_FIDf_IS_FAKE        0x0080 /* eg dummy caller of a string eval that doesn't have a filename */
 
 #define NYTP_TAG_ATTRIBUTE       ':'    /* :name=value\n */
 #define NYTP_TAG_COMMENT         '#'    /* till newline */
@@ -329,7 +330,6 @@ orig_ppaddr_t *PL_ppaddr_orig;
 static OP *pp_entersub_profiler(pTHX);
 static OP *pp_leaving_profiler(pTHX);
 static HV *sub_callers_hv;
-static HV *sub_xsubs_hv;    /* like PL_DBsub but for xsubs only */
 static HV *pkg_fids_hv;     /* currently just package names */
 
 /* macros for outputing profile data */
@@ -868,7 +868,7 @@ output_header(pTHX)
     NYTP_printf(out, ":%s=%u\n",       "ticks_per_sec", ticks_per_sec);
     NYTP_printf(out, ":%s=%lu\n",      "nv_size", (long unsigned int)sizeof(NV));
     /* $0 - application name */
-    mg_get(sv = get_sv("0",GV_ADDWARN));
+    sv = get_sv("0",GV_ADDWARN);
     NYTP_printf(out, ":%s=%s\n",       "application", SvPV_nolen(sv));
 
 #ifdef HAS_ZLIB
@@ -1192,34 +1192,46 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
         return (found) ? found->id : 0;
     }
 
-    /* if this is a synthetic filename for an 'eval'
+    /* if this is a synthetic filename for a string eval
      * ie "(eval 42)[/some/filename.pl:line]"
-     * then ensure we've already generated an id for the underlying
-     * filename
+     * then ensure we've already generated a fid for the underlying
+     * filename, and associate that fid with this eval fid
      */
-    if ('(' == file_name[0] && ']' == file_name[file_name_len-1]) {
-        char *start = strchr(file_name, '[');
-        const char *colon = ":";
-        /* can't use strchr here (not nul terminated) so use rninstr */
-        char *end = rninstr(file_name, file_name+file_name_len-1, colon, colon+1);
+    if ('(' == file_name[0]) {
+        if (']' == file_name[file_name_len-1]) {
+            char *start = strchr(file_name, '[');
+            const char *colon = ":";
+            /* can't use strchr here (not nul terminated) so use rninstr */
+            char *end = rninstr(file_name, file_name+file_name_len-1, colon, colon+1);
 
-        if (!start || !end || start > end) {    /* should never happen */
-            warn("NYTProf unsupported filename syntax '%s'", file_name);
-            return 0;
+            if (!start || !end || start > end) {    /* should never happen */
+                warn("NYTProf unsupported filename syntax '%s'", file_name);
+                return 0;
+            }
+            ++start;                              /* move past [ */
+            /* recurse */
+            found->eval_fid = get_file_id(aTHX_ start, end - start, created_via);
+            found->eval_line_num = atoi(end+1);
         }
-        ++start;                              /* move past [ */
-        /* recurse */
-        found->eval_fid = get_file_id(aTHX_ start, end - start, created_via);
-        found->eval_line_num = atoi(end+1);
+        else if (strnEQ(file_name, "(eval ", 6)) {
+            /* strange eval that doesn't have a filename associated */
+            /* seen in mod_perl, possibly from eval_sv(sv) api call */
+            char *eval_file = "/unknown-eval-invoker";
+            found->eval_fid = get_file_id(aTHX_ eval_file, strlen(eval_file),
+                NYTP_FIDf_IS_FAKE | created_via
+            );
+            found->eval_line_num = 1;
+        }
     }
 
-    if (   ')' == file_name[file_name_len-1] && strstr(file_name, " (autosplit ")) {
-        /* flag as autosplit */
+    /* is the file is an autosplit, e.g., has a file_name like
+     * "../../lib/POSIX.pm (autosplit into ../../lib/auto/POSIX/errno.al)"
+     */
+    if ( ')' == file_name[file_name_len-1] && strstr(file_name, " (autosplit ")) {
         found->fid_flags |= NYTP_FIDf_IS_AUTOSPLIT;
     }
 
-    /* if the file is an autosplit, with a file_name like
-     * "../../lib/POSIX.pm (autosplit into ../../lib/auto/POSIX/errno.al)"
+    /* if the file is an autosplit
      * then we want it to have the same fid as the file it was split from.
      * Thankfully that file will almost certainly be in the fid hash,
      * so we can find it and copy the details.
@@ -1328,12 +1340,12 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
     if (trace_level >= 2) {
         /* including last_executed_fid can be handy for tracking down how
             * a file got loaded */
-        warn("New fid %2u (after %2u:%-4u) %02x e%u:%u %.*s %s %s,%s\n",
+        warn("New fid %2u (after %2u:%-4u) 0x%02x e%u:%u %.*s %s %s,%s\n",
             found->id, last_executed_fid, last_executed_line,
             found->fid_flags, found->eval_fid, found->eval_line_num,
             found->key_len, found->key, (found->key_abs) ? found->key_abs : "",
             (found->fid_flags & NYTP_FIDf_HAS_SRC)  ? "has src" : "no src",
-            (found->fid_flags & NYTP_FIDf_SAVE_SRC) ? "save src" : "won't save"
+            (found->fid_flags & NYTP_FIDf_SAVE_SRC) ? "save src" : "nosave src"
         );
     }
 
@@ -1741,9 +1753,19 @@ DB_stmt(pTHX_ COP *cop, OP *op)
         if (!cop)
             cop = PL_curcop_nytprof;
         last_executed_line = CopLINE(cop);
-        if (!last_executed_line) {                /* i.e. finish_profile called by END */
-            if (op)                               /* should never happen */
+        if (!last_executed_line) {
+            /* perl options, like -n, -p, -Mfoo etc can cause this as perl effectively
+             * treats those as 'line 0', so we try not to warn in those cases.
+             */
+            char *pkg_name = CopSTASHPV(cop);
+            int is_preamble = (PL_scopestack_ix <= 6 && strEQ(pkg_name,"main"));
+
+            /* op is null when called via finish_profile called by END */
+            if (!is_preamble && op) {
                 warn("Unable to determine line number in %s", OutCopFILE(cop));
+                if (trace_level > 5)
+                    do_op_dump(1, PerlIO_stderr(), (OP*)cop);
+            }
             last_executed_line = 1;               /* don't want zero line numbers in data */
         }
     }
@@ -1755,7 +1777,7 @@ DB_stmt(pTHX_ COP *cop, OP *op)
                 (long)getpid(), (int)CopLINE(cop), OutCopFILE(cop));
         }
     }
-    if (file != last_executed_fileptr) {
+    if (file != last_executed_fileptr) { /* cache (hit ratio ~50% e.g. for perlcritic) */
         last_executed_fileptr = file;
         last_executed_fid = get_file_id(aTHX_ file, strlen(file), NYTP_FIDf_VIA_STMT);
     }
@@ -1983,13 +2005,15 @@ reinit_if_forked(pTHX)
     if (sub_callers_hv)
         hv_clear(sub_callers_hv);
 
-    /* any data that was unflushed in the parent when it forked
-     * is now duplicated unflushed in this child process.
-     * We need to be a little devious to prevent it getting flushed.
-     */
-    NYTP_close(out, 1); /* 1: discard output, to stop it being flushed to disk */
+    if (out) {
+        /* any data that was unflushed in the parent when it forked
+        * is now duplicated unflushed in this child process.
+        * We need to be a little devious to prevent it getting flushed.
+        */
+        NYTP_close(out, 1); /* 1: discard output, to stop it being flushed to disk */
 
-    open_output_file(aTHX_ PROF_output_file);
+        open_output_file(aTHX_ PROF_output_file);
+    }
 
     return 1;                                     /* have forked */
 }
@@ -2276,17 +2300,28 @@ pp_entersub_profiler(pTHX)
             : get_file_id(aTHX_ file, strlen(file), NYTP_FIDf_VIA_SUB);
         fid_line_key_len = sprintf(fid_line_key, "%u:%d", fid, line);
 
-        /* { subname => { "fid:line" => [ count, incl_time ] } } */
+        /* { called_subname => { "fid:line" => [ count, incl_time ] } } */
         sv_tmp = *hv_fetch(sub_callers_hv, subname_pv,
             (I32)SvCUR(subname_sv), 1);
+
+        /* XXX fid:line can be ambiguous, e.g sub foo { return sub { ... } }
+         * We could add subname_sv to the [ count, incl_time ] array
+         * and check it on each call. To improve performance we could also
+         * add the op and so avoid the string compare if the op's are the same.
+         * If there's a call with a different subname_sv value, then we
+         * could interpose a hash to hold per-subname values:
+         * old => { "fid:line" =>           [ count, incl_time, "sub1" ]          }
+         * new => { "fid:line" => { "sub1"=>[ count, incl_time ], "sub2"=>[...] } }
+         */
 
         if (!SvROK(sv_tmp)) { /* autoviv hash ref - is first call of this subname from anywhere */
             HV *hv = newHV();
             sv_setsv(sv_tmp, newRV_noinc((SV *)hv));
 
-            if (is_xs) { /* create dummy item to hold flag to indicate xs */
+            if (is_xs) {
+                /* create dummy item with fid=0 & line=0 to act as flag to indicate xs */
                 AV *av = new_sub_call_info_av(aTHX);
-                /* flag to indicate xs */
+                av_store(av, NYTP_SCi_CALL_COUNT, newSVuv(0));
                 sv_setsv(*hv_fetch(hv, "0:0", 3, 1), newRV_noinc((SV *)av));
 
                 if (cv && SvTYPE(cv) == SVt_PVCV) {
@@ -2393,20 +2428,20 @@ enable_profile(pTHX_ char *file)
     /* enable the run-time aspects to profiling */
     int prev_is_profiling = is_profiling;
 
-    if (!out) {
-        warn("enable_profile: NYTProf not active");
-        return 0;
-    }
-
     if (trace_level)
         warn("NYTProf enable_profile (previously %s) to %s",
             prev_is_profiling ? "enabled" : "disabled",
             (file && *file) ? file : PROF_output_file);
 
+    reinit_if_forked(aTHX);
+
     if (file && *file && strNE(file, PROF_output_file)) {
         /* caller wants output to go to a new file */
         close_output_file(aTHX);
         strncpy(PROF_output_file, file, sizeof(PROF_output_file)-1);
+    }
+
+    if (!out) {
         open_output_file(aTHX_ PROF_output_file);
     }
 
@@ -2414,6 +2449,9 @@ enable_profile(pTHX_ char *file)
     is_profiling = 1;               /* enable NYTProf profilers    */
     if (use_db_sub)                 /* set PL_DBsingle if required */
         sv_setiv(PL_DBsingle, 1);
+
+    /* discard time spent since profiler was disabled */
+    get_time_of_day(start_time);
 
     return prev_is_profiling;
 }
@@ -2454,6 +2492,12 @@ finish_profile(pTHX)
 
     close_output_file(aTHX);
 
+    /* reset sub profiler data  */
+    hv_clear(sub_callers_hv);
+    /* reset other state */
+    cumulative_overhead_ticks = 0;
+    cumulative_subr_secs = 0;
+
     SETERRNO(saved_errno, 0);
 }
 
@@ -2462,7 +2506,6 @@ finish_profile(pTHX)
 static int
 init_profiler(pTHX)
 {
-    unsigned int hashtable_memwidth;
 #ifndef HAS_GETTIMEOFDAY
     SV **svp;
 #endif
@@ -2525,9 +2568,8 @@ init_profiler(pTHX)
 #endif
 
     /* create file id mapping hash */
-    hashtable_memwidth = sizeof(Hash_entry*) * hashtable.size;
-    hashtable.table = (Hash_entry**)safemalloc(hashtable_memwidth);
-    memset(hashtable.table, 0, hashtable_memwidth);
+    hashtable.table = (Hash_entry**)safemalloc(sizeof(Hash_entry*) * hashtable.size);
+    memset(hashtable.table, 0, sizeof(Hash_entry*) * hashtable.size);
 
     open_output_file(aTHX_ PROF_output_file);
 
@@ -2564,8 +2606,6 @@ init_profiler(pTHX)
         sub_callers_hv = newHV();
     if (!pkg_fids_hv)
         pkg_fids_hv = newHV();
-    if (!sub_xsubs_hv)
-        sub_xsubs_hv = newHV();
     PL_ppaddr[OP_ENTERSUB] = pp_entersub_profiler;
 
     if (!PL_checkav) PL_checkav = newAV();
@@ -2854,12 +2894,21 @@ write_src_of_files(pTHX)
         lines = av_len(src_av);
         if (trace_level >= 4)
             warn("fid %d has %ld src lines", e->id, (long)lines);
+        /* for perl 5.10.0 or 5.8.8 (or earlier) use_db_sub is needed to get src */
+        /* give a hint for the common case */
+        if (0 == lines && !use_db_sub
+            &&   ( (e->key_len == 1 && strnEQ(e->key, "-",  1))
+                || (e->key_len == 2 && strnEQ(e->key, "-e", 2)) )
+        ) {
+            av_store(src_av, 1, newSVpv("# source not available, try using use_db_sub=1 option.\n",0));
+            lines = 1;
+        }
         for (line = 1; line <= lines; ++line) { /* lines start at 1 */
             SV **svp = av_fetch(src_av, line, 0);
             STRLEN len = 0;
             char *src = (svp) ? SvPV(*svp, len) : "";
             /* outputting the tag and fid for each (non empty) line
-                * is a little inefficient, but not enough to worry about */
+             * is a little inefficient, but not enough to worry about */
             output_tag_int(NYTP_TAG_SRC_LINE, e->id);
             output_int(line);
             output_str(src, (I32)len);    /* includes newline */
@@ -3027,20 +3076,25 @@ eval_outer_fid(pTHX_
     unsigned int *eval_file_num_ptr,
     unsigned int *eval_line_num_ptr
 ) {
+    unsigned int outer_fid;
     AV *av;
     SV *fid_info_rvav = *av_fetch(fid_fileinfo_av, fid, 1);
     if (!SvROK(fid_info_rvav)) /* should never happen */
         return 0;
     av = (AV *)SvRV(fid_info_rvav);
-    fid = (unsigned int)SvUV(*av_fetch(av,NYTP_FIDi_EVAL_FID,1));
-    if (!fid)
+    outer_fid = (unsigned int)SvUV(*av_fetch(av,NYTP_FIDi_EVAL_FID,1));
+    if (!outer_fid)
         return 0;
+    if (outer_fid == fid) {
+        warn("Possible corruption: eval_outer_fid of %d is %d!\n", fid, outer_fid);
+        return 0;
+    }
     if (eval_file_num_ptr)
-        *eval_file_num_ptr = fid;
+        *eval_file_num_ptr = outer_fid;
     if (eval_line_num_ptr)
         *eval_line_num_ptr = (unsigned int)SvUV(*av_fetch(av,NYTP_FIDi_EVAL_LINE,1));
     if (recurse)
-        eval_outer_fid(aTHX_ fid_fileinfo_av, fid, recurse, eval_file_num_ptr, eval_line_num_ptr);
+        eval_outer_fid(aTHX_ fid_fileinfo_av, outer_fid, recurse, eval_file_num_ptr, eval_line_num_ptr);
     return 1;
 }
 
@@ -3278,6 +3332,7 @@ load_profile_data_from_stream(SV *cb)
             {
                 AV *av;
                 SV *rv;
+                SV **svp;
                 SV *filename_sv;
                 unsigned int file_num      = read_int();
                 unsigned int eval_file_num = read_int();
@@ -3316,38 +3371,48 @@ load_profile_data_from_stream(SV *cb)
                         fid_flags, file_size, file_mtime);
                 }
 
-                if (av_exists(fid_fileinfo_av, file_num)) {
-                    /* should never happen, perhaps file is corrupt */
-                    AV *old_av = (AV *)SvRV(*av_fetch(fid_fileinfo_av, file_num, 1));
-                    SV *old_name = *av_fetch(old_av, 0, 1);
-                    warn("Fid %d redefined from %s to %s", file_num,
-                        SvPV_nolen(old_name), SvPV_nolen(filename_sv));
-                }
-
                 /* [ name, eval_file_num, eval_line_num, fid, flags, size, mtime, ... ]
                  */
                 av = newAV();
                 rv = newRV_noinc((SV*)av);
                 sv_bless(rv, file_info_stash);
-                av_store(fid_fileinfo_av, file_num, rv);
+
+                svp = av_fetch(fid_fileinfo_av, file_num, 1);
+                if (SvOK(*svp)) { /* should never happen, perhaps file is corrupt */
+                    AV *old_av = (AV *)SvRV(*av_fetch(fid_fileinfo_av, file_num, 1));
+                    SV *old_name = *av_fetch(old_av, 0, 1);
+                    warn("Fid %d redefined from %s to %s\n", file_num,
+                        SvPV_nolen(old_name), SvPV_nolen(filename_sv));
+                }
+                sv_setsv(*svp, rv);
 
                 av_store(av, NYTP_FIDi_FILENAME, filename_sv); /* av now owns the sv */
-                av_store(av, NYTP_FIDi_EVAL_FID,  (eval_file_num) ? newSVuv(eval_file_num) : &PL_sv_no);
-                av_store(av, NYTP_FIDi_EVAL_LINE, (eval_file_num) ? newSVuv(eval_line_num) : &PL_sv_no);
                 if (eval_file_num) {
                     SV *has_evals;
+                    /* this eval fid refers to the fid that contained the eval */
                     SV *eval_fi = *av_fetch(fid_fileinfo_av, eval_file_num, 1);
-                    /* this eval fid points to the fid that contained the eval */
-                    av_store(av, NYTP_FIDi_EVAL_FI, sv_rvweaken(newSVsv(eval_fi)));
-                    /* the fid that contained the eval has a list of eval fids */
-                    has_evals = *av_fetch((AV *)SvRV(eval_fi), NYTP_FIDi_HAS_EVALS, 1);
-                    if (!SvROK(has_evals)) /* autoviv */
-                        sv_setsv(has_evals, newRV_noinc((SV*)newAV()));
-                    av_push((AV *)SvRV(has_evals), sv_rvweaken(newSVsv(rv)));
+                    if (!SvROK(eval_fi)) { /* should never happen */
+                        warn("Eval '%s' (fid %d) has unknown invoking fid %d\n",
+                            SvPV_nolen(filename_sv), file_num, eval_file_num);
+                        /* so make it look like a real file instead of an eval */
+                        av_store(av, NYTP_FIDi_EVAL_FI,   &PL_sv_undef);
+                        eval_file_num = 0;
+                        eval_line_num = 0;
+                    }
+                    else {
+                        av_store(av, NYTP_FIDi_EVAL_FI, sv_rvweaken(newSVsv(eval_fi)));
+                        /* the fid that contained the eval has a list of eval fids */
+                        has_evals = *av_fetch((AV *)SvRV(eval_fi), NYTP_FIDi_HAS_EVALS, 1);
+                        if (!SvROK(has_evals)) /* autoviv */
+                            sv_setsv(has_evals, newRV_noinc((SV*)newAV()));
+                        av_push((AV *)SvRV(has_evals), sv_rvweaken(newSVsv(rv)));
+                    }
                 }
                 else {
                     av_store(av, NYTP_FIDi_EVAL_FI,   &PL_sv_undef);
                 }
+                av_store(av, NYTP_FIDi_EVAL_FID,  (eval_file_num) ? newSVuv(eval_file_num) : &PL_sv_no);
+                av_store(av, NYTP_FIDi_EVAL_LINE, (eval_file_num) ? newSVuv(eval_line_num) : &PL_sv_no);
                 av_store(av, NYTP_FIDi_FID,       newSVuv(file_num));
                 av_store(av, NYTP_FIDi_FLAGS,     newSVuv(fid_flags));
                 av_store(av, NYTP_FIDi_FILESIZE,  newSVuv(file_size));
@@ -3828,9 +3893,10 @@ BOOT:
     newCONSTSUB(stash, "NYTP_FIDf_VIA_STMT",     newSViv(NYTP_FIDf_VIA_STMT));
     newCONSTSUB(stash, "NYTP_FIDf_VIA_SUB",      newSViv(NYTP_FIDf_VIA_SUB));
     newCONSTSUB(stash, "NYTP_FIDf_IS_AUTOSPLIT", newSViv(NYTP_FIDf_IS_AUTOSPLIT));
-    newCONSTSUB(stash, "NYTP_FIDf_IS_ALIAS",     newSViv(NYTP_FIDf_IS_ALIAS));
     newCONSTSUB(stash, "NYTP_FIDf_HAS_SRC",      newSViv(NYTP_FIDf_HAS_SRC));
     newCONSTSUB(stash, "NYTP_FIDf_SAVE_SRC",     newSViv(NYTP_FIDf_SAVE_SRC));
+    newCONSTSUB(stash, "NYTP_FIDf_IS_ALIAS",     newSViv(NYTP_FIDf_IS_ALIAS));
+    newCONSTSUB(stash, "NYTP_FIDf_IS_FAKE",      newSViv(NYTP_FIDf_IS_FAKE));
     /* NYTP_FIDi_* */
     newCONSTSUB(stash, "NYTP_FIDi_FILENAME",  newSViv(NYTP_FIDi_FILENAME));
     newCONSTSUB(stash, "NYTP_FIDi_EVAL_FID",  newSViv(NYTP_FIDi_EVAL_FID));
@@ -3877,6 +3943,18 @@ void
 example_xsub(...)
     CODE:
     PERL_UNUSED_VAR(items);
+
+void
+example_xsub_eval(...)
+    CODE:
+    PERL_UNUSED_VAR(items);
+    /* to enable testing of string evals in embedded environments
+     * where there's no caller file information available.
+     * Only it doesn't actually do that because perl knows
+     * what it's executing at the time eval_pv() gets called.
+     * We need a better test, closer to true embedded.
+     */
+    eval_pv("Devel::NYTProf::Test::example_xsub()", 1);
 
 
 MODULE = Devel::NYTProf     PACKAGE = DB

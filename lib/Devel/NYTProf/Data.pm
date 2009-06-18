@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Data.pm 719 2009-03-24 09:21:49Z tim.bunce $
+# $Id: Data.pm 774 2009-06-18 20:44:25Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -52,7 +52,7 @@ use Devel::NYTProf::FileInfo;
 use Devel::NYTProf::SubInfo;
 use Devel::NYTProf::Util qw(make_path_strip_editor strip_prefix_from_paths get_abs_paths_alternation_regex);
 
-our $VERSION = '2.09';
+our $VERSION = '2.10';
 
 my $trace = (($ENV{NYTPROF}||'') =~ m/\b trace=(\d+) /x) && $1; # XXX a hack
 
@@ -111,13 +111,11 @@ sub subname_subinfo_map {
     return { %{ shift->{sub_subinfo} } }; # shallow copy
 }
 
-# default:
 # { pkgname => [ subinfo1, subinfo2, ... ], ... }
-# merged:
-# { pkgname => [ single_merged_subinfo ], ...  }
-sub package_subinfo_map {
+# if merged is true then array contains a single 'merged' subinfo
+sub XXXpackage_subinfo_map {
     my $self = shift;
-    my ($merged) = @_;
+    my ($merged_subs, $nested_pkgs) = @_;
 
     my $all_subs = $self->subname_subinfo_map;
     my %pkg;
@@ -125,7 +123,7 @@ sub package_subinfo_map {
         $name =~ s/^(.*::).*/$1/; # XXX $subinfo->package
         push @{ $pkg{$name} }, $subinfo;
     }
-    if ($merged) {
+    if ($merged_subs) {
         while ( my ($pkg_name, $subinfos) = each %pkg ) {
             my $subinfo = shift(@$subinfos)->clone;
             $subinfo->merge_in($_) for @$subinfos;
@@ -133,6 +131,45 @@ sub package_subinfo_map {
             @$subinfos = ($subinfo);
         }
     }
+    return \%pkg;
+}
+
+# package_tree_subinfo_map is like package_subinfo_map but returns
+# nested data instead of flattened.
+# for "Foo::Bar::Baz" package:
+# { Foo => { '' => [...], '::Bar' => { ''=>[...], '::Baz'=>[...] } } }
+# if merged is true then array contains a single 'merged' subinfo
+sub package_subinfo_map {
+    my $self = shift;
+    my ($merge_subs, $nested_pkgs) = @_;
+
+    my %pkg;
+    my %to_merge;
+
+    my $all_subs = $self->subname_subinfo_map;
+    while ( my ($name, $subinfo) = each %$all_subs ) {
+        $name =~ s/^(.*::).*/$1/; # XXX $subinfo->package
+        my $subinfos;
+        if ($nested_pkgs) {
+            my @parts = split /::/, $name;
+            my $node = $pkg{ shift @parts } ||= {};
+            $node = $node->{ shift @parts } ||= {} while @parts;
+            $subinfos = $node->{''} ||= [];
+        }
+        else {
+            $subinfos = $pkg{$name} ||= [];
+        }
+        push @$subinfos, $subinfo;
+        $to_merge{$subinfos} = $subinfos if $merge_subs;
+    }
+
+    for my $subinfos (values %to_merge) {
+        my $subinfo = shift(@$subinfos)->clone;
+        $subinfo->merge_in($_) for @$subinfos;
+        # replace the many with the one
+        @$subinfos = ($subinfo);
+    }
+
     return \%pkg;
 }
 

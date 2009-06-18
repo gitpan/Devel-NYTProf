@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-# $Id: Makefile.PL 723 2009-03-26 11:38:14Z thatsafunnyname $
+# $Id: Makefile.PL 772 2009-06-16 19:52:51Z tim.bunce $
 ###########################################################
 
 use 5.008001;
@@ -86,6 +86,18 @@ $mm_opts{LICENSE}  = 'perl' if $ExtUtils::MakeMaker::VERSION >= 6.3002;
 $mm_opts{OPTIMIZE} = '-g'   if $opt_g;
 $mm_opts{CCFLAGS}  = "-pg"  if $opt_pg;
 
+if( $ExtUtils::MakeMaker::VERSION >= 6.45 ) {
+    $mm_opts{META_MERGE} = {
+        resources => {
+            license     => 'http://dev.perl.org/licenses/',
+            homepage    => 'http://perl-devel-nytprof.googlecode.com',
+            bugtracker  => 'http://rt.cpan.org/Public/Dist/Display.html?Name=Devel-NYTProf',
+            repository  => 'http://perl-devel-nytprof.googlecode.com/svn',
+            MailingList => 'http://groups.google.com/group/develnytprof-dev',
+        }
+    }
+}
+
 if (my $gccversion = $Config{gccversion}) {    # ask gcc to be more pedantic
     print "Your perl was compiled with gcc (version $Config{gccversion}), okay.\n";
     $gccversion =~ s/[^\d\.]//g;               # just a number please
@@ -107,7 +119,7 @@ WriteMakefile(
     AUTHOR    => 'Adam Kaplan <akaplan@cpan.org>, Tim Bunce <timb@cpan.org>',
     PREREQ_PM => {
         'List::Util'   => 0,
-        'Test::More'   => 0,
+        'Test::More'   => '0.81_01',
         'XSLoader'     => 0,
         'Getopt::Long' => 0,
     },
@@ -118,7 +130,7 @@ WriteMakefile(
     clean => { FILES => join " ",
 		"nytprof demo-out",
 		map { ("t/$_", "xt/$_") }
-			qw(nytprof nytprof*.out *_outdir test*.*.new auto)
+			qw(nytprof nytprof*.out *_outdir test*.*_new auto)
     },
     dist  => {
         DIST_DEFAULT => 'clean distcheck disttest tardist',

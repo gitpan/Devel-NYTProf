@@ -2,7 +2,25 @@
 
 Devel::NYTProf::Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2009-03-29 22:48:55 +0100 (Sun, 29 Mar 2009) $ $Revision: 733 $)
+(As of $Date: 2009-06-18 21:44:25 +0100 (Thu, 18 Jun 2009) $ $Revision: 774 $)
+
+=head2 Changes in Devel::NYTProf 2.10 (svn r774) 18th June 2009
+
+  Fixed call count for XSubs that was one too high.
+  Fixed enable_profile() after fork thanks to delamonpansie
+    http://code.google.com/p/perl-devel-nytprof/issues/detail?id=15
+  Fixed to use correct scripts during test and so avoid permissions
+    issues, thanks to David Golden.
+  Fixed suprious "Unable to determine line number" warnings
+    when using options like -p, -n, -Mfoo.
+
+  Changed enable_profile() to discard the time spent since
+    profile was disabled.
+
+  Added license, homepage, bugtracker, repository and MailingList
+    resources to META.yml thanks to Michael G Schwern.
+  Added nytprofcg utility to generate callgrind data for
+    viewing via Kcachegrind, thanks to Chia-liang Kao.
 
 =head2 Changes in Devel::NYTProf 2.09 (svn r733) 29th March 2009
 

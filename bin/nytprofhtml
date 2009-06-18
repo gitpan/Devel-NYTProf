@@ -7,7 +7,7 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ##########################################################
-# $Id: nytprofhtml 732 2009-03-27 16:08:48Z thatsafunnyname $
+# $Id: nytprofhtml 774 2009-06-18 20:44:25Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -26,7 +26,7 @@ use Devel::NYTProf::Util qw(
     html_safe_filename
 );
 
-our $VERSION = '2.09';
+our $VERSION = '2.10';
 
 if ($VERSION != $Devel::NYTProf::Core::VERSION) {
     die "$0 version '$VERSION' doesn't match version '$Devel::NYTProf::Core::VERSION' of $INC{'Devel/NYTProf/Core.pm'}\n";
@@ -46,11 +46,15 @@ my %opt = (
     file => 'nytprof.out',
     out  => 'nytprof',
 );
-GetOptions(\%opt, qw/file|f=s delete|d out|o=s lib|l=s help|h open/) or exit 1;
+GetOptions(\%opt, qw/file|f=s delete|d out|o=s lib|l=s help|h open/)
+    or do {
+        usage();
+        exit 1;
+    };
 
 if (defined($opt{help})) {
-    &usage;
-    exit 1;
+    usage();
+    exit;
 }
 
 # handle file selection option
@@ -104,8 +108,8 @@ $reporter->set_param(
             For ${ \($profile->{attribute}{application}) }
         };
 
-        get_html_header("Profile: !~FILENAME~!")
-            . get_header(
+        get_html_header("NYTProf Profile: !~FILENAME~!")
+            . get_page_header(
             profile  => $profile,
             title    => "Performance Profile",
             subtitle => $subhead,
@@ -266,21 +270,38 @@ sub subroutine_table {
 }
 
 
+# http://www.jquery.info/The-TreeMap-plugin
+#
 sub package_tables {
     my ($profile) = @_;
+    my $pkg_html = "";
 
+    # XXX may not be appropriate if profiling wasn't continuous
+    my $profiler_duration = $profile->{attribute}{profiler_duration};
+
+    # [
+    #   undef,  # depth 0
+    #   {       # depth 1
+    #       "main::" => [ [ subinfo1, subinfo2 ] ],    # 2 subs in 1 pkg
+    #       "Foo::"  => [ [ subinfo3 ], [ subinfo4 ] ] # 2 subs in 2 pkg
+    #   }
+    #   {       # depth 2
+    #       "Foo::Bar::" => [ [ subinfo3 ] ]           # 1 sub in 1 pkg
+    #       "Foo::Baz::" => [ [ subinfo4 ] ]           # 1 sub in 1 pkg
+    #   }
+    # ]
     my $pkg_depth = $profile->packages_at_depth_subinfo({
         include_unused_subs => 0,
         rollup_packages => 1,
         merge_subinfos => 1,
     });
 
+    # default:
+    # { pkgname => [ subinfo1, subinfo2, ... ], ... }
+    # merged:
+    # { pkgname => [ single_merged_subinfo ], ...  }
     my $package_subinfo_map = $profile->package_subinfo_map(1);
 
-    # XXX may not be appropriate if profiling wasn't continuous
-    my $profiler_duration = $profile->{attribute}{profiler_duration};
-
-    my $pkg_html;
     # generate a separate table for each depth
     for my $depth (0..@$pkg_depth-1) {
 
@@ -535,11 +556,12 @@ $reporter->report();
 
 output_subs_indexpage($reporter, "index-subs-excl.html", 'excl_time');
 output_subs_indexpage($reporter, "index-subs-incl.html", 'incl_time');
+#output_package_treemap($reporter, "package-treemap.html");
 output_indexpage($reporter, "index.html");
 
 output_js_files($reporter);
 
-browse("$opt{out}/index.html") if $opt{open};
+open_browser_on("$opt{out}/index.html") if $opt{open};
 
 exit 0;
 
@@ -555,8 +577,8 @@ sub output_subs_indexpage {
     open(OUT, '>', "$opt{out}/$filename")
         or croak "Unable to open file $opt{out}/$filename: $!";
 
-    print OUT get_html_header();
-    print OUT get_header(profile => $profile, title => "Performance Profile Subroutine Index");
+    print OUT get_html_header("Subroutine Index - NYTProf");
+    print OUT get_page_header(profile => $profile, title => "Performance Profile Subroutine Index");
     print OUT qq{<div class="body_content"><br />};
 
     # Show top subs across all files
@@ -580,7 +602,7 @@ sub output_indexpage {
         or croak "Unable to open file $opt{out}/$filename: $!";
 
     print OUT get_html_header();
-    print OUT get_header(profile => $profile, title => "Performance Profile Index");
+    print OUT get_page_header(profile => $profile, title => "Performance Profile Index");
     print OUT qq{
         <div class="body_content"><br />
     };
@@ -627,6 +649,8 @@ sub output_indexpage {
 
     print OUT file_table($profile, $stats, 1);
 
+    #print OUT q{<br/><a href="package-treemap.html">Package treemap</a><br/>};
+
     print OUT package_tables($profile);
 
     my $footer = get_footer($profile);
@@ -635,20 +659,167 @@ sub output_indexpage {
 }
 
 
+sub output_package_treemap {
+    my ($r, $filename) = @_;
+    my $profile = $reporter->{profile};
+
+    open(OUT, '>', "$opt{out}/$filename")
+        or croak "Unable to open file $opt{out}/$filename: $!";
+
+    my $jstmdir = "js/js-treemap";
+    my $treemap_head = qq{
+	<script language="JavaScript" src="$jstmdir/BoxAnimator.js"></script>
+	<script language="JavaScript" src="$jstmdir/Decorators.js"></script>
+	<script language="JavaScript" src="$jstmdir/TreeMap.js"></script>
+	<script language="JavaScript" src="$jstmdir/DivTreeMap.js"></script>
+	<script language="JavaScript" src="$jstmdir/NodeFacade.js"></script>
+	<script language="JavaScript" src="$jstmdir/Rectangle.js"></script>
+	<script language="JavaScript" src="$jstmdir/TreeNode.js"></script>
+	<script language="JavaScript" src="$jstmdir/TreeNodeAdaptor.js"></script>
+	<script language="JavaScript" src="$jstmdir/TreeNodeShader.js"></script>
+	<script language="JavaScript" src="$jstmdir/Util.js"></script>
+	<script language="JavaScript" src="$jstmdir/XmlAdaptor.js"></script>
+	<script language="JavaScript" src="$jstmdir/XmlShader.js"></script>
+    };
+
+    print OUT get_html_header("Package Treemap - NYTProf", {
+        skip_style => 1,
+        skip_jquery => 1,
+        head_epilogue => $treemap_head,
+        not_xhtml => 1, # XXX js-treemap doesn't worth with xhtml at the moment
+    });
+    print OUT get_page_header(
+        profile => $profile,
+        title => "Performance Profile Subroutine Index",
+        body_onload => "init();"
+    ) if 0;
+    print OUT qq{<body onload="createGUI();">};
+
+    local $Data::Dumper::Sortkeys = 1;
+    local $Data::Dumper::Indent = 1;
+    local $Data::Dumper::Maxdepth = 3;
+    #warn Data::Dumper::Dumper($profile->package_subinfo_map(1,1));
+    my $package_tree_subinfo_map = $profile->package_subinfo_map(1,1);
+
+    # {   "id":"node02", "name":"0.2", "data":[ {"key":"key1", "value":195}, {"key":"key2", "value":5}], "children":[ ... ] }
+    my $node_mapper;
+    $node_mapper = sub {
+        my ($k, $v, $path, $depth) = @_;
+        # { main => { '' => [...] } }
+        # { Foo => { '' => [...], '::Bar' => { ''=>[...], '::Baz'=>[...] } } }
+        my $pad = "\t" x $depth;
+
+        #if (ref $v eq 'HASH' and keys %$v == 1 and $v->{''}) { $v = $v->{''}; }
+
+        my $title = @$path ? '::'.$path->[-1] : $k || 'main';
+        if (ref $v eq 'ARRAY') { # leaf node
+            return sprintf qq{%snew TreeNode( "%s", %s )},
+                $pad, "subs", $v->[0]->excl_time;
+        }
+        my @kids = map { $node_mapper->($_, $v->{$_}, [ @$path, $_ ], $depth+1) } keys %$v;
+        return sprintf qq{%snew TreeParentNode( "%s", [\n%s\n%s] )},
+            $pad, $title, join(",\n", @kids), $pad;
+    };
+
+    my $nodes = $node_mapper->('', $package_tree_subinfo_map, [], 0);
+    #warn $nodes;
+
+    print OUT qq{
+<script type="text/javascript">
+
+function createGUI()
+{
+    // Load the XML from the server
+    var filename = "js/treeNodes.json";
+
+    var request = createAjaxRequest();
+    request.onreadystatechange = function () {
+        if( request.readyState != 4 )
+            return;
+        if( 0 != request.status && request.status != 200 ) {
+            alert("Cannot GET '" + filename + "' (" + request.status + ")");
+            return;
+        }
+
+        // Evaluate the JSON
+        var rootNode = $nodes;
+
+        // Render the DIV treemap
+        var mapDIV = document.getElementById( "myDiv" );
+        var map = new DivTreeMap( mapDIV, rootNode, {
+                shader: new TreeNodeShader( rootNode )
+        } );
+
+        // Set up surrounding GUI controls
+        var infoBox = document.getElementById( "infoBox" );
+        var backButton = document.getElementById( "backButton" );
+        backButton.disabled = true;
+        
+        map.onMouseOver = function( node ) { infoBox.innerHTML = node.toString(); }; 
+        map.onMouseOut  = function( node ) { infoBox.innerHTML = "&nbsp;"; }; 
+        map.onZoomClick = function( node ) { map.zoom(); backButton.disabled = false; }
+        map.onBoxClick  = function( node ) { map.zoom(); backButton.disabled = false; }
+        backButton.onclick = function() { backButton.disabled = ( 0 === map.unzoom() ); };
+
+        // Define & plug in a resize hook
+        window.onresize = function() { map.checkResize(); };
+        map.checkResize();
+    };
+    request.open( 'GET', filename, true );
+    request.send( null );
+}
+
+function attrToString( attr )
+{
+    return attr.nodeName + "=" + attr.nodeValue;
+}
+</script>
+    };
+    my $pkg_html;
+    $pkg_html .= qq{
+<div class="divBox" style="position: relative; width: 100%; margin-top: 3px">
+	<button style="right: 0px;" id="backButton">Back</button>
+	<span id="infoBox"></span>
+</div>
+<div class="divBox" id="myDiv" style="height: 80%; width: 100%; background: #7777AA"></div>
+    };
+    print OUT $pkg_html;
+
+    #push @on_ready_js, qq{ };
+
+    my $footer = ""; # get_footer($profile);
+    print OUT "$footer</body></html>";
+    close OUT;
+}
+
+
 sub output_js_files {
     my ($profile) = @_;
     # find the js, gif, css etc files installed with Devel::NYTProf
-    (my $lib = $INC{"Devel/NYTProf/Data.pm"}) =~ s/Data\.pm$//;
-    for my $src (<$lib/js/*>) {
-        (my $file = $src) =~ s/.*\///;
-        unlink "$opt{out}/$file";
-        copy($src, "$opt{out}/$file")
-            or warn "Unable to copy $src to $opt{out}/$file: $!";
+    (my $lib = $INC{"Devel/NYTProf/Data.pm"}) =~ s/\/Data\.pm$//;
+    _copy_dir("$lib/js", "$opt{out}/js");
+}
+
+sub _copy_dir {
+    my ($srcdir, $dstdir) = @_;
+    mkdir $dstdir or die "Can't create $dstdir directory: $!\n"
+        unless -d $dstdir;
+    for my $src (glob("$srcdir/*")) {
+        (my $name = $src) =~ s{.*/}{};
+        next if $name =~ m/^\./; # skip . and .. etc
+        my $dstname = "$dstdir/$name";
+        if (not -f $src) {
+            _copy_dir($src, $dstname) if -d $src; # recurse
+            next; # skip non-ordinary-files
+        }
+        unlink $dstname;
+        copy($src, $dstname)
+            or warn "Unable to copy $src to $dstname: $!";
     }
 }
 
 
-sub browse {
+sub open_browser_on {
     my $index = shift;
     if (eval { require ActiveState::Browser; 1 }) {
         ActiveState::Browser::open($index);
@@ -956,22 +1127,31 @@ sub get_footer {
 
 # returns the generic header string.  Here only to make the code more readable.
 sub get_html_header {
-    my $title = shift || "Profile Index";
-    return <<EOD
-<!DOCTYPE html
-     PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
-     "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml">
+    my $title = shift || "Profile Index - NYTProf";
+    my $opts = shift || {};
+
+    my $html = <<EOD;
+    <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+    <html xmlns="http://www.w3.org/1999/xhtml">
+EOD
+    $html = "<html>" if $opts->{not_xhtml};
+    $html .= <<EOD;
 <!--
 This file was generated by Devel::NYTProf version $Devel::NYTProf::Core::VERSION
 -->
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8"></meta>
     <meta http-equiv="Content-Language" content="en-us"></meta>
-    <link rel="stylesheet" type="text/css" href="style.css"></link>
     <title>$title</title>
-    <script type="text/javascript" src="jquery-min.js"></script> 
-    <script type="text/javascript" src="jquery-tablesorter-min.js"></script> 
+EOD
+
+    $html .= qq{<link rel="stylesheet" type="text/css" href="style.css"></link>\n}
+        unless $opts->{skip_style};
+
+    $html .= <<EOD unless $opts->{skip_jquery};
+    <script type="text/javascript" src="js/jquery-min.js"></script> 
+
+    <script type="text/javascript" src="js/jquery-tablesorter-min.js"></script> 
     <link rel="stylesheet" type="text/css" href="style-tablesorter.css"></link>
     <script type="text/javascript">
     // when a column is first clicked on to sort it, use descending order
@@ -1000,12 +1180,17 @@ This file was generated by Devel::NYTProf version $Devel::NYTProf::Core::VERSION
         type: 'numeric' // set type, either numeric or text 
     }); 
     </script> 
+EOD
+    $html .= $opts->{head_epilogue} if $opts->{head_epilogue};
 
+    $html .= <<EOD;
 </head>
 EOD
+
+    return $html;
 }
 
-sub get_header {
+sub get_page_header {
     my %args = @_;
     my ($profile, $head1, $head2, $right1, $right2, $mode) = (
         $args{profile}, $args{title},     $args{subtitle},
@@ -1024,7 +1209,11 @@ sub get_header {
         </div>};
     }
 
-    return qq{<body> 
+    my @body_attribs;
+    push @body_attribs, qq{onload="$args{body_onload}"} if $args{body_onload};
+    my $body_attribs = join "; ", @body_attribs;
+
+    return qq{<body $body_attribs> 
 <div class="header" style="position: relative; overflow-x: hidden; overflow-y: hidden; z-index: 0; ">
 $back_link
 <div class="headerForeground" style="float: left">

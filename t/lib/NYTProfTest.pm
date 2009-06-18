@@ -8,6 +8,7 @@ use Config;
 use ExtUtils::testlib;
 use Getopt::Long;
 use Test::More;
+use Data::Dumper;
 
 use base qw(Exporter);
 our @EXPORT = qw(run_test_group);
@@ -42,6 +43,15 @@ if ($ENV{NYTPROF}) {                        # avoid external interference
 # options the user wants to override when running tests
 my %NYTPROF_TEST = map { split /=/, $_, 2 } split /:/, $ENV{NYTPROF_TEST} || '';
 
+# set some NYTProf options for this process in case 'extra tests' call
+# Devel::NYTProf::Data methods directly. This is a hack because the options
+# are global and there's no way to discover defaults or restore previous values.
+# So we just do trace for now.
+for my $opt (qw(trace)) {
+    DB::set_option($opt, $NYTPROF_TEST{$opt}) if defined $NYTPROF_TEST{$opt};
+}
+
+
 # but we'll force a specific test data file
 $NYTPROF_TEST{file} = $profile_datafile;
 
@@ -50,7 +60,7 @@ chdir('t') if -d 't';
 if (-d '../blib') {
     unshift @INC, '../blib/arch', '../blib/lib';
 }
-my $bindir      = (grep {-d} qw(./bin ../bin))[0];
+my $bindir      = (grep {-d} qw(./blib/script ../blib/script))[0];
 my $nytprofcsv  = "$bindir/nytprofcsv";
 my $nytprofhtml = "$bindir/nytprofhtml";
 
@@ -115,7 +125,10 @@ sub run_test_group {
     # Windows emulates the executable bit based on file extension only
     ok($^O eq "MSWin32" ? -f $nytprofcsv : -x $nytprofcsv, "Found nytprofcsv as $nytprofcsv");
 
+    my %env_influence;
+
     for my $env (@env_combinations) {
+        my $prev_failures = count_of_failed_tests();
 
         my %env = (%$env, %$override_env, %NYTPROF_TEST);
         local $ENV{NYTPROF} = join ":", map {"$_=$env{$_}"} sort keys %env;
@@ -127,6 +140,7 @@ sub run_test_group {
         }
 
         if ($extra_test_code) {
+            note("running $extra_test_count extra tests...");
             my $profile = eval { Devel::NYTProf::Data->new({filename => $profile_datafile}) };
             if ($@) {
                 diag($@);
@@ -136,7 +150,34 @@ sub run_test_group {
 
             $extra_test_code->($profile, $env);
         }
+
+        # did any tests fail?
+        my $failed = (count_of_failed_tests() - $prev_failures) ? 1 : 0;
+        # record what env settings may have influenced the failure
+        ++$env_influence{$_}{$env->{$_}}{$failed ? 'fail' : 'pass'} for keys %$env;
     }
+
+    # report which env vars influenced the failures, if any
+    my @env_influence;
+    for my $envvar (sort keys %env_influence) {
+        my $variants = $env_influence{$envvar};
+        local $Data::Dumper::Indent   = 0;
+        local $Data::Dumper::Sortkeys = 1;
+        local $Data::Dumper::Terse    = 1;
+        local $Data::Dumper::Quotekeys= 0;
+        local $Data::Dumper::Pair     = ' ';
+        $variants->{$_} = Dumper($variants->{$_}) for keys %$variants;
+        my $v = (values %$variants)[0]; # use one as a reference
+        # all the same?
+        next if keys %$variants == grep { $_ eq $v } values %$variants;
+        push @env_influence, sprintf "%15s: %s\n", $envvar,
+            join ', ', map { "$_ => $variants->{$_}" } sort keys %$variants;
+    }
+    if (@env_influence) {
+        diag "Test failures of $group related to settings:";
+        diag $_ for @env_influence;
+    }
+
 }
 
 
@@ -200,6 +241,7 @@ sub run_command {
         warn "Error status $? from $cmd!\n";
         warn "NYTPROF=$ENV{NYTPROF}\n" if $ENV{NYTPROF} and not $opts{v};
         $show_stdout = 1;
+        sleep 2;
     }
     if ($show_stdout) { warn $_ for @results }
     return $ok;
@@ -419,6 +461,12 @@ sub unlink_old_profile_datafiles {
     print "Unlinking old @profile_datafiles\n"
         if @profile_datafiles and $opts{v};
     1 while unlink @profile_datafiles;
+}
+
+
+sub count_of_failed_tests {
+    my @details = Test::Builder->new->details;
+    return scalar grep { not $_->{ok} } @details;
 }
 
 

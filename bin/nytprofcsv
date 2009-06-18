@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ##########################################################
-# $Id: nytprofcsv 601 2008-11-13 13:17:55Z tim.bunce $
+# $Id: nytprofcsv 754 2009-06-07 04:43:26Z twists $
 ##########################################################
 
 use warnings;
@@ -32,11 +32,15 @@ my %opt = (
     out  => 'nytprof',
     delim => 'comma',
 );
-GetOptions(\%opt, qw/file|f=s delete|d out|o=s help|h delim=s annotated|a/) or exit 1;
+GetOptions(\%opt, qw/file|f=s delete|d out|o=s help|h delim=s annotated|a/)
+    or do {
+        usage();
+        exit 1;
+    };
 
 if (defined($opt{help})) {
-    &usage;
-    exit 1;
+    usage();
+    exit;
 }
 
 $opt{delim} = $delimiters{ $opt{delim} } if exists $delimiters{ $opt{delim} };
@@ -190,7 +194,7 @@ Print the help message
  0,0,0,#--------------------------------------------------------------------
  0,0,0,# My New Source File!
  0,0,0,#--------------------------------------------------------------------
- 0,0,0,# $Id: nytprofcsv 601 2008-11-13 13:17:55Z tim.bunce $
+ 0,0,0,# $Id: nytprofcsv 754 2009-06-07 04:43:26Z twists $
  0,0,0,#--------------------------------------------------------------------
  0,0,0,
  0,0,0,package NYT::Feeds::Util;
