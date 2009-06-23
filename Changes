@@ -2,7 +2,7 @@
 
 Devel::NYTProf::Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2009-06-18 21:44:25 +0100 (Thu, 18 Jun 2009) $ $Revision: 774 $)
+(As of $Date: 2009-06-23 21:33:57 +0100 (Tue, 23 Jun 2009) $ $Revision: 780 $)
 
 =head2 Changes in Devel::NYTProf 2.10 (svn r774) 18th June 2009
 
@@ -16,6 +16,8 @@ Devel::NYTProf::Changes - List of significant changes to Devel::NYTProf
 
   Changed enable_profile() to discard the time spent since
     profile was disabled.
+  Changed NYTPROF env var parsing to allow backslash to escape
+    colons, for Windows, thanks to Joshua ben Jore.
 
   Added license, homepage, bugtracker, repository and MailingList
     resources to META.yml thanks to Michael G Schwern.

@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 774 2009-06-18 20:44:25Z tim.bunce $
+## $Id: NYTProf.pm 780 2009-06-23 20:33:57Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
@@ -260,6 +260,9 @@ variable to effect multiple setting by separating the values with a C<:>.  For
 example:
 
   export NYTPROF=trace=2:start=init:file=/tmp/nytprof.out
+
+Any colon or equal characters in a value can be escaped by preceeding them with
+a backslash.
 
 =head2 addpid=1
 
