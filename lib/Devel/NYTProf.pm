@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 864 2009-09-28 09:24:24Z tim.bunce $
+## $Id: NYTProf.pm 874 2009-10-23 12:24:06Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
