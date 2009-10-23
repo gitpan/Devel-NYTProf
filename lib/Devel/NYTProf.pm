@@ -7,11 +7,11 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 780 2009-06-23 20:33:57Z tim.bunce $
+## $Id: NYTProf.pm 864 2009-09-28 09:24:24Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
-our $VERSION = '2.10';
+our $VERSION = '2.11';
 
 package    # hide the package from the PAUSE indexer
     DB;
@@ -39,6 +39,7 @@ if ($use_db_sub) {               # install DB::DB sub
         ? sub { goto &DB_profiler }    # workaround bug in old perl versions (slow)
         : \&DB_profiler;
 }
+sub sub { die "DB::sub" }              # needed for perl <5.8.7 (<perl@24265)
 
 init_profiler();                       # provides true return value for module
 
@@ -58,7 +59,7 @@ Devel::NYTProf - Powerful feature-rich perl source code profiler
   # convert database into a set of html files, e.g., ./nytprof/index.html
   nytprofhtml
 
-  # or into comma seperated files, e.g., ./nytprof/*.csv
+  # or into comma separated files, e.g., ./nytprof/*.csv
   nytprofcsv
 
 =head1 DESCRIPTION
@@ -203,7 +204,7 @@ separately. Also the 'maximum recursion depth' per calling location is recorded.
 =head2 Application Profiling
 
 NYTProf records extra information in the data file to capture details that may
-be useful when analysing the performance. It also records the filename and line
+be useful when analyzing the performance. It also records the filename and line
 ranges of all the subroutines.
 
 NYTProf can profile applications that fork, and does so with no loss of
@@ -261,7 +262,7 @@ example:
 
   export NYTPROF=trace=2:start=init:file=/tmp/nytprof.out
 
-Any colon or equal characters in a value can be escaped by preceeding them with
+Any colon or equal characters in a value can be escaped by preceding them with
 a backslash.
 
 =head2 addpid=1
@@ -272,15 +273,21 @@ This avoids concurrent, or consecutive, processes from overwriting the same file
 
 =head2 trace=N
 
-Set trace level to N. 0 is off (the default). Higher values cause more detailed trace output.
+Set trace level to N. 0 is off (the default). Higher values cause more detailed
+trace output. Trace output is written to STDERR or wherever the L</log=F>
+option has specified.
+
+=head2 log=F
+
+Specify the name of the file that L</trace=N> output should be written to.
 
 =head2 start=...
 
 Specify at which phase of program execution the profiler should be enabled:
 
   start=begin - start immediately (the default)
-  start=init  - start at begining of INIT phase (after compilation)
-  start=end   - start at begining of END phase
+  start=init  - start at beginning of INIT phase (after compilation)
+  start=end   - start at beginning of END phase
   start=no    - don't automatically start
 
 The start=no option is handy if you want to explicitly control profiling
@@ -307,7 +314,7 @@ may be rewritten as
   1    return if (...)
 
 so the profile won't show a statement count for line 2 in your source code
-because the C<return> was merged into the C<if> statement on the preceeding line.
+because the C<return> was merged into the C<if> statement on the preceding line.
 
 Using the C<optimize=0> option disables the optimizer so you'll get lower
 overall performance but more accurately assigned statement counts.
@@ -323,7 +330,7 @@ Set to 0 to disable the collection of subroutine caller and timing details.
 
 Set to 0 to disable the determination of block and subroutine location per statement.
 This makes the profiler about 50% faster (as of July 2008) and produces smaller
-output files, but you loose some valuable information. The extra cost is likely
+output files, but you lose some valuable information. The extra cost is likely
 to be reduced in later versions anyway, as little optimization has been done on
 that part of the code.
 
@@ -340,13 +347,19 @@ profile data file.
 
 Set to 0 to disable the extra work done to allocate times accurately when
 returning into the middle of statement. For example leaving a subroutine
-and returning into the middle of statement, or re-evaluting a loop condition.
+and returning into the middle of statement, or re-evaluating a loop condition.
 
 This feature also ensures that in embedded environments, such as mod_perl,
 the last statement executed doesn't accumulate the time spent 'outside perl'.
 
 NYTProf is the only line-level profiler to measure these times correctly.
 The profiler is fast enough that you shouldn't need to disable this feature.
+
+=head2 findcaller=1
+
+Force NYTProf to recalculate the name of the caller of the each sub instead of
+'inheriting' the name calculated when the caller was entered. (Rarely needed,
+but might be useful in some odd cases.)
 
 =head2 use_db_sub=1
 
@@ -374,12 +387,34 @@ If you're using perl 5.10.0 or 5.8.8 (or earlier) then you need to also enable
 the C<use_db_sub=1> option otherwise perl doesn't make the source code
 available to NYTProf. Perl 5.8.9 and 5.10.1+ don't require that.
 
+=head2 slowops=N
+
+Profile perl opcodes that can be slow. These include opcodes that make system
+calls, such as C<print>, C<read>, C<sysread>, C<socket> etc., plus regular
+expression opcodes like C<subst> and C<match>.
+
+If C<N> is 0 then slowops profiling is disabled.
+
+If C<N> is 1 then all the builtins are treated as being defined in the C<CORE>
+package. So times for C<print> calls from anywhere in your code are merged and
+accounted for as calls to an xsub called C<CORE::print>.
+
+If C<N> is 2 then builtins are treated as being defined in the package that
+calls them. So calls to C<print> from package C<Foo> are treated as calls to an
+xsub called C<Foo::CORE:print>. Note the single colon after CORE.
+
+Default is 0 as this is a new feature and still somewhat experimental.
+The default may change to 2 in a future release.
+
+The opcodes are currently profiled using their internal names, so C<printf> is C<prtf>
+and the C<-x> file test is C<fteexec>. This is likely to change in future.
+
 =head2 usecputime=1
 
 Measure user CPU + system CPU time instead of the real elapsed 'wall clock'
 time (which is the default).
 
-Measuring CPU time has the advantage of making the measurements independant of
+Measuring CPU time has the advantage of making the measurements independent of
 time spent blocked waiting for the cpu or network i/o etc. But it also has the
 severe disadvantage of having typically I<far> less accurate timings.
 
@@ -414,6 +449,24 @@ integer id of the clock (which may vary between operating system types).
 If the clock you select isn't available then CLOCK_REALTIME is used.
 
 See L</CLOCKS> for more information.
+
+=head2 sigexit=1
+
+When perl exits normally it runs any code defined in C<END> blocks.
+NYTProf defines an END block that finishes profiling and writes out the final
+profile data.
+
+If the process ends due to a signal then END blocks are not executed.
+The C<sigexit> option tells NYTProf to catch some signals (e.g. INT, HUP, PIPE,
+SEGV, BUS) and ensure a usable by executing:
+
+    DB::finish_profile();
+    exit 1;
+
+You can also specify which signals to catch in this way by listing them,
+seperated by commas, as the value of the option (case is not significant):
+
+    sigexit=int,hup
 
 =head1 RUN-TIME CONTROL OF PROFILING
 
@@ -504,13 +557,13 @@ The problem with real time is that it's far from simple. It tends to drift and
 then be reset to match 'reality', either sharply or by small adjustments (via the
 adjtime() system call).
 
-Surprizingly, it can also go backwards, for reasons explained in
+Surprisingly, it can also go backwards, for reasons explained in
 http://preview.tinyurl.com/5wawnn
 
 =head3 CLOCK_MONOTONIC
 
-CLOCK_MONOTONIC rrepresents the amount of time since an unspecified point in
-the past (typically system start-up time).  It increments uniformally
+CLOCK_MONOTONIC represents the amount of time since an unspecified point in
+the past (typically system start-up time).  It increments uniformly
 independent of adjustments to 'wallclock time'.
 
 =head3 CLOCK_VIRTUAL
@@ -597,19 +650,28 @@ For example, the L<Readonly> module croaks with "Invalid tie" when profiled with
 perl versions before 5.8.8. That's because L<Readonly> explicitly checking for
 certain values from caller(). The L<NEXT> module is also affected.
 
-=head2 For perl < 5.10.1 it can't see calls made via operator overloading
+=head2 For perl < 5.10.1 it can't see some implicit calls and callbacks
 
-For perl versions prior to 5.8.9 and 5.10.1, calls made via operator
-overloading are not noticed by the I<subroutine> profiler.  Though the
-statements executed by the code in the overload subs are profiled.
+For perl versions prior to 5.8.9 and 5.10.1, some implicit subroutine calls
+can't be seen by the I<subroutine> profiler. Technically this affects calls
+made via the various perl C<call_*()> internal APIs.
 
-The effect is that time in the subroutines that handle overloading is
-accumulated by any subroutines that trigger overloading (so it is measured,
-but the cost is dispersed across possibly many calling locations).
+For example, the C<TIE><whatever> subroutine called by C<tie()>, all calls
+made via operator overloading, and callbacks from XS code, are not seen.
+
+The effect is that time in the subroutines for those calls is
+accumulated by the subs that trigger them. So time spent in calls invoked by
+perl to handle overloading are accumulated by the subroutines that trigger
+overloading (so it is measured, but the cost is dispersed across possibly many
+calling locations).
+
+Although the calls aren't seen by the subroutine profiler, the individual
+I<statements> executed by the code in the called subs are profiled by the
+statement profiler.
 
 =head2 goto
 
-The C<goto &foo;> isn't recognised as a subroutine call by the subroutine profiler.
+The C<goto &foo;> isn't recognized as a subroutine call by the subroutine profiler.
 
 =head2 Calls to XSubs which exit via an exception
 
@@ -624,9 +686,8 @@ warns about them. Patches welcome.
 
 =head2 SMP Systems
 
-Systems with multiple processors, which includes most modern machines, have
-
-From Linux docs (though applicable to most SMP systems):
+On systems with multiple processors, which includes most modern machines,
+(from Linux docs though applicable to most SMP systems):
 
   The CLOCK_PROCESS_CPUTIME_ID and CLOCK_THREAD_CPUTIME_ID clocks are realized on
   many platforms using timers from the CPUs (TSC on i386, AR.ITC on Itanium).
@@ -665,9 +726,6 @@ L</SMP Systems>.
 
 Processor affinity can be set using the C<taskset> command on Linux.
 
-Future versions of NYTProf could support setting processor affinity automatically
-(e.g. via sched_setaffinity() on Linux). Patches welcome!
-
 Note that processor affinity is inherited by child processes, so if the process
 you're profiling spawns cpu intensive sub processes then your process will be
 impacted by those more than it otherwise would.
@@ -682,7 +740,7 @@ timings. They will still be noisy but less so than the statement times.
 
 You could also try using the C<clock=N> option to select a high-resolution
 I<cpu-time> clock instead of a real-time one. That should be much less
-noisy, though you will loose visibility of wait-times due to network
+noisy, though you will lose visibility of wait-times due to network
 and disk I/O, for example.
 
 If your system doesn't support the C<clock=N> option then you could try
@@ -790,6 +848,6 @@ keep NYTProf working with the latest development perl versions. Nicholas Clark
 added zip compression. Jan Dubois contributed Windows support.
 
 Adam's work is sponsored by The New York Times Co. L<http://open.nytimes.com>.
-Tim's work was partly sponsored by Shopzilla. L<http://www.shopzilla.com>.
+Tim's work was partly sponsored by Shopzilla L<http://www.shopzilla.com> during 2008.
 
 =cut

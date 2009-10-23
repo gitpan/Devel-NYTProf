@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Util.pm 774 2009-06-18 20:44:25Z tim.bunce $
+# $Id: Util.pm 873 2009-10-22 16:24:17Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Util;
 
@@ -40,7 +40,7 @@ use Cwd qw(getcwd);
 use List::Util qw(sum);
 #use UNIVERSAL qw( isa can VERSION );
 
-our $VERSION = '2.10';
+our $VERSION = '2.11';
 
 our @EXPORT_OK = qw(
     fmt_float
@@ -162,11 +162,15 @@ sub fmt_float {
 }
 
 
+# XXX undocumented hack that may become to an option one day
+my $fmt_time_opt = $ENV{NYTPROF_FMT_TIME}; # e.g., '%fs'
+
 sub fmt_time {
     my ($sec, $width) = @_;
     $width = '' unless defined $width;
     return sprintf "%$width.0fs", 0    unless $sec;
     return '-'.fmt_time(-$sec, $width) if $sec < 0; # negative value, can happen
+    return sprintf $fmt_time_opt, $sec if $fmt_time_opt;
     return sprintf "%$width.0fns",                              $sec * 1e9 if $sec < 1e-6;
     return sprintf "%$width.0f&micro;s",                        $sec * 1e6 if $sec < 1e-3;
     return sprintf "%$width.*fms", 3 - length(int($sec * 1e3)), $sec * 1e3 if $sec < 1;

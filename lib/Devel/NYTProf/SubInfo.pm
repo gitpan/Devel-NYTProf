@@ -12,6 +12,7 @@ use Devel::NYTProf::Constants qw(
 
     NYTP_SCi_INCL_RTIME NYTP_SCi_EXCL_RTIME
     NYTP_SCi_INCL_UTIME NYTP_SCi_INCL_STIME NYTP_SCi_RECI_RTIME
+    NYTP_SCi_CALLING_SUB
 );
 
 use List::Util qw(sum min max);
@@ -38,6 +39,12 @@ sub subname    {
     return join $join, @$subname;
 }
 
+sub subname_without_package {
+    my $subname = shift->[NYTP_SIi_SUB_NAME];
+    $subname =~ s/.*:://;
+    return $subname;
+}
+
 sub profile    { shift->[NYTP_SIi_PROFILE] }
 
 sub package    { (my $pkg = shift->subname) =~ s/^(.*)::.*/$1/; return $pkg }
@@ -47,7 +54,24 @@ sub recur_max_depth { shift->[NYTP_SIi_REC_DEPTH] }
 sub recur_incl_time { shift->[NYTP_SIi_RECI_RTIME] }
 
 # { fid => { line => [ count, incl_time ] } }
-sub callers    { shift->[NYTP_SIi_CALLED_BY] }
+sub caller_fid_line_places {
+    my ($self, $merge_evals) = @_;
+    carp "caller_fid_line_places doesn't merge evals yet" if $merge_evals;
+    return $self->[NYTP_SIi_CALLED_BY];
+}
+
+sub called_by_subnames {
+    my ($self) = @_;
+    my $callers = $self->caller_fid_line_places || {};
+
+    my %subnames;
+    for my $sc (map { values %$_ } values %$callers) {
+        my $caller_subnames = $sc->[NYTP_SCi_CALLING_SUB];
+        @subnames{ keys %$caller_subnames } = (); # viv keys
+    }
+
+    return \%subnames;
+}
 
 sub is_xsub {
     my $self = shift;
@@ -114,7 +138,7 @@ sub merge_in {
     # adding reci_rtime is correct only if one sub doesn't call the other
     $self->[NYTP_SIi_RECI_RTIME] += $new->[NYTP_SIi_RECI_RTIME]; # XXX
 
-    # { fid => { line => [ count, incl_time ] } }
+    # { fid => { line => [ count, incl_time, ... ] } }
     my $dst_called_by = $self->[NYTP_SIi_CALLED_BY] ||= {};
     my $src_called_by = $new ->[NYTP_SIi_CALLED_BY] ||  {};
 
@@ -147,6 +171,11 @@ sub merge_in {
             # ug, we can't really combine recursive incl_time, but this is better than undef
             $dst_line_info->[NYTP_SCi_RECI_RTIME] = max($dst_line_info->[NYTP_SCi_RECI_RTIME],
                                                         $src_line_info->[NYTP_SCi_RECI_RTIME]);
+
+            my $src_cs = $src_line_info->[NYTP_SCi_CALLING_SUB]||={};
+            my $dst_cs = $dst_line_info->[NYTP_SCi_CALLING_SUB]||={};
+            $dst_cs->{$_} = $src_cs->{$_} for keys %$src_cs;
+
             #push @{$src_line_info}, "merged"; # flag hack, for debug
         }
     }
@@ -156,16 +185,17 @@ sub merge_in {
 
 sub caller_fids {
     my ($self, $merge_evals) = @_;
-    my $callers = $self->callers($merge_evals) || {};
+    my $callers = $self->caller_fid_line_places($merge_evals) || {};
     my @fids = keys %$callers;
     return @fids;    # count in scalar context
 }
 
 sub caller_count { return scalar shift->caller_places; } # XXX deprecate later
 
+# array of [ $fid, $line, $sub_call_info ], ...
 sub caller_places {
     my ($self, $merge_evals) = @_;
-    my $callers = $self->callers || {};
+    my $callers = $self->caller_fid_line_places || {};
 
     my @callers;
     for my $fid (sort { $a <=> $b } keys %$callers) {
@@ -180,16 +210,23 @@ sub caller_places {
 
 sub normalize_for_test {
     my $self = shift;
+    my $profile = $self->profile;
 
     # zero subroutine inclusive time
     $self->[NYTP_SIi_INCL_RTIME] = 0;
     $self->[NYTP_SIi_EXCL_RTIME] = 0;
     $self->[NYTP_SIi_RECI_RTIME] = 0;
 
-    my $subname = $self->subname(' and ');
-
     # { fid => { line => [ count, incl, excl, ucpu, scpu, reci, recdepth ] } }
-    my $callers = $self->callers || {};
+    my $callers = $self->caller_fid_line_places || {};
+
+    # delete calls from modules shipped with perl
+    for my $fid (keys %$callers) {
+        next if not $fid;
+        my $fileinfo = $profile->fileinfo_of($fid) or next;
+        next if not $fileinfo->is_perl_std_lib;
+        delete $callers->{$fid};
+    }
 
     # zero per-call-location subroutine inclusive time
     for my $sc (map { values %$_ } values %$callers) {
@@ -215,12 +252,14 @@ sub dump {
     my @caller_places = $self->caller_places;
     for my $cp (@caller_places) {
         my ($fid, $line, $sc) = @$cp;
+        my @sc = @$sc;
+        $sc[NYTP_SCi_CALLING_SUB] = join "|", keys %{ $sc[NYTP_SCi_CALLING_SUB] };
         printf $fh "%s%s%s%d%s%d%s[ %s ]\n",
             $prefix,
             'called_by', $separator,
             $fid,  $separator,
             $line, $separator,
-            join(" ", map { defined($_) ? $_ : 'undef' } @$sc);
+            join(" ", map { defined($_) ? $_ : 'undef' } @sc);
     }
 }
 

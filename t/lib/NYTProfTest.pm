@@ -9,24 +9,30 @@ use ExtUtils::testlib;
 use Getopt::Long;
 use Test::More;
 use Data::Dumper;
+use File::Temp qw(tempfile);
 
 use base qw(Exporter);
-our @EXPORT = qw(run_test_group);
+our @EXPORT = qw(
+    run_test_group
+    run_command
+    do_foreach_env_combination
+    profile_this_code
+);
 
+use Devel::NYTProf::Data;
 use Devel::NYTProf::Reader;
 use Devel::NYTProf::Util qw(strip_prefix_from_paths html_safe_filename);
 
-
-my $profile_datafile = 'nytprof_t.out';     # non-default to test override works
 
 my $tests_per_extn = {p => 1, rdt => 1, x => 3};
 
 
 my %opts = (
-    profperlopts => '-d:NYTProf',
+    one          => $ENV{NYTPROF_TEST_ONE},
+    profperlopts => $ENV{NYTPROF_TEST_PROFPERLOPTS} || '-d:NYTProf',
     html         => $ENV{NYTPROF_TEST_HTML},
 );
-GetOptions(\%opts, qw/p=s I=s v|verbose d|debug html open profperlopts=s leave=i use_db_sub=i savesrc=i compress=i abort/)
+GetOptions(\%opts, qw/p=s I=s v|verbose d|debug html open profperlopts=s leave=i use_db_sub=i savesrc=i compress=i one abort/)
     or exit 1;
 
 $opts{v}    ||= $opts{d};
@@ -52,9 +58,6 @@ for my $opt (qw(trace)) {
 }
 
 
-# but we'll force a specific test data file
-$NYTPROF_TEST{file} = $profile_datafile;
-
 chdir('t') if -d 't';
 
 if (-d '../blib') {
@@ -71,7 +74,13 @@ my $perl     = $opts{p} || $^X;
 # turn ./perl into ../perl, because of chdir(t) above.
 $perl = ".$perl" if $perl =~ m|^\./|;
 
-my @test_opt_leave      = (defined $opts{leave})      ? ($opts{leave})      : (1, 0);
+if ($opts{one}) {           # for one quick test
+    $opts{leave}      = 1;
+    $opts{use_db_sub} = 0;
+    $opts{savesrc}    = 1;
+    $opts{compress}   = 1;
+}
+my @test_opt_leave      = (defined $opts{leave})      ? ($opts{leave})      : (0, 1);
 my @test_opt_use_db_sub = (defined $opts{use_db_sub}) ? ($opts{use_db_sub}) : (0, 1);
 my @test_opt_savesrc    = (defined $opts{savesrc})    ? ($opts{savesrc})    : (0, 1);
 my @test_opt_compress   = (defined $opts{compress})   ? ($opts{compress})   : (0, 1);
@@ -84,6 +93,7 @@ for my $leave (@test_opt_leave) {
             for my $compress (@test_opt_compress) {
                 push @env_combinations, {
                     start      => 'init',
+                    slowops    => 2,
                     leave      => $leave,
                     use_db_sub => $use_db_sub,
                     savesrc    => $savesrc,
@@ -94,10 +104,69 @@ for my $leave (@test_opt_leave) {
     }
 }
 
+my %env_influence;
 
+
+sub do_foreach_env_combination {
+    my ($code) = @_;
+    COMBINATION:
+    for my $env (@env_combinations) {
+
+        my $prev_failures = count_of_failed_tests();
+
+        my %env = (%$env, %NYTPROF_TEST);
+        local $ENV{NYTPROF} = join ":", map {"$_=$env{$_}"} sort keys %env;
+        my $context = "NYTPROF=$ENV{NYTPROF}\n";
+        ($opts{v}) ? warn $context : print $context;
+
+        ok eval { $code->(\%env) };
+        if ($@) {
+            diag "Test group aborted: $@";
+            last COMBINATION;
+        }
+
+        # did any tests fail?
+        my $failed = (count_of_failed_tests() - $prev_failures) ? 1 : 0;
+        # record what env settings may have influenced the failure
+        ++$env_influence{$_}{$env->{$_}}{$failed ? 'fail' : 'pass'} for keys %$env;
+
+    }
+}
+
+
+# report which env vars influenced the failures, if any
+sub report_env_influence {
+    my ($tag) = @_;
+
+    my @env_influence;
+    for my $envvar (sort keys %env_influence) {
+        my $variants = $env_influence{$envvar};
+        local $Data::Dumper::Indent   = 0;
+        local $Data::Dumper::Sortkeys = 1;
+        local $Data::Dumper::Terse    = 1;
+        local $Data::Dumper::Quotekeys= 0;
+        local $Data::Dumper::Pair     = ' ';
+        $variants->{$_} = Dumper($variants->{$_}) for keys %$variants;
+        my $v = (values %$variants)[0]; # use one as a reference
+        # all the same?
+        next if keys %$variants == grep { $_ eq $v } values %$variants;
+        push @env_influence, sprintf "%15s: %s\n", $envvar,
+            join ', ', map { "$_ => $variants->{$_}" } sort keys %$variants;
+    }
+    %env_influence = ();
+
+    if (@env_influence and not defined wantarray) {
+        diag "Test failures of $tag related to settings:";
+        diag $_ for @env_influence;
+    }
+
+    return @env_influence;
+}
+
+
+# execute a group of tests (t/testFoo.*) - calls plan()
 sub run_test_group {
     my ($opts) = @_;
-    my $override_env     = $opts->{override_env} || {};
     my $extra_test_code  = $opts->{extra_test_code};
     my $extra_test_count = $opts->{extra_test_count} || 0;
 
@@ -118,30 +187,27 @@ sub run_test_group {
         print "nytprofcvs: $nytprofcsv\n";
     }
 
-    my $tests_per_env = number_of_tests(@tests) + $extra_test_count;
+    my $tests_per_env = number_of_tests(@tests) + $extra_test_count + 1;
 
     plan tests => 1 + $tests_per_env * @env_combinations;
 
     # Windows emulates the executable bit based on file extension only
     ok($^O eq "MSWin32" ? -f $nytprofcsv : -x $nytprofcsv, "Found nytprofcsv as $nytprofcsv");
 
-    my %env_influence;
+    # non-default to test override works and allow parallel testing
+    my $profile_datafile = "nytprof_$group.out";
+    $NYTPROF_TEST{file} = $profile_datafile;
 
-    for my $env (@env_combinations) {
-        my $prev_failures = count_of_failed_tests();
-
-        my %env = (%$env, %$override_env, %NYTPROF_TEST);
-        local $ENV{NYTPROF} = join ":", map {"$_=$env{$_}"} sort keys %env;
-        my $context = "NYTPROF=$ENV{NYTPROF}\n";
-        ($opts{v}) ? warn $context : print $context;
+    do_foreach_env_combination( sub {
+        my ($env) = @_;
 
         for my $test (@tests) {
             run_test($test);
         }
 
         if ($extra_test_code) {
-            note("running $extra_test_count extra tests...");
-            my $profile = eval { Devel::NYTProf::Data->new({filename => $profile_datafile}) };
+            print("running $extra_test_count extra tests...\n");
+            my $profile = eval { Devel::NYTProf::Data->new({ filename => $profile_datafile }) };
             if ($@) {
                 diag($@);
                 fail("extra tests group '$group'") foreach (1 .. $extra_test_count);
@@ -151,33 +217,10 @@ sub run_test_group {
             $extra_test_code->($profile, $env);
         }
 
-        # did any tests fail?
-        my $failed = (count_of_failed_tests() - $prev_failures) ? 1 : 0;
-        # record what env settings may have influenced the failure
-        ++$env_influence{$_}{$env->{$_}}{$failed ? 'fail' : 'pass'} for keys %$env;
-    }
+        return 1;
+    } );
 
-    # report which env vars influenced the failures, if any
-    my @env_influence;
-    for my $envvar (sort keys %env_influence) {
-        my $variants = $env_influence{$envvar};
-        local $Data::Dumper::Indent   = 0;
-        local $Data::Dumper::Sortkeys = 1;
-        local $Data::Dumper::Terse    = 1;
-        local $Data::Dumper::Quotekeys= 0;
-        local $Data::Dumper::Pair     = ' ';
-        $variants->{$_} = Dumper($variants->{$_}) for keys %$variants;
-        my $v = (values %$variants)[0]; # use one as a reference
-        # all the same?
-        next if keys %$variants == grep { $_ eq $v } values %$variants;
-        push @env_influence, sprintf "%15s: %s\n", $envvar,
-            join ', ', map { "$_ => $variants->{$_}" } sort keys %$variants;
-    }
-    if (@env_influence) {
-        diag "Test failures of $group related to settings:";
-        diag $_ for @env_influence;
-    }
-
+    report_env_influence($group);
 }
 
 
@@ -191,27 +234,29 @@ sub run_test {
     };
     my ($basename, $fork_seqn, $type) = ($1, $2 || 0, $3);
 
+    my $profile_datafile = $NYTPROF_TEST{file};
     my $test_datafile = (profile_datafiles($profile_datafile))[$fork_seqn];
+    my $outdir = $basename.'_outdir';
 
     if ($type eq 'p') {
         unlink_old_profile_datafiles($profile_datafile);
-        profile($test, $profile_datafile);
-    }
-    elsif ($type eq 'rdt') {
-        verify_data($test, $test_datafile);
-    }
-    elsif ($type eq 'x') {
-        my $outdir = $basename.'_outdir';
-        mkdir $outdir or die "mkdir($outdir): $!" unless -d $outdir;
-        unlink <$outdir/*>;
-
-        verify_csv_report($test, $test_datafile, $outdir);
+        profile($test, $profile_datafile)
+            or die "Profiling $test failed\n";
 
         if ($opts{html}) {
             my $cmd = "$perl $nytprofhtml --file=$profile_datafile --out=$outdir";
             $cmd .= " --open" if $opts{open};
             run_command($cmd);
         }
+    }
+    elsif ($type eq 'rdt') {
+        verify_data($test, $test_datafile);
+    }
+    elsif ($type eq 'x') {
+        mkdir $outdir or die "mkdir($outdir): $!" unless -d $outdir;
+        unlink <$outdir/*>;
+
+        verify_csv_report($test, $test_datafile, $outdir);
     }
     elsif ($type =~ /^(?:pl|pm|new|outdir)$/) {
         # skip; handy for "test.pl t/test01.*"
@@ -227,6 +272,7 @@ sub run_test {
             if grep { !$_ } @summary;
     }
 }
+
 
 sub run_command {
     my ($cmd, $show_stdout) = @_;
@@ -252,7 +298,7 @@ sub profile {
     my ($test, $profile_datafile) = @_;
 
     my $cmd = "$perl $opts{profperlopts} $test";
-    ok run_command($cmd), "$test runs ok under the profiler";
+    return ok run_command($cmd), "$test runs ok under the profiler";
 }
 
 
@@ -469,6 +515,40 @@ sub unlink_old_profile_datafiles {
 sub count_of_failed_tests {
     my @details = Test::Builder->new->details;
     return scalar grep { not $_->{ok} } @details;
+}
+
+
+sub profile_this_code {
+    my %opt = @_;
+
+    my (undef, $out_file) = tempfile('nytprof_XXXXXX', SUFFIX => 'out');
+    
+    my @perl = ($perl, '-d:NYTProf');
+    push @perl, @{ $opt{perl_opts} } if $opt{perl_opts};
+
+    if (my $src_file = $opt{src_file}) {
+        system($perl, '-d:NYTProf', $src_file) == 0
+            or carp "@perl $src_file exited with an error status";
+    }
+    elsif (my $src_code = $opt{src_code}) {
+        open my $fh, '|-', @perl
+            or croak "Can't open pipe to @perl";
+        print $fh $src_code; 
+        close $fh
+            or carp "@perl exited with an error status";
+    }
+    else {
+        croak "Neither src_file or src_code was provided";
+    }
+    
+    my $profile = Devel::NYTProf::Data->new( {
+        filename => $out_file,
+        callback => $opts{for_chunks},
+    } );
+
+    unlink $out_file;
+
+    return $profile;
 }
 
 

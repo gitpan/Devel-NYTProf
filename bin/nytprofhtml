@@ -7,7 +7,7 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ##########################################################
-# $Id: nytprofhtml 774 2009-06-18 20:44:25Z tim.bunce $
+# $Id: nytprofhtml 869 2009-10-04 22:13:08Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -25,12 +25,18 @@ use Devel::NYTProf::Util qw(
     get_abs_paths_alternation_regex
     html_safe_filename
 );
+use Devel::NYTProf::Constants qw(NYTP_SCi_CALLING_SUB);
 
-our $VERSION = '2.10';
+my $json_any = eval { require JSON::Any; JSON::Any->import; JSON::Any->new }
+    or warn "Can't load JSON::Any module - HTML visualizations skipped.\n";
+
+our $VERSION = '2.11';
 
 if ($VERSION != $Devel::NYTProf::Core::VERSION) {
     die "$0 version '$VERSION' doesn't match version '$Devel::NYTProf::Core::VERSION' of $INC{'Devel/NYTProf/Core.pm'}\n";
 }
+
+my @treemap_colors = (0,2,4,6,8,10,1,3,5,7,9);
 
 # These control the limits for what the script will consider ok to severe times
 # specified in standard deviations from the mean time
@@ -92,7 +98,7 @@ if (defined($opt{lib})) {
 print "Generating report...\n";
 my $reporter = new Devel::NYTProf::Reader($opt{file});
 
-# place to store this crap
+# place to store this
 $reporter->output_dir($opt{out});
 
 # set formatting for html
@@ -108,10 +114,10 @@ $reporter->set_param(
             For ${ \($profile->{attribute}{application}) }
         };
 
-        get_html_header("NYTProf Profile: !~FILENAME~!")
+        get_html_header("Profile of !~FILENAME~!")
             . get_page_header(
             profile  => $profile,
-            title    => "Performance Profile",
+            title    => "NYTProf Performance Profile",
             subtitle => $subhead,
             mode     => qq/-$level/
             )
@@ -222,7 +228,6 @@ sub subroutine_table {
         );
 
         my @hints;
-        push @hints, 'xsub' if $sub->is_xsub;
 
         # package and subname
         my $subname = $sub->subname;
@@ -244,10 +249,15 @@ sub subroutine_table {
         # hidden span is for tablesorter to sort on
         $sub_links .= sprintf(qq{<span style="display: none;">%s::%s</span>}, $pkg, $subr);
 
+        if ($sub->is_xsub) {
+            my $is_opcode = ($pkg eq 'CORE' or $subr =~ /^CORE:/);
+            unshift @hints, ($is_opcode) ? 'opcode' : 'xsub';
+        }
+
         my $href = $reporter->href_for_sub($subname);
         $sub_links .= sprintf qq{%*s<a %s>%s</a>%s</span></td>},
             $max_pkg_name_len+2, $pkg, $href, $subr,
-            (@hints) ? "(".join(", ",@hints).")" : "";
+            (@hints) ? "&nbsp;(".join(", ",@hints).")" : "";
 
         $sub_links .= "</tr>\n";
     }
@@ -270,129 +280,44 @@ sub subroutine_table {
 }
 
 
-# http://www.jquery.info/The-TreeMap-plugin
-#
-sub package_tables {
-    my ($profile) = @_;
-    my $pkg_html = "";
-
-    # XXX may not be appropriate if profiling wasn't continuous
-    my $profiler_duration = $profile->{attribute}{profiler_duration};
-
-    # [
-    #   undef,  # depth 0
-    #   {       # depth 1
-    #       "main::" => [ [ subinfo1, subinfo2 ] ],    # 2 subs in 1 pkg
-    #       "Foo::"  => [ [ subinfo3 ], [ subinfo4 ] ] # 2 subs in 2 pkg
-    #   }
-    #   {       # depth 2
-    #       "Foo::Bar::" => [ [ subinfo3 ] ]           # 1 sub in 1 pkg
-    #       "Foo::Baz::" => [ [ subinfo4 ] ]           # 1 sub in 1 pkg
-    #   }
-    # ]
-    my $pkg_depth = $profile->packages_at_depth_subinfo({
-        include_unused_subs => 0,
-        rollup_packages => 1,
-        merge_subinfos => 1,
-    });
-
-    # default:
-    # { pkgname => [ subinfo1, subinfo2, ... ], ... }
-    # merged:
-    # { pkgname => [ single_merged_subinfo ], ...  }
-    my $package_subinfo_map = $profile->package_subinfo_map(1);
-
-    # generate a separate table for each depth
-    for my $depth (0..@$pkg_depth-1) {
-
-        my $pkgs_subinfos = { %{ $pkg_depth->[$depth] || {} } };
-        next if not %$pkgs_subinfos;
-
-        # add info for raw (un-rolledup) packages from lower depths
-        for my $d (0..$depth-1) {
-            my $p = $pkg_depth->[$d] or next;
-            for my $higher_pkg (keys %$p) {
-                my $higher_pkg_info = $package_subinfo_map->{$higher_pkg}
-                    or next;
-                $pkgs_subinfos->{$higher_pkg} = $higher_pkg_info;
-            }
-        }
-
-        my %pkg_summary;
-        while ( my ($pkg_name, $subinfos) = each %$pkgs_subinfos) {
-            my $pi = $pkg_summary{$pkg_name} ||= { pkg_name => $pkg_name };
-
-            # merge all sub infos into one pseudo-sub for package
-            my $sub;
-            for my $si (@$subinfos) {
-                ++$pi->{num_packages};
-                my $n = $si->subname;
-                ($sub) ? $sub->merge_in($si) : ($sub = $si->clone);
-            }
-            $pi->{merged_sub} = $sub;
-            $pi->{excl_time}  = $sub->excl_time;
-        }
-
-        my $dev_excl_time = calc_mad_from_hashes([values %pkg_summary], 'excl_time', 1);
-
-        my $table_id = "pkg_table_$depth";
-        $pkg_html .= qq{
-            <table id="$table_id" border="1" cellpadding="0" class="tablesorter">
-            <caption>Packages - subroutine times rolled up to level $depth package name</caption>
-            <thead>
-            <tr>
-            <th>Exclusive<br />Time</th>
-            <th>Package Name Prefix</th>
-            </tr>
-            </thead>
-        };
-        $pkg_html .= "<tbody>\n";
-        for my $pi (sort { $b->{excl_time} <=> $a->{excl_time} } values %pkg_summary) {
-
-            $pkg_html .= "<tr>";
-            $pkg_html .= determine_severity($pi->{excl_time}    || 0, $dev_excl_time, 1,
-                sprintf("%.1f%%", $pi->{excl_time}/$profiler_duration*100)
-            );
-            $pkg_html .= qq{<td class="sub_name">};
-            my $name = $pi->{pkg_name};
-            $name .= " (includes $pi->{num_packages} packages)" if $pi->{num_packages} > 1;
-            $pkg_html .= _escape_html($name);
-            $pkg_html .= qq{</td>};
-            $pkg_html .= "</tr>\n";
-        }
-        $pkg_html .= q{
-            </tbody>
-            </table>
-        };
-
-        push @on_ready_js, qq{
-            \$("#$table_id").tablesorter({
-                headers: {
-                    0: { sorter: 'fmt_time' }
-                }
-            });
-        };
-
-        # no point in generating deeper levels if there isn't any more detail
-        # (e.g. A::B contains no subs just a single package A::B::C)
-        last if not grep { $_->{num_packages} > 1 } values %pkg_summary;
-    }
-
-    return $pkg_html;
-}
-
-
 $reporter->set_param(
     'datastart',
     sub {
         my ($profile, $filestr) = @_;
 
-        my $sub_links = subroutine_table($profile, $filestr, undef, undef);
+        my $sub_table = subroutine_table($profile, $filestr, undef, undef);
 
-        return qq{$sub_links
+        my $dot_file = html_safe_filename($filestr) . ".dot";
+        our %dot_file_generated;
+        if ($dot_file_generated{$dot_file}++) { # just once for line/block/sub
+            my $subs_in_file = $profile->subs_defined_in_file($filestr, 0);
+            # include subs defined in this file
+            # and/or called from subs defined in this file
+            #warn "$dot_file: @{[ keys %$subs_in_file ]}\n";
+            my $sub_filter = sub {
+                my ($si, $calledby) = @_;
+                return 1 if not defined $calledby;
+                my $subname = $si->subname;
+                my $include = ($subs_in_file->{$subname}
+                            || $subs_in_file->{$calledby});
+                #warn "Call graph $subname<-$calledby: ".($include ? "SHOW" : "skip")."\n";
+                return $include;
+            };
+            output_subs_callgraph_dot_file($reporter, $dot_file, $sub_filter, 0);
+        }
+
+        return qq{
+        $sub_table
+        Call graph for these subroutines as a <a href="http://en.wikipedia.org/wiki/Graphviz">Graphviz</a> <a href="$dot_file">dot language file</a>.
       <table border="1" cellpadding="0">
       <thead>
-      <tr><th>Line</th><th>Stmts.</th><th>Exclusive<br />Time</th><th>Avg.</th><th class="left_indent_header">Code</th>
+      <tr><th>Line</th>
+      <th><span title="Number of statements executed">State<br />ments</span></th>
+      <th><span title="Time spend executing statements on the line,
+        excluding time spent executing statements in any called subroutines">Time<br />on line</span></th>
+      <th><span title="Number of subroutines calls">Calls</span></th>
+      <th><span title="Time spent in subroutines called">Time<br />in subs</span></th>
+      <th class="left_indent_header">Code</th>
       </tr>\n
       </thead>
       <tbody>
@@ -415,14 +340,16 @@ sub mk_report_source_line {
     my $l = sprintf(qq{<td class="h"><a name="%s"></a>%s</td>}, $linenum, $linenum);
     my $s = report_src_line(undef, $linenum, $line, $profile, $subs_defined, $makes_calls_to, $filestr);
 
-    return "<tr>$l<td></td><td></td><td></td>$s</tr>\n"
+    return "<tr>$l<td></td><td></td><td></td><td></td>$s</tr>\n"
         if not %$stats_for_line;
 
     return join "",
         "<tr>$l",
         determine_severity($stats_for_line->{'calls'},     $stats_for_file->{'calls'}),
-        determine_severity($stats_for_line->{'time'},      $stats_for_file->{'time'}, 1),
-        determine_severity($stats_for_line->{'time/call'}, $stats_for_file->{'time/call'}, 1),
+        determine_severity($stats_for_line->{'time'},      $stats_for_file->{'time'}, 1,
+            \sprintf("Avg %s",fmt_time($stats_for_line->{'time/call'}))),
+        determine_severity($stats_for_line->{'subcall_count'}, $stats_for_file->{subcall_count}, 0),
+        determine_severity($stats_for_line->{'subcall_time'},  $stats_for_file->{subcall_time}, 1),
         $s, "</tr>\n";
 }
 
@@ -431,7 +358,7 @@ sub mk_report_xsub_line {
     (my $anchor = $subname) =~ s/\W/_/g;
     return join "",
         sprintf(qq{<tr><td class="h"><a name="%s"></a>%s</td>}, $anchor, ''),
-        "<td></td><td></td><td></td>",
+        "<td></td><td></td><td></td><td></td>",
         report_src_line(undef, undef, $line, $profile, $subs_defined, $makes_calls_to, $filestr),
         "</tr>\n";
 }
@@ -454,11 +381,13 @@ sub report_src_line {
 
     $linesrc = _escape_html($linesrc);
 
+    our $inc_path_regex ||= get_abs_paths_alternation_regex([$profile->inc]);
+
     my @prologue;
 
     # for each of the subs defined on this line, who called them
     for my $sub_info (@$subs) {
-        my $callers = $sub_info->callers;
+        my $callers = $sub_info->caller_fid_line_places;
         next unless $callers && %$callers;
 
         my @callers;
@@ -478,10 +407,11 @@ sub report_src_line {
         # order by most frequent caller first
         @callers = sort { $b->[2] <=> $a->[2] || $b->[3] <=> $a->[3] } @callers;
         for my $caller (@callers) {
-            my ($fid, $line, $count, $incl_time, $excl_time) = @$caller;
+            my ($fid, $line, $count, $incl_time, $excl_time, undef, undef,
+                undef, undef, $calling_subs) = @$caller;
             my $fi = $profile->fileinfo_of($fid);
 
-            my @subnames = $profile->subname_at_file_line($fid, $line);
+            my @subnames = sort keys %$calling_subs;
             ref $_ and $_ = sprintf "%s (merge of %d subs)", $_->[0], scalar @$_
                 for @subnames;
             my $subname = (@subnames) ? " by " . join(" or ", @subnames) : "";
@@ -502,7 +432,9 @@ sub report_src_line {
             }
 
             my $href = $reporter->get_file_stats()->{$filename}{html_safe} || "unknown";
-            $line_desc =~ s/ of \Q$filename\E$// if $filename eq $thisfile;
+            $line_desc =~ s/ of \Q$filename\E$//g if $filename eq $thisfile;
+            # remove @INC prefix from paths
+            $line_desc =~ s/$inc_path_regex//g;
 
             push @prologue,
                 sprintf q{# %*s times%s%s at <a href="%s#%d">%s</a>%s},
@@ -527,11 +459,13 @@ sub report_src_line {
         my $ws = ($linesrc =~ m/^((?:&nbsp;|\s)+)/) ? $1 : '';
 
         $epilogue = join "\n", map {
-            my ($count, $incl_time, $reci_time, $rec_depth) = (@{$calls->{$_}})[0,1,5,6];
+            my $subname = $_;
+            my ($count, $incl_time, $reci_time, $rec_depth) = (@{$calls->{$subname}})[0,1,5,6];
             my $html = sprintf qq{%s# spent %s making %*d call%s to }, $ws,
                 fmt_time($incl_time+$reci_time, 5), length($max_calls_to),
                 $count, $count == 1 ? "" : "s";
-            $html .= sprintf qq{<a %s>%s</a>}, $reporter->href_for_sub($_), $_;
+            (my $subname_trimmed = $subname) =~ s/$inc_path_regex//g;
+            $html .= sprintf qq{<a %s>%s</a>}, $reporter->href_for_sub($subname), $subname_trimmed;
             $html .= sprintf qq{, avg %s/call}, fmt_time($incl_time / $count)
                 if $count > 1;
             $html .= sprintf qq{, max recursion depth %d}, $rec_depth
@@ -554,10 +488,9 @@ $reporter->_output_additional('style.css', get_css());
 # generate the files
 $reporter->report();
 
-output_subs_indexpage($reporter, "index-subs-excl.html", 'excl_time');
-output_subs_indexpage($reporter, "index-subs-incl.html", 'incl_time');
-output_package_treemap($reporter, "package-treemap.html");
-output_indexpage($reporter, "index.html");
+output_subs_index_page($reporter, "index-subs-excl.html", 'excl_time');
+output_subs_index_page($reporter, "index-subs-incl.html", 'incl_time');
+output_index_page($reporter, "index.html");
 
 output_js_files($reporter);
 
@@ -570,40 +503,40 @@ exit 0;
 #
 
 # output an html indexing page or subroutines
-sub output_subs_indexpage {
+sub output_subs_index_page {
     my ($r, $filename, $sortby) = @_;
     my $profile = $reporter->{profile};
 
-    open(OUT, '>', "$opt{out}/$filename")
+    open my $fh, '>', "$opt{out}/$filename"
         or croak "Unable to open file $opt{out}/$filename: $!";
 
-    print OUT get_html_header("Subroutine Index - NYTProf");
-    print OUT get_page_header(profile => $profile, title => "Performance Profile Subroutine Index");
-    print OUT qq{<div class="body_content"><br />};
+    print $fh get_html_header("Subroutine Index - NYTProf");
+    print $fh get_page_header(profile => $profile, title => "Performance Profile Subroutine Index");
+    print $fh qq{<div class="body_content"><br />};
 
     # Show top subs across all files
-    print OUT subroutine_table($profile, 0, 0, $sortby);
+    print $fh subroutine_table($profile, 0, 0, $sortby);
 
     my $footer = get_footer($profile);
-    print OUT "</div>$footer</body></html>";
-    close OUT;
+    print $fh "</div>$footer</body></html>";
+    close $fh;
 }
 
 
 # output an html indexing page with some information to help navigate potential
 # large numbers of profiled files. Optional, recommended
-sub output_indexpage {
+sub output_index_page {
     my ($r, $filename) = @_;
     my $profile = $reporter->{profile};
     my $stats   = $r->get_file_stats();
 
     ###
-    open(OUT, '>', "$opt{out}/$filename")
+    open my $fh, '>', "$opt{out}/$filename"
         or croak "Unable to open file $opt{out}/$filename: $!";
 
-    print OUT get_html_header();
-    print OUT get_page_header(profile => $profile, title => "Performance Profile Index");
-    print OUT qq{
+    print $fh get_html_header();
+    print $fh get_page_header(profile => $profile, title => "Performance Profile Index");
+    print $fh qq{
         <div class="body_content"><br />
     };
 
@@ -622,396 +555,448 @@ sub output_indexpage {
         @all_fileinfos - $eval_fileinfos;
     $summary .= sprintf " and %d string evals",
         $eval_fileinfos if $eval_fileinfos;
-    printf OUT qq{<div class="index_summary">%s.</div>}, _escape_html($summary);
+    printf $fh qq{<div class="index_summary">%s.</div>}, _escape_html($summary);
 
     # generate name-sorted select options for files, if there are many
     if (keys %$stats > 30) {
-        print OUT qq{<div class="jump_to_file"><form name="jump">};
-        print OUT qq{<select name="file" onChange="location.href=document.jump.file.value;">\n};
-        printf OUT qq{<option disabled="disabled">%s</option>\n}, "Jump to file...";
+        print $fh qq{<div class="jump_to_file"><form name="jump">};
+        print $fh qq{<select name="file" onChange="location.href=document.jump.file.value;">\n};
+        printf $fh qq{<option disabled="disabled">%s</option>\n}, "Jump to file...";
         foreach (sort keys %$stats) {
             my $fid = $profile->resolve_fid($_) or warn "Can't find fid for $_";
-            printf OUT qq{<option value="#f%s">%s</option>\n}, $fid, $_;
+            printf $fh qq{<option value="#f%s">%s</option>\n}, $fid, $_;
         }
-        print OUT "</select></form></div>\n";
+        print $fh "</select></form></div>\n";
     }
 
     # Show top subs across all files
     my $max_subs = 15; # keep it less than a page so users can see the file table
     my $all_subs = keys %{$profile->{sub_subinfo}};
-    print OUT subroutine_table($profile, 0, $max_subs, undef);
+    print $fh subroutine_table($profile, 0, $max_subs, undef);
     if ($all_subs > $max_subs) {
-        print OUT sprintf qq{<div class="table_footer">
+        print $fh sprintf qq{<div class="table_footer">
             See <a href="%s">all %d subroutines</a>
             </div>
         }, "index-subs-excl.html", $all_subs;
     }
 
-    print OUT file_table($profile, $stats, 1);
+    output_subs_treemap_page($reporter, "subs-treemap-excl.html",
+        "Subroutine Exclusive Time Treemap", sub { shift->excl_time });
+    print $fh q{<br/>You can view subroutines in a treemap of <a href="subs-treemap-excl.html">exclusive time</a>, grouped by package.<br/>};
 
-    print OUT q{<br/><a href="package-treemap.html">Package treemap</a><br/>};
+    output_subs_callgraph_dot_file($reporter, "subs-callgraph.dot", undef, 1);
+    print $fh q{<br/>A representation of the calls between subroutines in diferent packages is available as a <a href="http://en.wikipedia.org/wiki/Graphviz">Graphviz</a> <a href="subs-callgraph.dot">dot file</a>.<br/>};
 
-    print OUT package_tables($profile);
+    output_file_table($fh, $profile, $stats, 1);
 
     my $footer = get_footer($profile);
-    print OUT "</div>$footer</body></html>";
-    close OUT;
+    print $fh "</div>$footer</body></html>";
+    close $fh;
 }
 
 
-sub output_package_treemap {
-    my ($r, $filename) = @_;
+# = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+# treemap subs
+
+sub js_for_new_treemap {
+    my ($name, $new_args, $tree_data) = @_;
+
+    return '' unless $json_any;
+
+    my $default_new_args = {
+        titleHeight => 0, # no titles
+        addLeftClickHandler => 1,   # zoom in
+        #addRightClickHandler => 1, # zoom out (XXX but disables right click menu)
+        offset => 0, # (0/2/4) extra padding around nested levels
+
+        Color => {
+            allow => 1,  
+            # value range for the $color property
+            minValue => 0,  
+            maxValue => scalar @treemap_colors,  
+            # corresponding color range [R,G,B]:
+            minColorValue => [0, 255, 50],  
+            maxColorValue => [255, 0, 50],
+        },
+
+        Tips => {  
+            allow => 1,
+            offsetX => 20,  
+            offsetY => 20,  
+        },
+
+        selectPathOnHover => 1, # adds "over-<foo>" css class to elements
+    };
+    exists $new_args->{$_} or $new_args->{$_} = $default_new_args->{$_}
+        for keys %$default_new_args;
+
+    my $new_args_json  = $json_any->objToJson($new_args);
+    my $tree_data_json = $json_any->objToJson($tree_data);
+
+    my $js = qq{
+        function init_$name() {
+            var tm_args = $new_args_json;
+
+            //This method is invoked when a DOM element is created.  
+            //Its useful to set DOM event handlers here or manipulate  
+            //the DOM Treemap nodes.  
+            tm_args.onCreateElement = function(content, tree, isLeaf, leaf){  
+                //Add background image for cushion effect
+                if(isLeaf) { 
+                    var style = leaf.style,   
+                    width = parseInt(style.width) - 2,   
+                    height = parseInt(style.height) - 2;  
+                    // don't add gradient if too small to be worth the cost
+                    if (width < 10 || height < 10) {   // is narrow
+                        if (width < 50 && height < 50) // is small
+                            return;
+                    }
+                    leaf.innerHTML = tree.name +   
+                        "<img src=\\"js/jit/gradient-cushion1.png\\" " +  
+                        " style=\\"position:absolute;top:0;left:0;width:" +   
+                        width+"px;height:" + height+"px;\\" />";  
+                    style.width = width + "px";  
+                    style.height = height + "px";  
+                }  
+            };
+
+            // add content to the tooltip when a node is hovered  
+            // move to separate function later
+            tm_args.Tips.onShow = function(tip, node, isLeaf, domElement) {
+                tip.innerHTML = node.data.tip;
+            };
+
+            TM.Squarified.implement({
+                'onLeftClick': function(elem) { // zoom in one level
+                    //if is leaf
+                    var node = TreeUtil.getSubtree(this.tree, elem.parentNode.id);
+                    if(node.children && node.children.length == 0) {
+                        var oldparent = node, newparent = node;
+                        while(newparent.id != this.shownTree.id) {
+                            oldparent = newparent;
+                            newparent = TreeUtil.getParent(this.tree, newparent.id);
+                        }
+                        this.view(oldparent.id);
+                    } else {
+                      this.enter(elem);
+                    }
+                }
+            });
+
+            TM.Squarified.implement({
+                createBox: function(json, coord, html) {
+                    if((coord.width * coord.height > 1) && json.data.\$area > 0) {
+                        if(!this.leaf(json))
+                            var box = this.headBox(json, coord) + this.bodyBox(html, coord);
+                        else
+                            var box = this.leafBox(json, coord);
+                        return this.contentBox(json, coord, box);
+                    } else {
+                        return ""; //return empty string
+                    }
+                }
+            });
+
+            var $name = new TM.Squarified(tm_args);
+
+            var json = $tree_data_json;
+
+            $name.loadJSON(json);
+        }
+    };
+    return $js;
+}
+
+
+sub pl {    # dumb but sufficient pluralization
+    my ($fmt, $n) = @_;
+    sprintf $fmt.($n == 1 ? "" : "s"), $n;
+}
+
+
+sub package_subinfo_map_to_tm_data {
+    my ($package_tree_subinfo_map, $area_sub) = @_;
+
+    my $sub_tip_html = sub {
+        my $si = shift;
+        my @html;
+        push @html, sprintf "<p><b>%s</b></p><p>", $si->subname;
+
+        push @html, sprintf "Called %s from %s in %s",
+            pl("%d time", $si->calls),
+            pl("%d place", scalar $si->caller_places),
+            pl("%d file", scalar $si->caller_fids);
+
+        my $total_time = $si->profile->{attribute}{profiler_duration};
+        my $excl_time = $si->excl_time;
+        push @html, sprintf "Exclusive time: %s, %.2f%%",
+            fmt_time($excl_time), $excl_time/$total_time*100;
+        my $incl_time = $si->incl_time;
+        push @html, sprintf "Inclusive time: %s, %.2f%%",
+            fmt_time($incl_time), $incl_time/$total_time*100;
+
+        if (my $mrd = $si->recur_max_depth) {
+            push @html, sprintf "Recursion: max depth %d, recursive inclusive time %s",
+                $mrd, fmt_time($si->recur_incl_time);
+        }
+
+        return join("<br />", @html)."</p>";
+    };
+
+    my $leaf_data_sub = sub {
+        my ($subinfo, $area_from, $color) = @_;
+        my $data = {
+            '$area' => $area_from->($subinfo),
+            '$color' => $color,
+            tip => $sub_tip_html->($subinfo),
+            map({ $_ => $subinfo->$_() }
+                qw(subname incl_time excl_time))
+        };
+        return $data;
+    };
+
+    our $nid;
+    my $node_mapper;
+    $node_mapper = sub {
+        my ($k, $v, $title) = @_;
+        $title = ($title) ? '::'.$k : $k;
+
+        my $n = {
+            id => "n".++$nid,
+            name => $title,
+        };
+
+        my @kids;
+        for my $pkg_elem (keys %$v) {
+            my $infos = $v->{$pkg_elem};
+
+            if (ref $infos eq 'HASH') { # recurse into subpackages
+                push @kids, $node_mapper->($pkg_elem, $infos, $title);
+                next;
+            }
+
+            # subs within this package
+            our $color_seqn; # all subs in pkg get same color
+            my $color = $treemap_colors[ $color_seqn++ % @treemap_colors ];
+
+            for my $info (@$infos) {
+
+                # don't bother including subs that don't have any data
+                # (unless we've not got any subs yet, to avoid problems elsewhere)
+                next if $area_sub->($info) <= 0;
+
+                push @kids, {
+                    id => ++$nid."-".$info->subname,
+                    name => $info->subname_without_package,
+                    data => $leaf_data_sub->($info, $area_sub, $color),
+                    children => [],
+                };
+            }
+        }
+
+        $n->{data}{'$area'} = (@kids) ? sum(map { $_->{data}{'$area'} } @kids) : 0
+            if not defined $n->{data}{'$area'};
+        $n->{children} = \@kids;
+
+        return $n;
+    };
+
+    return $node_mapper->('', $package_tree_subinfo_map, '');
+}
+
+
+sub output_treemap_code {
+    my (%spec) = @_;
+    my $fh = $spec{fh};
+    my $tm_id = 'tm'.$spec{id};
+    my $root_id = 'infovis'.$spec{id};
+
+    my $treemap_data = $spec{get_data}->();
+    $treemap_data->{name} = $spec{title} if $spec{title};
+
+    my $tm_js = js_for_new_treemap($tm_id, { rootId => $root_id }, $treemap_data);
+    print $fh qq{<script type="text/javascript">$tm_js\n</script>\n};
+
+    push @on_ready_js, qq{init_$tm_id(); };
+    return $root_id;
+}
+
+
+sub output_subs_treemap_page {
+    my ($r, $filename, $title, $area_sub) = @_;
     my $profile = $reporter->{profile};
 
-    open(OUT, '>', "$opt{out}/$filename")
+    open(my $fh, '>', "$opt{out}/$filename")
         or croak "Unable to open file $opt{out}/$filename: $!";
 
-    my $treemap_head = qq{
-	<link type="text/css" rel="stylesheet" href="js/jit/Treemap.css" />
-	<script language="JavaScript" src="js/jit/jit.js"></script>
+    $title ||= "Subroutine Time Treemap";
+    print $fh get_html_header("$title - NYTProf", { add_jit => "Treemap" });
+    print $fh get_page_header( profile => $profile, title => $title);
+
+    my @specs;
+    push @specs, {
+        id => 1,
+        title => "Treemap of subroutine exclusive time",
+        get_data => sub {
+            package_subinfo_map_to_tm_data(
+                $profile->package_subinfo_map(0,1),
+                $area_sub || sub { shift->excl_time }, 0);
+        }
     };
+    push @specs, {
+        id => 2,
+        title => "Treemap of subroutine inclusive time",
+        get_data => sub {
+            package_subinfo_map_to_tm_data(
+                $profile->package_subinfo_map(0,1),
+                sub { shift->incl_time }, 0);
+        }
+    } if 0; # XXX overlays first treemap!
 
-    print OUT get_html_header("Package Treemap - NYTProf", {
-        skip_style => 1,
-        skip_jquery => 1,
-        head_epilogue => $treemap_head,
-        not_xhtml => 1, # XXX js-treemap doesn't worth with xhtml at the moment
-    });
-    print OUT get_page_header(
-        profile => $profile,
-        title => "Performance Profile Subroutine Index",
-        body_onload => "init();"
-    ) if 0;
-    print OUT qq{<body onload="init();">};
+    my @root_ids;
+    for my $spec (@specs) {
+        push @root_ids, output_treemap_code(
+            fh => $fh,
+            profile => $profile,
+            %$spec
+        );
+    }
 
-    local $Data::Dumper::Sortkeys = 1;
-    local $Data::Dumper::Indent = 1;
-    local $Data::Dumper::Maxdepth = 3;
-    #warn Data::Dumper::Dumper($profile->package_subinfo_map(1,1));
-    #my $package_tree_subinfo_map = $profile->package_subinfo_map(1,1);
+    print $fh qq{<div class="vis_header"><br/>Boxes represent time spent in a subroutine. Coloring represents packages. Click to drill-down into package hierarchy.</div>\n};
+    print $fh qq{<div id="infovis">\n};
+    print $fh qq{<br /><div id="$_"></div>\n} for @root_ids;
+    print $fh qq{</div>\n};
 
-    print OUT q{
-<script language="JavaScript">
-function init() {
-var json = {
-    "id": "node02",
-    "name": "0.2",
-    "data": {
-        "$area": 195,
-        "$color": 5
-    },
-    "children": [{
-        "id": "node13",
-        "name": "1.3",
-        "data": {
-            "$area": 23,
-            "$color": 8
-        },
-        "children": [{
-            "id": "node24",
-            "name": "2.4",
-            "data": {
-                "$area": 6,
-                "$color": -75
-            },
-            "children": []
-        }, {
-            "id": "node25",
-            "name": "2.5",
-            "data": {
-                "$area": 9,
-                "$color": -48
-            },
-            "children": []
-        }, {
-            "id": "node26",
-            "name": "2.6",
-            "data": {
-                "$area": 1,
-                "$color": -1
-            },
-            "children": []
-        }, {
-            "id": "node27",
-            "name": "2.7",
-            "data": {
-                "$area": 7,
-                "$color": 25
-            },
-            "children": []
-        }]
-    }, {
-        "id": "node18",
-        "name": "1.8",
-        "data": {
-            "$area": 17,
-            "$color": 28
-        },
-        "children": [{
-            "id": "node29",
-            "name": "2.9",
-            "data": {
-                "$area": 8,
-                "$color": -28
-            },
-            "children": []
-        }, {
-            "id": "node210",
-            "name": "2.10",
-            "data": {
-                "$area": 9,
-                "$color": -83
-            },
-            "children": []
-        }]
-    }, {
-        "id": "node111",
-        "name": "1.11",
-        "data": {
-            "$area": 25,
-            "$color": -82
-        },
-        "children": [{
-            "id": "node212",
-            "name": "2.12",
-            "data": {
-                "$area": 8,
-                "$color": -27
-            },
-            "children": []
-        }, {
-            "id": "node213",
-            "name": "2.13",
-            "data": {
-                "$area": 3,
-                "$color": -80
-            },
-            "children": []
-        }, {
-            "id": "node214",
-            "name": "2.14",
-            "data": {
-                "$area": 7,
-                "$color": -73
-            },
-            "children": []
-        }, {
-            "id": "node215",
-            "name": "2.15",
-            "data": {
-                "$area": 7,
-                "$color": 26
-            },
-            "children": []
-        }]
-    }, {
-        "id": "node116",
-        "name": "1.16",
-        "data": {
-            "$area": 17,
-            "$color": 91
-        },
-        "children": [{
-            "id": "node217",
-            "name": "2.17",
-            "data": {
-                "$area": 7,
-                "$color": 48
-            },
-            "children": []
-        }, {
-            "id": "node218",
-            "name": "2.18",
-            "data": {
-                "$area": 10,
-                "$color": -86
-            },
-            "children": []
-        }]
-    }, {
-        "id": "node119",
-        "name": "1.19",
-        "data": {
-            "$area": 52,
-            "$color": -77
-        },
-        "children": [{
-            "id": "node220",
-            "name": "2.20",
-            "data": {
-                "$area": 8,
-                "$color": 64
-            },
-            "children": []
-        }, {
-            "id": "node221",
-            "name": "2.21",
-            "data": {
-                "$area": 5,
-                "$color": 84
-            },
-            "children": []
-        }, {
-            "id": "node222",
-            "name": "2.22",
-            "data": {
-                "$area": 6,
-                "$color": 81
-            },
-            "children": []
-        }, {
-            "id": "node223",
-            "name": "2.23",
-            "data": {
-                "$area": 1,
-                "$color": 25
-            },
-            "children": []
-        }, {
-            "id": "node224",
-            "name": "2.24",
-            "data": {
-                "$area": 4,
-                "$color": 18
-            },
-            "children": []
-        }, {
-            "id": "node225",
-            "name": "2.25",
-            "data": {
-                "$area": 10,
-                "$color": 37
-            },
-            "children": []
-        }, {
-            "id": "node226",
-            "name": "2.26",
-            "data": {
-                "$area": 8,
-                "$color": 83
-            },
-            "children": []
-        }, {
-            "id": "node227",
-            "name": "2.27",
-            "data": {
-                "$area": 10,
-                "$color": -62
-            },
-            "children": []
-        }]
-    }, {
-        "id": "node128",
-        "name": "1.28",
-        "data": {
-            "$area": 37,
-            "$color": -40
-        },
-        "children": [{
-            "id": "node229",
-            "name": "2.29",
-            "data": {
-                "$area": 8,
-                "$color": -67
-            },
-            "children": []
-        }, {
-            "id": "node230",
-            "name": "2.30",
-            "data": {
-                "$area": 8,
-                "$color": 46
-            },
-            "children": []
-        }, {
-            "id": "node231",
-            "name": "2.31",
-            "data": {
-                "$area": 4,
-                "$color": -99
-            },
-            "children": []
-        }, {
-            "id": "node232",
-            "name": "2.32",
-            "data": {
-                "$area": 8,
-                "$color": -38
-            },
-            "children": []
-        }, {
-            "id": "node233",
-            "name": "2.33",
-            "data": {
-                "$area": 1,
-                "$color": -3
-            },
-            "children": []
-        }, {
-            "id": "node234",
-            "name": "2.34",
-            "data": {
-                "$area": 8,
-                "$color": 82
-            },
-            "children": []
-        }]
-    }, {
-        "id": "node135",
-        "name": "1.35",
-        "data": {
-            "$area": 24,
-            "$color": 63
-        },
-        "children": [{
-            "id": "node236",
-            "name": "2.36",
-            "data": {
-                "$area": 10,
-                "$color": 8
-            },
-            "children": []
-        }, {
-            "id": "node237",
-            "name": "2.37",
-            "data": {
-                "$area": 8,
-                "$color": 63
-            },
-            "children": []
-        }, {
-            "id": "node238",
-            "name": "2.38",
-            "data": {
-                "$area": 6,
-                "$color": 46
-            },
-            "children": []
-        }]
-    }]
-};
-    var tm = new TM.Squarified({
-                rootId: 'infovis'
-             });
-    tm.loadJSON(json);
-}
-</script>
-    };
-
-    my $pkg_html;
-    $pkg_html .= qq{
-<div id="infovis">
-</div>
-    };
-    print OUT $pkg_html;
-
-    #push @on_ready_js, qq{ };
-
-    my $footer = ""; # get_footer($profile);
-    print OUT "$footer</body></html>";
-    close OUT;
+    my $footer = get_footer($profile);
+    print $fh "$footer</body></html>";
+    close $fh;
 }
 
+
+# = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+
+sub output_subs_callgraph_dot_file {
+    my ($r, $filename, $sub_filter, $only_show_packages) = @_;
+    my $profile = $reporter->{profile};
+    my $subinfos = $profile->subname_subinfo_map;
+
+    my $dot_file = "$opt{out}/$filename";
+    open my $fh, '>', $dot_file
+        or croak "Unable to open file $dot_file: $!";
+
+    my $inc_path_regex = get_abs_paths_alternation_regex([$profile->inc], qr/^|\[/);
+    my $dotnode = sub {
+        my $name = shift;
+        $name =~ s/$inc_path_regex//;
+        $name =~ s/"/\\"/g;
+        return '"'.$name.'"';
+    };
+
+    print $fh "digraph {\n"; # }
+    print $fh "graph [overlap=false]\n"; # target="???", URL="???"
+
+    # gather link info
+    my %sub2called_by;
+    for my $subname (keys %$subinfos) {
+        my $si = $subinfos->{$subname};
+        next unless $si->calls; # skip subs never called
+
+        next if $sub_filter and not $sub_filter->($si, undef);
+
+        my $called_by_subnames = $si->called_by_subnames;
+        if (!%$called_by_subnames) { 
+            warn sprintf "%s has no caller subnames but a call count of %d\n",
+                    $subname, $si->calls;
+            next;
+        }
+
+        if ($sub_filter) {
+            my @delete = grep { !$sub_filter->($si, $_) } keys %$called_by_subnames;
+            if (@delete) {
+                # shallow copy so we can edit it safely
+                $called_by_subnames = { %$called_by_subnames };
+                delete @{$called_by_subnames}{@delete};
+            }
+            next if !keys %$called_by_subnames;
+        }
+
+        $sub2called_by{$subname} = $called_by_subnames;
+    }
+
+    # list of all subs to be included in graph (has duplicates)
+    my %pkg_subs;
+    for (keys %sub2called_by, map { keys %$_ } values %sub2called_by) {
+        m/^(.*)::(.*)?$/ or warn "Strange sub name '$_'";
+        $pkg_subs{$1}{$_} = $sub2called_by{$_} || {};
+    }
+
+#stmt : node_stmt | edge_stmt | attr_stmt | ID '=' ID | subgraph
+#attr_stmt : (graph | node | edge) attr_list
+#attr_list : '[' [ a_list ] ']' [ attr_list ]
+#a_list : ID [ '=' ID ] [ ',' ] [ a_list ]
+#subgraph : [ subgraph [ ID ] ] '{' stmt_list '}'
+
+    if ($only_show_packages) {
+        my %once;
+        # XXX many shapes cause v.large graphs with nodes v.far apart
+        # when using neato (energy minimized) possibly a neato bug
+        # some shapes, like doublecircle seem to avoid the problem.
+        print $fh "node [shape=doublecircle];\n";
+        while ( my ($pkg, $subs) = each %pkg_subs ) {
+            my @called_by = map { keys %$_ } values %$subs;
+
+            for my $called_by (@called_by) {
+                (my $called_by_pkg = $called_by) =~ s/^(.*)::.*?$/$1/;
+                my $link = sprintf qq{%s -> %s;\n},
+                    $dotnode->("$called_by_pkg"), $dotnode->("$pkg");
+                $once{$link} = 1;
+            }
+
+        }
+        print $fh $_ for keys %once;
+
+    }
+    else {
+
+        # output nodes and gather link info
+        while ( my ($pkg, $pkg_subs) = each %pkg_subs) {
+            (my $pkgmangled = $pkg) =~ s/\W+/_/g;
+
+            # node_stmt: node_id [ attr_list ]
+            printf $fh "subgraph cluster_%s {\n", $pkgmangled; # }
+            printf $fh "\tlabel=%s;\n", $dotnode->($pkg);
+
+            for my $subname (keys %$pkg_subs) {
+                # node_stmt: node_id [ attr_list ]
+                #printf $fh qq{\tnode [ %s ]}, ...
+                printf $fh qq{\t%s;\n}, $dotnode->($subname);
+            }
+
+            # { - just to balance the brace below
+            printf $fh "}\n";
+        }
+
+        while ( my ($subname, $called_by_subnames) = each %sub2called_by ) {
+
+            for my $called_by (keys %$called_by_subnames) {
+                # edge_stmt : (node_id | subgraph) edgeRHS [ attr_list ]
+                # edgeRHS   : edgeop (node_id | subgraph) [ edgeRHS ]
+                printf $fh qq{%s -> %s;\n},
+                    $dotnode->($called_by), $dotnode->($subname);
+            }
+
+        }
+    }
+
+    print $fh "}\n";
+
+    close $fh;
+    #system("open '$dot_file'"); die 1;
+
+    return;
+}
+
+# = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 
 sub output_js_files {
     my ($profile) = @_;
@@ -1098,8 +1083,8 @@ sub have_prog {
 }
 
 
-sub file_table {
-    my ($profile, $stats, $add_totals) = @_;
+sub output_file_table {
+    my ($fh, $profile, $stats, $add_totals) = @_;
 
     for (values %$stats) {
         next if not $_;
@@ -1107,17 +1092,16 @@ sub file_table {
     }
 
     my $dev_time = calc_mad_from_hashes([values %$stats], 'time',      0);
-    my $dev_avgt = calc_mad_from_hashes([values %$stats], 'time/call', 0);
 
     # generate time-sorted sections for files
-    print OUT qq{
+    print $fh qq{
         <table id="filestable" border="1" cellspacing="0" class="tablesorter">
         <caption>Source Code Files &mdash; ordered by exclusive time then name</caption>
     };
-    print OUT qq{
+    print $fh qq{
         <thead><tr class="index">
         <th>Stmts</th><th>Exclusive<br />Time</th>
-        <th>Avg.</th><th>Reports</th><th>Source File</th>
+        <th>Reports</th><th>Source File</th>
         </tr></thead>
         <tbody>
     };
@@ -1147,19 +1131,17 @@ sub file_table {
             #$eval_stmts += sum(map { $_->number_of_statements_executed } @$has_evals);
         }
 
-        print OUT qq{<tr class="index">};
+        print $fh qq{<tr class="index">};
 
-        print OUT determine_severity($filestats->{'calls'},     undef, 0,
+        print $fh determine_severity($filestats->{'calls'},     undef, 0,
             ($allCalls) ? sprintf("%.1f%%", $filestats->{'calls'}/$allCalls*100) : ''
         );
         $t_stmt_exec += $filestats->{'calls'};
 
-        print OUT determine_severity($filestats->{'time'},      $dev_time, 1,
+        print $fh determine_severity($filestats->{'time'},      $dev_time, 1,
             ($allTimes) ? sprintf("%.1f%%", $filestats->{'time'}/$allTimes*100) : ''
         );
         $t_stmt_time += $filestats->{'time'};
-
-        print OUT determine_severity($filestats->{'time/call'}, $dev_avgt, 1);
 
         my $rep_links = join '&nbsp;&bull;&nbsp;', map {
             my $level_html_safe = $filestats->{$_}->{html_safe};
@@ -1167,19 +1149,19 @@ sub file_table {
                 ? sprintf(qq{<a href="%s.html">%s</a>}, $level_html_safe, $_)
                 : ()
         } qw(line block sub);
-        print OUT "<td>$rep_links</td>";
+        print $fh "<td>$rep_links</td>";
 
-        print OUT sprintf q{<td><a name="f%s" title="%s">%s</a> %s</td>},
+        print $fh sprintf q{<td><a name="f%s" title="%s">%s</a> %s</td>},
             $fi->fid, $fi->abs_filename, $fi->filename_without_inc,
             (@extra) ? sprintf("(%s)", join ", ", @extra) : "";
-        print OUT "</tr>\n";
+        print $fh "</tr>\n";
     }
-    print OUT "</tbody>\n";
+    print $fh "</tbody>\n";
 
     if ($add_totals) {
-        print OUT "<tfoot>\n";
+        print $fh "<tfoot>\n";
         my $stats_fmt =
-            qq{<tr class="index"><td class="n">%s</td><td class="n">%s</td><td class="n">%s</td><td colspan="2" style="font-style: italic">%s</td></tr>};
+            qq{<tr class="index"><td class="n">%s</td><td class="n">%s</td><td colspan="2" style="font-style: italic">%s</td></tr>};
         my $t_notes = "";
         my $stmt_time_diff = $allTimes - $t_stmt_time;
         if ($t_stmt_exec != $allCalls or $stmt_time_diff > 0.000_010) {
@@ -1189,21 +1171,19 @@ sub file_table {
             $t_notes = sprintf "(%d string evals account for a further %d statements%s)",
                 $eval_fileinfos, $allCalls - $t_stmt_exec, $stmt_time_diff;
         }
-        print OUT sprintf $stats_fmt, fmt_float($t_stmt_exec), fmt_time($t_stmt_time), '',
+        print $fh sprintf $stats_fmt, fmt_float($t_stmt_exec), fmt_time($t_stmt_time),
             "Total $t_notes";
 
-        print OUT sprintf $stats_fmt, int(fmt_float($t_stmt_exec / keys %$stats)),
-            fmt_time($t_stmt_time / keys %$stats), '', "Average"
+        print $fh sprintf $stats_fmt, int(fmt_float($t_stmt_exec / keys %$stats)),
+            fmt_time($t_stmt_time / keys %$stats), "Average"
             if %$stats;    # avoid divide by zero
 
-        print OUT sprintf $stats_fmt, '', fmt_time($dev_time->[1]), fmt_time($dev_avgt->[1]),
-            "Median";
-        print OUT sprintf $stats_fmt, '', fmt_float($dev_time->[0]), fmt_float($dev_avgt->[0]),
-            "Deviation"
-            if $dev_time->[0] or $dev_avgt->[0];
-        print OUT "</tfoot>\n";
+        print $fh sprintf $stats_fmt, '', fmt_time($dev_time->[1]), "Median";
+        print $fh sprintf $stats_fmt, '', fmt_float($dev_time->[0]), "Deviation"
+            if $dev_time->[0];
+        print $fh "</tfoot>\n";
     }
-    print OUT '</table>';
+    print $fh '</table>';
     push @on_ready_js, q{
         $("#filestable").tablesorter({
             headers: {
@@ -1257,7 +1237,7 @@ sub determine_severity {
     }
 
     if ($title) {
-        $title = _escape_html($title);
+        $title = (ref $title) ? $$title : _escape_html($title);
         $fmt_val = qq{<span title="$title">$fmt_val</span>};
     }
 
@@ -1360,19 +1340,24 @@ EOD
 This file was generated by Devel::NYTProf version $Devel::NYTProf::Core::VERSION
 -->
 <head>
-    <meta http-equiv="Content-Type" content="text/html; charset=utf-8"></meta>
-    <meta http-equiv="Content-Language" content="en-us"></meta>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <meta http-equiv="Content-Language" content="en-us" />
     <title>$title</title>
 EOD
 
-    $html .= qq{<link rel="stylesheet" type="text/css" href="style.css"></link>\n}
+    $html .= qq{<link rel="stylesheet" type="text/css" href="style.css" />\n}
         unless $opts->{skip_style};
+
+    if (my $css = $opts->{add_jit}) {
+        $html .= qq{<link rel="stylesheet" type="text/css" href="js/jit/$css.css" />\n};
+        $html .= qq{<script language="JavaScript" src="js/jit/jit.js"></script>\n};
+    }
 
     $html .= <<EOD unless $opts->{skip_jquery};
     <script type="text/javascript" src="js/jquery-min.js"></script> 
 
     <script type="text/javascript" src="js/jquery-tablesorter-min.js"></script> 
-    <link rel="stylesheet" type="text/css" href="style-tablesorter.css"></link>
+    <link rel="stylesheet" type="text/css" href="style-tablesorter.css" />
     <script type="text/javascript">
     // when a column is first clicked on to sort it, use descending order
     // XXX doesn't seem to work (and not just because the tablesorter formatSortingOrder() is broken)
@@ -1538,9 +1523,8 @@ body { font-family: sans-serif; margin: 0px; }
 .footer > a:link,
 .footer > a:visited {
     color: #cccccc;
-    text-decoration: none;
 }
-.footer { margin: 8px; }
+.footer { margin: 30px; }
 
 table { 
     border-collapse: collapse; 
@@ -1555,6 +1539,7 @@ th,.h {
     background-color: #dddddd;
     border: solid 1px #666666;
     padding: 0em 0.4em 0em 0.4em;
+    font-size:0.8em;
 }
 td { 
     border: solid 1px #cccccc; 
@@ -1607,10 +1592,10 @@ pre,.s {
  *   c3  : path covered or coverage = 100%
  */
 .c0, .c1, .c2, .c3 { text-align: right; }
-.c0 { background-color: #ff9999; }
-.c1 { background-color: #ffcc99; }
-.c2 { background-color: #ffff99; }
-.c3 { background-color: #99ff99; }
+.c0 { background-color: #ffb3b3; }  /* red */
+.c1 { background-color: #ffd9b4; }  /* orange */
+.c2 { background-color: #ffffB4; }  /* yellow */
+.c3 { background-color: #B4ffB4; }  /* green */
 
 /* warnings */
 .warn {
@@ -1647,6 +1632,12 @@ pre,.s {
 .calls:hover a:hover { color: red; }
 /* give a little headroom to the summary of calls into a sub */
 .calls .calls_in { margin-top: 5px; }
+
+.vis_header {
+    text-align:center;
+    font-style: italic;
+    padding-top: 5px; color: gray;
+}
 
 EOD
 }

@@ -21,6 +21,7 @@ lib/Devel/NYTProf/Constants.pm
 lib/Devel/NYTProf/Core.pm
 lib/Devel/NYTProf/Data.pm
 lib/Devel/NYTProf/FileInfo.pm
+lib/Devel/NYTProf/PgPLPerl.pm
 lib/Devel/NYTProf/ReadStream.pm
 lib/Devel/NYTProf/Reader.pm
 lib/Devel/NYTProf/SubInfo.pm
@@ -34,8 +35,8 @@ lib/Devel/NYTProf/js/jquery-tablesorter-min.js
 lib/Devel/NYTProf/js/style-tablesorter.css
 perftest.pl
 ppport.h
+slowops.h
 t/00-load.t
-t/22-readstream-v20.out
 t/22-readstream.t
 t/30-util.t
 t/31-env.t
@@ -104,6 +105,9 @@ t/test16.p
 t/test16.rdt
 t/test16.t
 t/test16.x
+t/test17-goto.p
+t/test17-goto.rdt
+t/test17-goto.t
 t/test20-streval.p
 t/test20-streval.rdt
 t/test20-streval.t
@@ -145,6 +149,9 @@ t/test60-subname.t
 t/test61-submerge.p
 t/test61-submerge.rdt
 t/test61-submerge.t
+t/test62-subcaller1.p
+t/test62-subcaller1.rdt
+t/test62-subcaller1.t
 t/test70-subexcl.p
 t/test70-subexcl.t
 t/test80-recurs.p

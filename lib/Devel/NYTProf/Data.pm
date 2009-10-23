@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Data.pm 774 2009-06-18 20:44:25Z tim.bunce $
+# $Id: Data.pm 873 2009-10-22 16:24:17Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -52,7 +52,7 @@ use Devel::NYTProf::FileInfo;
 use Devel::NYTProf::SubInfo;
 use Devel::NYTProf::Util qw(make_path_strip_editor strip_prefix_from_paths get_abs_paths_alternation_regex);
 
-our $VERSION = '2.10';
+our $VERSION = '2.11';
 
 my $trace = (($ENV{NYTPROF}||'') =~ m/\b trace=(\d+) /x) && $1; # XXX a hack
 
@@ -68,14 +68,16 @@ aggregates the contents, and returns the results as a blessed data structure.
 
 sub new {
     my $class = shift;
-    my $args = shift || { filename => 'nytprof.out' };
+    my $args = shift || { };
 
-    my $file = $args->{filename}
-        or croak "No filename specified";
+    my $file = $args->{filename} ||= 'nytprof.out';
 
     print "Reading $file\n" unless $args->{quiet};
 
-    my $profile = load_profile_data_from_file($file);
+    my $profile = load_profile_data_from_file(
+        $file,
+        $args->{callback},
+    );
     bless $profile => $class;
 
     my $fid_fileinfo = $profile->{fid_fileinfo};
@@ -106,6 +108,10 @@ sub new {
 
 sub _caches       { return shift->{caches} ||= {} }
 sub _clear_caches { return delete shift->{caches} }
+
+sub attributes {
+    return shift->{attribute} || {};
+}
 
 sub subname_subinfo_map {
     return { %{ shift->{sub_subinfo} } }; # shallow copy
@@ -321,35 +327,37 @@ sub dump_profile_data {
 
     $self->_clear_caches;
 
-    my $abs_path_regex = $^O eq "MSWin32" ? qr,^\w:/, : qr,^/,;
-    my @abs_inc = grep { $_ =~ $abs_path_regex } $self->inc;
-    my $is_lib_regex = get_abs_paths_alternation_regex(\@abs_inc);
-
     my $callback = sub {
         my ($path, $value) = @_;
+
+        if ($path->[0] eq 'attribute' && @$path == 1) {
+            my %v = %$value;
+            delete @v{qw(PRIVLIB_EXP ARCHLIB_EXP)};
+            return ({}, \%v);
+        }
 
         if ($args->{skip_stdlib}) {
 
             # for fid_fileinfo don't dump internal details of lib modules
             if ($path->[0] eq 'fid_fileinfo' && @$path==2) {
-                my $is_lib = ($value->filename =~ $is_lib_regex) ? 1 : 0;
-                return { skip_internal_details => $is_lib };
+                my $fi = $self->fileinfo_of($value->[0]);
+                return ({ skip_internal_details => $fi->is_perl_std_lib }, $value);
             }
 
             # skip sub_subinfo data for 'library modules'
             if ($path->[0] eq 'sub_subinfo' && @$path==2 && $value->[0]) {
                 my $fi = $self->fileinfo_of($value->[0]);
-                return undef if $fi->filename =~ $is_lib_regex;
+                return undef if $fi->is_perl_std_lib;
             }
 
             # skip fid_*_time data for 'library modules'
             if ($path->[0] =~ /^fid_\w+_time$/ && @$path==2) {
                 my $fi = $self->fileinfo_of($path->[1]);
-                return undef if $fi->filename =~ $is_lib_regex
+                return undef if $fi->is_perl_std_lib
                          or $fi->filename =~ m!^/\.\.\./!;
             }
         }
-        return {};
+        return ({}, $value);
     };
 
     _dump_elements($startnode, $separator, $filehandle, [], $callback);
@@ -389,7 +397,7 @@ sub _dump_elements {
 
         my $dump_opts = {};
         if ($callback) {
-            $dump_opts = $callback->([ @$path, $key ], $value);
+            ($dump_opts, $value) = $callback->([ @$path, $key ], $value);
             next if not $dump_opts;
         }
 
@@ -478,6 +486,7 @@ filenames: eval sequence numbers, like "(re_eval 2)" are changed to 0
 
 sub normalize_variables {
     my $self       = shift;
+    my $attributes = $self->attributes;
 
     for my $attr (qw(
         basetime xs_version perl_version clock_id ticks_per_sec nv_size
@@ -485,13 +494,8 @@ sub normalize_variables {
         total_stmts_duration total_stmts_measured total_stmts_discounted
         total_sub_calls
     )) {
-        $self->{attribute}{$attr} = 0;
+        $attributes->{$attr} = 0;
     }
-
-    my $abs_path_regex = $^O eq "MSWin32" ? qr,^\w:/, : qr,^/,;
-    my @abs_inc = grep { $_ =~ $abs_path_regex } $self->inc;
-    my $is_lib_regex = get_abs_paths_alternation_regex(\@abs_inc);
-
 
     # normalize line data
     for my $level (qw(line block sub)) {
@@ -593,6 +597,8 @@ sub subs_defined_in_file {
 
   @subname = $profile->subname_at_file_line($file, $line_number);
   $subname = $profile->subname_at_file_line($file, $line_number);
+
+This method is currently unused and may be deprecated.
 
 =cut
 

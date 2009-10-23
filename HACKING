@@ -1,5 +1,5 @@
 # vim: ts=8 sw=2 sts=0 noexpandtab:
-# $Id: HACKING 768 2009-06-12 15:47:25Z tim.bunce $
+# $Id: HACKING 825 2009-07-12 21:55:24Z tim.bunce $
 
 HACKING Devel::NYTProf
 ======================
@@ -149,9 +149,9 @@ Add help option which would print a summary of the options and exit.
 Could also print list of available clocks for the clock=N option
 (using a set of #ifdef's)
 
-Slow builtins, eg those that make system calls or are otherwise expensive, like
-crypt, could be treated as calls to xsubs in the CORE:: namespace.
-Or perhaps more usefully as xsubs in the current package.
+The subroutine profiler could calculate the running variance of the samples
+using this logic http://www.johndcook.com/standard_deviation.html
+so the reports can display the standard deviation.
 
 Replace DB::enable_profiling() and DB::disable_profiling() with $DB::profile = 1|0;
 That a more consistent API with $DB::single etc., but more importantly it lets
@@ -185,8 +185,6 @@ Work around OP_UNSTACK bug (http://rt.perl.org/rt3/Ticket/Display.html?id=60954)
 
 *** For core and reports
 
-Add NYTP_SIi_* constants for ::SubInfo array.
-
 Add @INC to data file so reports can be made more readable by removing
 (possibly very long) library paths where appropriate.
 Tricky thing is that @INC can change during the life of the program.
@@ -196,6 +194,7 @@ but only if different to the last @INC that was ouput.
 Add marker with timestamp for phases BEGIN, CHECK, INIT, END
 (could combine with pid marker)
 Add marker with timestamp for enable_profile and disable_profile.
+Could also dump-and-zero the sub profiler data so we could report per-phase timing.
 The goals here are to
 a) know how long the different phases of execution took mostly for general interest, and
 b) know how much time was spent with the profiler enabled to calculate accurate
@@ -267,12 +266,16 @@ so limits the usefulness. So we'd need to limit it to certain options
 (trace would certainly be useful).
 
 Add resolution of __ANON__ sub names (eg imported 'constants') where possible.
+[I can't recall what I meant by that now. I think this means where an anon sub
+has been imported, if the refcnt is 1 then use the imported name instead of the
+__ANON__ name.]
 
-Currently the line of only last BEGIN (or 'use') in the file are recorded.
+Currently the line of only the last BEGIN (or 'use') in the file are recorded.
 Rename Foo::BEGIN subs to Foo::BEGIN[file:line]
 (which matches the style used for Foo::__AUTO__[file:line])
-Probably need to record or output the line range when the BEGIN 'sub' is entered.
-Same for END subs.
+(perl ought to do this anyway but it seemed nontrivial when I looked)
+Probably need to record or output the line range when the BEGIN 'sub' is
+entered because it gets destroyed early.  Same for END subs.
 
 Record $AUTOLOAD when AUTOLOAD() called. Perhaps as ...::AUTOLOAD[$AUTOLOAD]
 Or perhaps just use the original name if the 'resolved' one is AUTOLOAD.
@@ -283,6 +286,10 @@ and just sets $sql = ... (for example) and another code path executes the
 sql. Some $sql may be fast and others slow. The profile can't separate the
 timings based on what was in $sql because the code path was the same in both
 cases. (For sql DBI::Profile can be used, but the underlying issue is general.)
+
+The sub_caller information is currently one level deep. It would be good to
+make it two levels. Especially because it would allow you to "see through"
+AUTOLOADs and other kinds of 'dispatch' subs.
 
 Refactor this HACKING file!
 
@@ -296,32 +303,7 @@ Following on from that I have a totally crazy idea that the browsers css engine
 could be used to highlight the corresponding rollup line when hovering over a
 source line, and/or the opposite. Needs lots of thought, but it's an interesting idea.
 
-Investigate and fix "Unable to determine line number" cases. Here's one:
-
-  $ NYTPROF=trace=2 perl -d:NYTProf -Mstrict -e 1
-  Opened nytprof.out
-  NYTProf enable_profile (previously disabled) to nytprof.out
-  Unable to determine line number in -e.
-  NYTProf pid 22526: first statement line 0 of -e.
-  New fid  1 (after  0:1   ) 32 e0:0 -e  has src,save src
-  New fid  2 (after  1:3   ) 02 e0:0 /usr/local/perl58-i/lib/5.8.6/strict.pm  no src,nosave src
-  -> sub strict::bits from 2:25 (d1, oh 114t, sub 0s)
-  Unable to determine line number in -e.
-  Unable to determine line number in -e.
-  Unable to determine line number in -e.
-  -> sub strict::import from 1:0 (d1, oh 178t, sub 7.1e-05s)
-  Unable to determine line number in -e.
-
-The -Mstrict can be any module. Even a dummy .pm file that just contains "1;\n"
-
-Change from tracing via warn() to use our own function that, at least initially,
-calls warn() while temporarily disabling the __WARN__ hook.
-
 Profile and optimize report generation
-
-The sub_caller information is currently one level deep. It would be good to
-make it two levels. Especially because it would allow you to "see through"
-AUTOLOADs and other kinds of 'dispatch' subs.
 
 Currently goto isn't explicitly noticed by the sub profiler. Need to intercept pp_goto.
 But that may be non-trivial. Could make it look like the statement that called
@@ -333,8 +315,6 @@ Bug or limitation?: sub calls in a continue { ... } block of a while () get
 associated with the 'next;' within the loop. Fixed by perl change 33710?
 
 Investigate style.css problem when using --outfile=some/other/dir
-
-Add option to set processor affinity.
 
 Index should show eval fids in some form - collapsed per location?
 Or just included in the stats for the outer source file.
@@ -358,19 +338,14 @@ Add (very) basic nytprofhtml test (ie it runs and produces output) so we check t
 
 called by list: "by $subname line $line of $file" make the file not include the inc portion
 
-Add caller sub name (via $profile->subname_at_file_line($fid, $line)) to sub
-caller info so report_src_line() doesn't have to do the expensive lookup.
-It's also a useful step on the road to the profiler storing the calling sub's
-name when generating the profile.
-
 Monitor and report when method cache is invalidated. Watch generation number
 and output a tag when it changes. Report locations of changes. Highlight those
 that happen after INIT phase.
 
 Fix testing of t/*.pm_x files which are currently being ignored.
 
-The autosplit handling doesn't address the naming of pseudo-fids from string
-evals, like "(eval 0)[test14.pm (autosplit into auto/test14/bar.al):17]"
+The autosplit handling doesn't address the naming of pseudo-fids from string evals
+inside autoloaded subs, like "(eval 0)[test14.pm (autosplit into auto/test14/bar.al):17]"
 The 'file name' for the eval fid needs to be edited when read in to remove the
 ' (autosplit...', but care should be taken to not remove the text for evals in
 autosplit files for which we've not been able to alias to the parent.
@@ -382,3 +357,10 @@ Use FID_ATTRIB tag to record autoload fids being aliases to a fid so that
 reports can include a list of autoloaded subs.
 
 Check if pp_leavegiven and pp_leavewhen need handling in init_profiler().
+
+Copy the nytprof.out file into the output report dir, so a report is more
+'self-contained' and can be archives and thrown around as a tarball/zip and
+still used for further analysis.
+
+The pseudo-sub "main::BEGIN" doesn't appear to be 'called' in NYTProf data.
+Perhaps it should.
