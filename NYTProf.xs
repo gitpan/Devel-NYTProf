@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 871 2009-10-22 16:05:10Z tim.bunce $
+ * $Id: NYTProf.xs 876 2009-10-23 16:17:34Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -2604,7 +2604,6 @@ pp_subcall_profiler(pTHX_ int is_slowop)
         return run_original_op(op_type);
     }
 
-if(0)sv_dump(sub_sv);
     if (!profile_stmts)
         reinit_if_forked(aTHX);
 
