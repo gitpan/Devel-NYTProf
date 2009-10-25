@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 874 2009-10-23 12:24:06Z tim.bunce $
+## $Id: NYTProf.pm 879 2009-10-24 15:56:24Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
@@ -467,6 +467,18 @@ You can also specify which signals to catch in this way by listing them,
 seperated by commas, as the value of the option (case is not significant):
 
     sigexit=int,hup
+
+=head2 forkdepth=N
+
+When a perl process that is being profiled executes a fork() the child process
+is also profiled. The forkdepth option can be used to control this. If
+forkdepth is zero then profiling will be disabled in the child process.
+
+If forkdepth is greater than zero then profiling will be enabled in the child
+process and the forkdepth value in that process is decremented by one.
+
+If forkdepth is -1 (the default) then there's no limit on the number of
+generations of children that are profiled.
 
 =head1 RUN-TIME CONTROL OF PROFILING
 

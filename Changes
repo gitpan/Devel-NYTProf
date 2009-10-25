@@ -2,7 +2,7 @@
 
 Devel::NYTProf::Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2009-10-22 18:24:17 +0200 (Thu, 22 Oct 2009) $ $Revision: 873 $)
+(As of $Date: 2009-10-24 17:56:24 +0200 (Sat, 24 Oct 2009) $ $Revision: 879 $)
 
 =head2 Changes in Devel::NYTProf 2.11
 
@@ -28,8 +28,13 @@ XXX OP_SUBSTCONT
     slowops=2 puts timings into into the package that made the
     call, e.g., "Foo::CORE:sleep" (note the single colon).
 
-  Added sigexit option to enable a useable profile when the process exits due
-    to a signals. Thanks to Andrew Sterling Hanenkamp for the seed of this idea.
+  Added sigexit=1 option to enable a useable profile when the process
+    exits due to a signals (catches INT HUP PIPE BUS SEGV by default)
+    Can also do sigexit=TRAP,ABRT,SYS,... to hook specific signals.
+    Thanks to Andrew Sterling Hanenkamp for the seed of this idea.
+
+  Added forkdepth=N option to enable profiling to be turned off after N
+    generations of fork().
 
   Added initial support for profiling PostgreSQL PL/Perl code
     via Devel::NYTProf::PgPLPerl module.
