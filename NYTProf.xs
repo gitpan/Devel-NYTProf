@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 879 2009-10-24 15:56:24Z tim.bunce $
+ * $Id: NYTProf.xs 882 2009-10-26 22:56:52Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -30,8 +30,20 @@
 #if !defined(OutCopFILE)
 #    define OutCopFILE CopFILE
 #endif
-#ifndef gv_fetchfile_flags
-#define gv_fetchfile_flags(str, len, flags) gv_fetchfile(str)
+
+#ifndef gv_fetchfile_flags  /* added in perl 5.009005 */
+/* we know our uses don't contain embedded nulls, so we just need to copy to a
+ * buffer so we can add a trailing null byte */
+#define gv_fetchfile_flags(a,b,c)   Perl_gv_fetchfile_flags(aTHX_ a,b,c)
+static GV *
+Perl_gv_fetchfile_flags(pTHX_ const char *const name, const STRLEN namelen, const U32 flags) {
+    char buf[2000];
+    if (namelen >= sizeof(buf)-1)
+        croak("panic: gv_fetchfile_flags overflow");
+    memcpy(buf, name, namelen);
+    buf[namelen] = '\0'; /* null-terminate */
+    return gv_fetchfile(buf);
+}
 #endif
 
 #ifndef OP_SETSTATE
@@ -700,8 +712,8 @@ flush_output(NYTP_file ofile, int flush) {
                 return;
             }
         } else {
-            croak("deflate failed, error %d (%s) in pid %d", status, ofile->zs.msg,
-                  getpid());
+            croak("deflate(%ld,%d) failed, error %d (%s) in pid %d",
+                (long)ofile->zs.avail_in, flush, status, ofile->zs.msg, getpid());
         }
     }
 }
