@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 879 2009-10-24 15:56:24Z tim.bunce $
+## $Id: NYTProf.pm 891 2009-10-28 16:11:41Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
@@ -16,7 +16,7 @@ our $VERSION = '2.11';
 package    # hide the package from the PAUSE indexer
     DB;
 
-# Enable specific perl debugger flags.
+# Enable specific perl debugger flags (others may be set later).
 # Set the flags that influence compilation ASAP so we get full details
 # (sub line ranges etc) of modules loaded as a side effect of loading
 # Devel::NYTProf::Core (ie XSLoader, strict, Exporter etc.)
@@ -25,16 +25,11 @@ $^P = 0x010     # record line range of sub definition
     | 0x100     # informative "file" names for evals
     | 0x200;    # informative names for anonymous subroutines
 
-# XXX hack, need better option handling
+require Devel::NYTProf::Core;    # loads XS and sets options
+
+# XXX hack, need better option handling e.g., add DB::get_option('use_db_sub')
 my $use_db_sub = ($ENV{NYTPROF} && $ENV{NYTPROF} =~ m/\buse_db_sub=1\b/);
-
-$^P |= 0x002    # line-by-line profiling via DB::DB (if $DB::single true)
-    |  0x020    # start (after BEGINs) with single-step on
-    if $use_db_sub;
-
-require Devel::NYTProf::Core;    # loads XS
-
-if ($use_db_sub) {               # install DB::DB sub
+if ($use_db_sub) {                     # install DB::DB sub
     *DB = ($] < 5.008008)
         ? sub { goto &DB_profiler }    # workaround bug in old perl versions (slow)
         : \&DB_profiler;
@@ -75,6 +70,10 @@ Performs per-line statement profiling for fine detail
 =item *
 
 Performs per-subroutine statement profiling for overview
+
+=item *
+
+Performs per-opcode profiling for slow perl builtins
 
 =item *
 
@@ -189,7 +188,7 @@ leaving it. It then increments a call count and accumulates the duration.
 For each subroutine called, separate counts and durations are stored I<for each
 location that called the subroutine>.
 
-Subroutine entry is detected by intercepting the entersub opcode. Subroutine
+Subroutine entry is detected by intercepting the C<entersub> opcode. Subroutine
 exit is detected via perl's internal save stack. The result is both extremely
 fast and very robust.
 
@@ -200,6 +199,15 @@ the inclusive time is only measured for the outer-most call.
 
 The inclusive times of recursive calls are still measured and are accumulated
 separately. Also the 'maximum recursion depth' per calling location is recorded.
+
+=head3 Goto &Subroutine
+
+Perl implements a C<goto &destination> as a C<return> followed by a call to
+C<&destination>, so that's how it will appear in the report.
+
+The C<goto> will be shown with a very short time because it's effectively just
+a C<return>. The C<&destination> sub will show a call I<not> from the location
+of the C<goto> but from the location of the call to the sub that performed the C<goto>.
 
 =head2 Application Profiling
 
@@ -345,7 +353,8 @@ profile data file.
 
 =head2 leave=0
 
-Set to 0 to disable the extra work done to allocate times accurately when
+Set to 0 to disable the extra work done by the statement profiler
+to allocate times accurately when
 returning into the middle of statement. For example leaving a subroutine
 and returning into the middle of statement, or re-evaluating a loop condition.
 
@@ -399,15 +408,12 @@ If C<N> is 1 then all the builtins are treated as being defined in the C<CORE>
 package. So times for C<print> calls from anywhere in your code are merged and
 accounted for as calls to an xsub called C<CORE::print>.
 
-If C<N> is 2 then builtins are treated as being defined in the package that
-calls them. So calls to C<print> from package C<Foo> are treated as calls to an
-xsub called C<Foo::CORE:print>. Note the single colon after CORE.
-
-Default is 0 as this is a new feature and still somewhat experimental.
-The default may change to 2 in a future release.
+If C<N> is 2 (the default) then builtins are treated as being defined in the
+package that calls them. So calls to C<print> from package C<Foo> are treated
+as calls to an xsub called C<Foo::CORE:print>. Note the single colon after CORE.
 
 The opcodes are currently profiled using their internal names, so C<printf> is C<prtf>
-and the C<-x> file test is C<fteexec>. This is likely to change in future.
+and the C<-x> file test is C<fteexec>. This may change in future.
 
 =head2 usecputime=1
 
@@ -523,21 +529,74 @@ The L<Devel::NYTProf::Reader> module provides an interface for generating
 arbitrary reports.  This means that you can implement your own output format in
 perl. (Though the module is in a state of flux and may be deprecated soon.)
 
-Included in the bin directory of this distribution are two scripts
-which implement the L<Devel::NYTProf::Reader> interface: 
+There is currently no tool to merge multiple data files into one.
 
-=over 12
+Included in the bin directory of this distribution are some scripts which
+turn the raw profile data into more useful formats:
 
-=item nytprofcsv
+=head2 nytprofcsv
 
-creates comma delimited profile reports
+Creates comma delimited profile reports. Old and limited.
 
-=item nytprofhtml
+=head2 nytprofcg
 
-creates attractive, richly annotated, and fully cross-linked html
-reports (including statistics, source code and color highlighting)
+Translates a profile into a format that can be loaded into KCachegrind
+L<http://kcachegrind.sourceforge.net>
 
-=back
+=head2 nytprofhtml
+
+Creates attractive, richly annotated, and fully cross-linked html
+reports (including statistics, source code and color highlighting).
+
+=head1 LIMITATIONS
+
+=head2 threads
+
+C<Devel::NYTProf> is not currently thread safe. If you'd be interested in
+helping to make it thread safe then please get in touch with us.
+
+=head2 For perl < 5.8.8 it may change what caller() returns
+
+For example, the L<Readonly> module croaks with "Invalid tie" when profiled with
+perl versions before 5.8.8. That's because L<Readonly> explicitly checking for
+certain values from caller(). The L<NEXT> module is also affected.
+
+=head2 For perl < 5.10.1 it can't see some implicit calls and callbacks
+
+For perl versions prior to 5.8.9 and 5.10.1, some implicit subroutine calls
+can't be seen by the I<subroutine> profiler. Technically this affects calls
+made via the various perl C<call_*()> internal APIs.
+
+For example, the C<TIE><whatever> subroutine called by C<tie()>, all calls
+made via operator overloading, and callbacks from XS code, are not seen.
+
+The effect is that time in the subroutines for those calls is
+accumulated by the subs that trigger them. So time spent in calls invoked by
+perl to handle overloading are accumulated by the subroutines that trigger
+overloading (so it is measured, but the cost is dispersed across possibly many
+calling locations).
+
+Although the calls aren't seen by the subroutine profiler, the individual
+I<statements> executed by the code in the called subs are profiled by the
+statement profiler.
+
+=head2 #line directives
+
+The reporting code currently doesn't handle #line directives, but at least it
+warns about them. Patches welcome.
+
+=head2 Scope::Upper unwind()
+
+NYTProf is currently incompatible with the deep magic performed by
+Scope::Upper's unwind() function. As a partial workaround you can set the
+C<subs=0:leave=0> options, but you won't get any subroutine timings.
+See L<http://rt.cpan.org/Public/Bug/Display.html?id=50634>
+
+=head2 Slowops doesn't include all kinds of s/// substitutions
+
+Currently the C<substcont> opcode isn't profiled. This means that substitutions
+using variables in the replacement string, or that use the C</e> modifier,
+are not fully profiled.
 
 =head1 CLOCKS
 
@@ -649,51 +708,6 @@ http://groups.google.com/group/comp.os.linux.development.apps/tree/browse_frm/th
 http://webnews.giga.net.tw/article//mailing.freebsd.performance/710
 http://sean.chittenden.org/news/2008/06/01/
 
-=head1 LIMITATIONS
-
-=head2 threads
-
-C<Devel::NYTProf> is not currently thread safe. If you'd be interested in
-helping to make it thread safe then please get in touch with us.
-
-=head2 For perl < 5.8.8 it may change what caller() returns
-
-For example, the L<Readonly> module croaks with "Invalid tie" when profiled with
-perl versions before 5.8.8. That's because L<Readonly> explicitly checking for
-certain values from caller(). The L<NEXT> module is also affected.
-
-=head2 For perl < 5.10.1 it can't see some implicit calls and callbacks
-
-For perl versions prior to 5.8.9 and 5.10.1, some implicit subroutine calls
-can't be seen by the I<subroutine> profiler. Technically this affects calls
-made via the various perl C<call_*()> internal APIs.
-
-For example, the C<TIE><whatever> subroutine called by C<tie()>, all calls
-made via operator overloading, and callbacks from XS code, are not seen.
-
-The effect is that time in the subroutines for those calls is
-accumulated by the subs that trigger them. So time spent in calls invoked by
-perl to handle overloading are accumulated by the subroutines that trigger
-overloading (so it is measured, but the cost is dispersed across possibly many
-calling locations).
-
-Although the calls aren't seen by the subroutine profiler, the individual
-I<statements> executed by the code in the called subs are profiled by the
-statement profiler.
-
-=head2 goto
-
-The C<goto &foo;> isn't recognized as a subroutine call by the subroutine profiler.
-
-=head2 Calls to XSubs which exit via an exception
-
-Calls to XSubs which exit via an exception are not recorded by subroutine profiler.
-
-=head2 #line directives
-
-The reporting code currently doesn't handle #line directives, but at least it
-warns about them. Patches welcome.
-
 =head1 CAVEATS
 
 =head2 SMP Systems
@@ -798,7 +812,7 @@ B<Steve Peters>, C<< <steve at fisharerojo.org> >>.
 =head1 COPYRIGHT AND LICENSE
 
   Copyright (C) 2008 by Adam Kaplan and The New York Times Company.
-  Copyright (C) 2008 by Tim Bunce, Ireland.
+  Copyright (C) 2008, 2009 by Tim Bunce, Ireland.
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.8.8 or,

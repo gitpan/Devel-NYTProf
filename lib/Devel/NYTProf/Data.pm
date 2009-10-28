@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Data.pm 873 2009-10-22 16:24:17Z tim.bunce $
+# $Id: Data.pm 888 2009-10-28 13:19:29Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -495,6 +495,10 @@ sub normalize_variables {
         total_sub_calls
     )) {
         $attributes->{$attr} = 0;
+    }
+
+    for my $attr (qw(PL_perldb)) {
+        delete $attributes->{$attr};
     }
 
     # normalize line data
