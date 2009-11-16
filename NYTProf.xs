@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 902 2009-11-14 22:49:13Z tim.bunce $
+ * $Id: NYTProf.xs 912 2009-11-16 12:52:55Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -196,8 +196,15 @@ static Hash_table hashtable = { NULL, MAX_HASH_SIZE, NULL, NULL };
 #define NYTP_FILE_DEFLATE       1
 #define NYTP_FILE_INFLATE       2
 
+/* During profiling the large buffer collects the raw data until full.
+ * Then flush_output zips it into the small buffer and writes it to disk.
+ * A scale factor of ~90 makes the large buffer usually almost fill the small
+ * one when zipped (so calls to flush_output() almost always trigger one fwrite()).
+ * We use a lower number to save some memory as there's little performance
+ * impact either way.
+ */
 #define NYTP_FILE_SMALL_BUFFER_SIZE   4096
-#define NYTP_FILE_LARGE_BUFFER_SIZE   16384
+#define NYTP_FILE_LARGE_BUFFER_SIZE   (NYTP_FILE_SMALL_BUFFER_SIZE * 40)
 
 #ifdef HAS_ZLIB
 #  define FILE_STATE(f)         ((f)->state)
@@ -676,6 +683,11 @@ flush_output(NYTP_file ofile, int flush) {
                 ofile->zs.next_out, ofile->zs.avail_out, flush);
 #endif
         status = deflate(&(ofile->zs), flush);
+
+        /* workaround for RT#50851 */
+        if (status == Z_BUF_ERROR && flush != Z_NO_FLUSH
+                && !ofile->zs.avail_in && ofile->zs.avail_out)
+            status = Z_OK;
 
 #ifdef DEBUG_DEFLATE
         fprintf(stderr, "flush_output postdef next_in= %p avail_in= %08x\n"
@@ -2190,13 +2202,13 @@ subr_entry_destroy(pTHX_ subr_entry_t *subr_entry)
         /* ignore the typical second (fallback) destroy */
         && !(subr_entry->prev_subr_entry_ix == subr_entry_ix && subr_entry->already_counted==1)
     ) {
-        logwarn("%2d <<     %s::%s done (seix %d->%d, ac%u)\n",
+        logwarn("%2d <<     %s::%s done (seix %d<-%d, ac%u)\n",
             subr_entry->subr_prof_depth,
             subr_entry->called_subpkg_pv,
             (subr_entry->called_subnam_sv && SvOK(subr_entry->called_subnam_sv))
                 ? SvPV_nolen(subr_entry->called_subnam_sv)
                 : "?",
-            (int)subr_entry_ix, (int)subr_entry->prev_subr_entry_ix,
+            (int)subr_entry->prev_subr_entry_ix, (int)subr_entry_ix,
             subr_entry->already_counted);
     }
     if (subr_entry->caller_subnam_sv) {
@@ -2503,10 +2515,16 @@ subr_entry_setup(pTHX_ COP *prev_cop, subr_entry_t *clone_subr_entry, OPCODE op_
     prev_subr_entry_ix = subr_entry_ix;
     subr_entry_ix = SSNEWa(sizeof(*subr_entry), MEM_ALIGNBYTES);
     subr_entry = subr_entry_ix_ptr(subr_entry_ix);
-    if (subr_entry_ix <= prev_subr_entry_ix) {
-        logwarn("NYTProf panic: stack is confused!\n");
-    }
     Zero(subr_entry, 1, subr_entry_t);
+
+    if (subr_entry_ix <= prev_subr_entry_ix) {
+        /* one cause of this is running NYTProf with threads */
+        logwarn("NYTProf panic: stack is confused!\n");
+        /* limit the damage */
+        disable_profile(aTHX);
+        subr_entry->already_counted++;
+        return subr_entry_ix;
+    }
 
     subr_entry->prev_subr_entry_ix = prev_subr_entry_ix;
     caller_subr_entry = subr_entry_ix_ptr(prev_subr_entry_ix);
@@ -2744,7 +2762,7 @@ pp_subcall_profiler(pTHX_ int is_slowop)
     else {
 
         /* goto &sub opcode acts like a return followed by a call all in one.
-         * When this op start executing, the 'current' subr_entry that was
+         * When this op starts executing, the 'current' subr_entry that was
          * pushed onto the savestack by pp_subcall_profiler will be 'already_counted'
          * so the profiling of that call will be handled naturally for us.
          * So far so good.
@@ -2752,8 +2770,11 @@ pp_subcall_profiler(pTHX_ int is_slowop)
          * Then tell subr_entry_setup() to use our copy as a template so it'll
          * seem like the sub we goto'd was called by the same sub that called
          * the one that executed the goto. Except that we do use the fid:line
-         * of the goto statement. Got all that?
+         * of the goto statement. That way the call graph makes sense and the
+         * 'calling location' make sense. Got all that?
          */
+        /* save a copy of prev_cop - see t/test18-goto2.p */
+        COP prev_cop_copy = *prev_cop;
         /* save a copy of the subr_entry of the sub we're goto'ing out of */
         /* so we can reuse the caller _* info after it's destroyed */
         subr_entry_t goto_subr_entry;
@@ -2780,30 +2801,27 @@ pp_subcall_profiler(pTHX_ int is_slowop)
         /* now we're in goto'd sub, mortalize the REFCNT_inc's done above */
         sv_2mortal(goto_subr_entry.caller_subnam_sv);
         sv_2mortal(goto_subr_entry.called_subnam_sv);
-        this_subr_entry_ix = subr_entry_setup(aTHX_ prev_cop, &goto_subr_entry, op_type, sub_sv);
+        this_subr_entry_ix = subr_entry_setup(aTHX_ &prev_cop_copy, &goto_subr_entry, op_type, sub_sv);
         SvREFCNT_dec(sub_sv);
     }
-
-    /* push a destructor hook onto the context stack to ensure we account
-     * for time in the sub when we leave it, even if via an exception.
-     */
-    save_destructor_x(incr_sub_inclusive_time_ix, INT2PTR(void *, (IV)this_subr_entry_ix));
 
     subr_entry = subr_entry_ix_ptr(this_subr_entry_ix);
 
     /* detect wiedness/corruption */
-    assert(subr_entry->already_counted < 100);
     assert(subr_entry->caller_fid < next_fid);
 
+    /* Check if this call has already been counted because the op performed
+     * a leave_scope(). E.g., OP_SUBSTCONT at end of s/.../\1/
+     * or Scope::Upper's unwind()
+     */
+    if (subr_entry->already_counted) {
+        assert(subr_entry->already_counted < 3);
+        if (trace_level >= 9)
+            logwarn("%2d -- already counted\n", subr_entry->subr_prof_depth);
+        goto skip_sub_profile;
+    }
+
     if (is_slowop) {
-        /* check if this call has already been counted because the op performed
-         * a leave_scope(). E.g., OP_SUBSTCONT at end of s/.../\1/;
-         */
-        if (subr_entry->already_counted) {
-            if (trace_level >= 9)
-                logwarn("%2d -- already counted\n", subr_entry->subr_prof_depth);
-            goto skip_sub_profile;
-        }
         /* else already fully handled by subr_entry_setup */
     }
     else {
@@ -2913,9 +2931,15 @@ pp_subcall_profiler(pTHX_ int is_slowop)
 
     if (subr_entry->called_is_xs) {
         /* for xsubs/builtins we've already left the sub, so end the timing now
-            * rather than wait for the calling scope to get cleaned up.
-            */
+         * rather than wait for the calling scope to get cleaned up.
+         */
         incr_sub_inclusive_time(aTHX_ subr_entry);
+    }
+    else {
+        /* push a destructor hook onto the context stack to ensure we account
+         * for time in the sub when we leave it, even if via an exception.
+         */
+        save_destructor_x(incr_sub_inclusive_time_ix, INT2PTR(void *, (IV)this_subr_entry_ix));
     }
 
     skip_sub_profile:

@@ -2,7 +2,7 @@
 
 Devel::NYTProf::Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2009-11-14 22:49:13 +0000 (Sat, 14 Nov 2009) $ $Revision: 902 $)
+(As of $Date: 2009-11-16 12:52:55 +0000 (Mon, 16 Nov 2009) $ $Revision: 912 $)
 
 =head2 Changes in Devel::NYTProf 2.11
 
