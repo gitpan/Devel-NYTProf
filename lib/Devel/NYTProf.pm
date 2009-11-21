@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 891 2009-10-28 16:11:41Z tim.bunce $
+## $Id: NYTProf.pm 915 2009-11-17 21:03:49Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
@@ -415,6 +415,10 @@ as calls to an xsub called C<Foo::CORE:print>. Note the single colon after CORE.
 The opcodes are currently profiled using their internal names, so C<printf> is C<prtf>
 and the C<-x> file test is C<fteexec>. This may change in future.
 
+Opcodes that call subroutines, perhaps by triggering a FETCH from a tied
+variable, currently appear in the call tree as the call of the sub. This is
+likely to change in future.
+
 =head2 usecputime=1
 
 Measure user CPU + system CPU time instead of the real elapsed 'wall clock'
@@ -550,10 +554,11 @@ reports (including statistics, source code and color highlighting).
 
 =head1 LIMITATIONS
 
-=head2 threads
+=head2 Threads and Multiplicity
 
-C<Devel::NYTProf> is not currently thread safe. If you'd be interested in
-helping to make it thread safe then please get in touch with us.
+C<Devel::NYTProf> is not currently thread safe or multiplicity safe.
+If you'd be interested in helping to fix that then please get in
+touch with us.
 
 =head2 For perl < 5.8.8 it may change what caller() returns
 
