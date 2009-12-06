@@ -40,6 +40,7 @@ run_test_group( {
             my $lines_e = $fi_e->srclines_array;
             # perl adds a newline to eval strings
             is $lines_e->[0], "$src_eval\n", 'source code line should match';
+            #warn "@$lines_e";
         }
         else {
             pass() for 1..2;

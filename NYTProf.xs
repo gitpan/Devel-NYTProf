@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 924 2009-11-21 17:53:13Z tim.bunce $
+ * $Id: NYTProf.xs 930 2009-12-05 15:55:12Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -2196,6 +2196,20 @@ static I32 subr_entry_ix = 0;
 #define subr_entry_ix_ptr(ix) ((ix) ? SSPTR(ix, subr_entry_t *) : NULL)
 
 
+static char *
+subr_entry_summary(pTHX_ subr_entry_t *subr_entry, int state)
+{
+    static char buf[80]; /* XXX */
+    sprintf(buf, "(seix %d%s%d, ac%u)",
+        (int)subr_entry->prev_subr_entry_ix,
+        (state) ? "<-" : "->",
+        (int)subr_entry_ix,
+        subr_entry->already_counted
+    );
+    return buf;
+}
+
+
 static void
 subr_entry_destroy(pTHX_ subr_entry_t *subr_entry)
 {
@@ -2203,14 +2217,13 @@ subr_entry_destroy(pTHX_ subr_entry_t *subr_entry)
         /* ignore the typical second (fallback) destroy */
         && !(subr_entry->prev_subr_entry_ix == subr_entry_ix && subr_entry->already_counted==1)
     ) {
-        logwarn("%2d <<     %s::%s done (seix %d<-%d, ac%u)\n",
+        logwarn("%2d <<     %s::%s done %s\n",
             subr_entry->subr_prof_depth,
             subr_entry->called_subpkg_pv,
             (subr_entry->called_subnam_sv && SvOK(subr_entry->called_subnam_sv))
                 ? SvPV_nolen(subr_entry->called_subnam_sv)
                 : "?",
-            (int)subr_entry->prev_subr_entry_ix, (int)subr_entry_ix,
-            subr_entry->already_counted);
+            subr_entry_summary(aTHX_ subr_entry, 1));
     }
     if (subr_entry->caller_subnam_sv) {
         sv_free(subr_entry->caller_subnam_sv);
@@ -2655,13 +2668,14 @@ subr_entry_setup(pTHX_ COP *prev_cop, subr_entry_t *clone_subr_entry, OPCODE op_
     }
 
     if (trace_level >= 4) {
-        logwarn("%2d >> %s at %u:%d from %s::%s %s (seix %d->%d)\n",
+        logwarn("%2d >> %s at %u:%d from %s::%s %s %s\n",
             subr_entry->subr_prof_depth,
             PL_op_name[op_type],
             subr_entry->caller_fid, subr_entry->caller_line,
             subr_entry->caller_subpkg_pv,
             SvPV_nolen(subr_entry->caller_subnam_sv),
-            found_caller_by, (int)prev_subr_entry_ix, (int)subr_entry_ix
+            found_caller_by,
+            subr_entry_summary(aTHX_ subr_entry, 0)
         );
     }
 
@@ -2816,9 +2830,15 @@ pp_subcall_profiler(pTHX_ int is_slowop)
      * or Scope::Upper's unwind()
      */
     if (subr_entry->already_counted) {
-        assert(subr_entry->already_counted < 3);
         if (trace_level >= 9)
-            logwarn("%2d -- already counted\n", subr_entry->subr_prof_depth);
+            logwarn("%2d --     %s::%s already counted %s\n",
+                subr_entry->subr_prof_depth,
+                subr_entry->called_subpkg_pv,
+                (subr_entry->called_subnam_sv && SvOK(subr_entry->called_subnam_sv))
+                    ? SvPV_nolen(subr_entry->called_subnam_sv)
+                    : "?",
+                subr_entry_summary(aTHX_ subr_entry, 1));
+        assert(subr_entry->already_counted < 3);
         goto skip_sub_profile;
     }
 
@@ -3287,14 +3307,18 @@ int count, unsigned int fid)
  * else returns the SV.
  * write_sub_line_ranges() updates the SV with the filename associated
  * with the package, or at least its best guess.
+ * As most callers get len via the hash API, they will have an I32, where
+ * "negative" length signifies UTF-8. As we're only dealing with looking for
+ * ASCII here, it doesn't matter to use which encoding sub_name is in, but it
+ * reduces total code by doing the abs(len) in here.
  */
 static SV *
-sub_pkg_filename_sv(pTHX_ char *sub_name)
+sub_pkg_filename_sv(pTHX_ char *sub_name, I32 len)
 {
     SV **svp;
     char *delim = "::";
     /* find end of package name */
-    char *colon = rninstr(sub_name, sub_name+strlen(sub_name), delim, delim+2);
+    char *colon = rninstr(sub_name, sub_name+(len > 0 ? len : -len), delim, delim+2);
     if (!colon || colon == sub_name)
         return Nullsv;   /* no :: delimiter */
     svp = hv_fetch(pkg_fids_hv, sub_name, (I32)(colon-sub_name), 0);
@@ -3328,7 +3352,7 @@ write_sub_line_ranges(pTHX)
         STRLEN filename_len = (first) ? first - filename : 0;
 
         /* get sv for package-of-subname to filename mapping */
-        SV *pkg_filename_sv = sub_pkg_filename_sv(aTHX_ sub_name);
+        SV *pkg_filename_sv = sub_pkg_filename_sv(aTHX_ sub_name, sub_name_len);
 
         if (!pkg_filename_sv) /* we don't know package */
             continue;
@@ -3358,10 +3382,11 @@ write_sub_line_ranges(pTHX)
 
     if (main_runtime_used) { /* Create fake entry for main::RUNTIME sub */
         char *runtime = "main::RUNTIME";
-        SV *sv = *hv_fetch(hv, runtime, strlen(runtime), 1);
+	const I32 runtime_len = strlen(runtime);
+        SV *sv = *hv_fetch(hv, runtime, runtime_len, 1);
         char *filename;
         /* get name of file that contained first profiled sub in 'main::' */
-        SV *pkg_filename_sv = sub_pkg_filename_sv(aTHX_ runtime);
+        SV *pkg_filename_sv = sub_pkg_filename_sv(aTHX_ runtime, runtime_len);
         if (!pkg_filename_sv) { /* no subs in main, so guess */
             filename = hashtable.first_inserted->key;
         }
@@ -3394,7 +3419,7 @@ write_sub_line_ranges(pTHX)
 
         if (!filename_len) {    /* no filename, so presumably a fake entry for xsub */
             /* do we know a filename that contains subs in the same package */
-            SV *pkg_filename_sv = sub_pkg_filename_sv(aTHX_ sub_name);
+            SV *pkg_filename_sv = sub_pkg_filename_sv(aTHX_ sub_name, sub_name_len);
             if (pkg_filename_sv && SvTRUE(pkg_filename_sv)) {
                 filename = SvPV(pkg_filename_sv, filename_len);
             if (trace_level >= 2)
