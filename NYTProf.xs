@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 935 2009-12-07 22:37:56Z tim.bunce $
+ * $Id: NYTProf.xs 937 2009-12-08 16:02:24Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -25,6 +25,11 @@
 
 #ifndef NO_PPPORT_H
 #   include "ppport.h"
+#endif
+
+#ifdef USE_HARD_ASSERT
+#undef NDEBUG
+#include <assert.h>
 #endif
 
 #if !defined(OutCopFILE)
@@ -86,8 +91,6 @@ Perl_gv_fetchfile_flags(pTHX_ const char *const name, const STRLEN namelen, cons
 #ifndef ZLIB_VERSION
 #define ZLIB_VERSION "0"
 #endif
-
-#define NDEBUG /* enable assertions */
 
 #define NYTP_FILE_MAJOR_VERSION 3
 #define NYTP_FILE_MINOR_VERSION 0
