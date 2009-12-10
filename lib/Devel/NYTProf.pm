@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 915 2009-11-17 21:03:49Z tim.bunce $
+## $Id: NYTProf.pm 945 2009-12-10 15:29:00Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
@@ -35,6 +35,8 @@ if ($use_db_sub) {                     # install DB::DB sub
         : \&DB_profiler;
 }
 sub sub { die "DB::sub" }              # needed for perl <5.8.7 (<perl@24265)
+
+sub CLONE { DB::disable_profiler }
 
 init_profiler();                       # provides true return value for module
 
@@ -490,6 +492,36 @@ process and the forkdepth value in that process is decremented by one.
 If forkdepth is -1 (the default) then there's no limit on the number of
 generations of children that are profiled.
 
+=head2 nameevals=0
+
+The 'file name' of a string eval is normally a string like "C<(eval N)>", where
+C<N> is a sequence number. By default NYTProf asks perl to give evals more
+informative names like "C<(eval N)[file:line]>", where C<file> and C<line> are
+the file and line number where the string C<eval> was executed.
+
+The C<nameevals=0> option can be used to disable the more informative names and
+return to the default behaviour. This may be need in rare cases where the
+application code is sensitive to the name given to a C<eval>. (The most common
+case in when running test suites undef NYTProf.)
+
+The downside is that the NYTProf reporting tools are less useful and may get
+confused if this option is used.
+
+=head2 nameanonsubs=0
+
+The name of a anonymous subroutine is normally "C<__ANON__>".  By default
+NYTProf asks perl to give anonymous subroutines more informative names like
+"C<__ANON__[file:line]>", where C<file> and C<line> are the file and line
+number where the anonymous subroutine was defined.
+
+The C<nameanonsubs=0> option can be used to disable the more informative names
+and return to the default behaviour. This may be need in rare cases where the
+application code is sensitive to the name given to a anonymous subroutines.
+(The most common case in when running test suites undef NYTProf.)
+
+The downside is that the NYTProf reporting tools are less useful and may get
+confused if this option is used.
+
 =head1 RUN-TIME CONTROL OF PROFILING
 
 You can profile only parts of an application by calling DB::disable_profile()
@@ -558,7 +590,9 @@ reports (including statistics, source code and color highlighting).
 
 C<Devel::NYTProf> is not currently thread safe or multiplicity safe.
 If you'd be interested in helping to fix that then please get in
-touch with us.
+touch with us. Meanwhile, profiling is disabled when a thread is created, and
+NYTProf tries to ignore any activity from perl interpreters other than the
+first one that loaded it.
 
 =head2 For perl < 5.8.8 it may change what caller() returns
 

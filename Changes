@@ -2,7 +2,7 @@
 
 Devel::NYTProf::Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2009-12-07 22:33:41 +0000 (Mon, 07 Dec 2009) $ $Revision: 934 $)
+(As of $Date: 2009-12-10 14:36:30 +0000 (Thu, 10 Dec 2009) $ $Revision: 943 $)
 
 =head2 Changes in Devel::NYTProf 2.11
 
@@ -42,6 +42,9 @@ XXX string eval merging - must allow at least viewing of source for called subs 
 
   Added forkdepth=N option to enable profiling to be turned off after N
     generations of fork().
+
+  Added nameevals=0 and nameanonsubs=0 to make NYTProf less visible
+    to code that may assume the default perl naming behaviour.
 
   Added initial support for profiling PostgreSQL PL/Perl code
     via Devel::NYTProf::PgPLPerl module.

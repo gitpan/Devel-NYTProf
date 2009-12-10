@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 941 2009-12-10 12:10:52Z tim.bunce $
+ * $Id: NYTProf.xs 947 2009-12-10 16:54:55Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -173,6 +173,11 @@ Perl_gv_fetchfile_flags(pTHX_ const char *const name, const STRLEN namelen, cons
 
 static int next_fid = 1;         /* 0 is reserved */
 
+/* we're not thread-safe (or even multiplicity safe) yet, so detect and bail */
+#ifdef MULTIPLICITY
+static PerlInterpreter *orig_my_perl;
+#endif
+
 typedef struct hash_entry
 {
     unsigned int id;
@@ -283,7 +288,11 @@ static struct NYTP_int_options_t options[] = {
 #define profile_forkdepth options[12].option_value
     { "forkdepth", -1 },                         /* how many generations of kids to profile */
 #define opt_perldb options[13].option_value
-    { "perldb", 0 }                              /* force certain PL_perldb value */
+    { "perldb", 0 },                             /* force certain PL_perldb value */
+#define opt_nameevals options[14].option_value
+    { "nameevals", 1 },                          /* change $^P 0x100 bit */
+#define opt_nameanonsubs options[15].option_value
+    { "nameanonsubs", 1 }                        /* change $^P 0x200 bit */
 };
 
 /* time tracking */
@@ -1814,9 +1823,13 @@ DB_stmt(pTHX_ COP *cop, OP *op)
     char *file;
     long elapsed, overflow;
 
-    if (!is_profiling || !profile_stmts) {
+    if (!is_profiling || !profile_stmts)
         return;
-    }
+#ifdef MULTIPLICITY
+    if (my_perl != orig_my_perl)
+        return;
+#endif
+
     saved_errno = errno;
 
     if (usecputime) {
@@ -1938,6 +1951,10 @@ DB_leave(pTHX_ OP *op)
 
     if (!is_profiling || !out || !profile_stmts)
         return;
+#ifdef MULTIPLICITY
+    if (my_perl != orig_my_perl)
+        return;
+#endif
 
     /* measure and output end time of previous statement
      * (earlier than it would have been done)
@@ -2026,7 +2043,8 @@ set_option(pTHX_ const char* option, const char* value)
         bool found = FALSE;
         do {
             if (strEQ(option, opt_p->option_name)) {
-                opt_p->option_value = atoi(value);
+                opt_p->option_value = (strnEQ(value,"0x",2))
+                    ? strtol(value, NULL, 16) : atoi(value);
                 found = TRUE;
                 break;
             }
@@ -2465,13 +2483,13 @@ resolve_sub_to_cv(pTHX_ SV *sv, GV **subname_gv_ptr)
             cv = (CV*)sv;
             break;
         case SVt_PVGV:
-            if (!(cv = GvCVu((GV*)sv)))
+            if (!(isGV_with_GP(sv) && (cv = GvCVu((GV*)sv))))
                 cv = sv_2cv(sv, &stash, subname_gv_ptr, FALSE);
             if (!cv)                              /* would autoload in this situation */
                 return NULL;
             break;
     }
-    if (cv && !*subname_gv_ptr && CvGV(cv)) {
+    if (cv && !*subname_gv_ptr && CvGV(cv) && isGV_with_GP(CvGV(cv))) {
         *subname_gv_ptr = CvGV(cv);
     }
     return cv;
@@ -2542,7 +2560,7 @@ subr_entry_setup(pTHX_ COP *prev_cop, subr_entry_t *clone_subr_entry, OPCODE op_
 
     if (subr_entry_ix <= prev_subr_entry_ix) {
         /* one cause of this is running NYTProf with threads */
-        logwarn("NYTProf panic: stack is confused!\n");
+        logwarn("NYTProf panic: stack is confused, giving up!\n");
         /* limit the damage */
         disable_profile(aTHX);
         subr_entry->already_counted++;
@@ -2737,8 +2755,11 @@ pp_subcall_profiler(pTHX_ int is_slowop)
         /* don't profile calls to non-existant import() methods */
         /* or our DB::_INIT as that makes tests perl version sensitive */
     || (op_type==OP_ENTERSUB && (sub_sv == &PL_sv_yes || sub_sv == DB_INIT_cv || sub_sv == DB_fin_cv))
-        /* don't profile other kids of goto */
+        /* don't profile other kinds of goto */
     || (op_type==OP_GOTO && !(SvROK(sub_sv) && SvTYPE(SvRV(sub_sv)) == SVt_PVCV))
+#ifdef MULTIPLICITY
+    || (my_perl != orig_my_perl)
+#endif
     ) {
         return run_original_op(op_type);
     }
@@ -2895,8 +2916,8 @@ pp_subcall_profiler(pTHX_ int is_slowop)
                 stash_name = HvNAME(GvSTASH(gv));
                 sv_setpv(subr_entry->called_subnam_sv, GvNAME(gv));
             }
-            else if (trace_level >= 0) {
-                logwarn("I'm confused about CV %p called as %s at %s line %d (please report as a bug)\n",
+            else if (trace_level >= 1) {
+                logwarn("NYTProf is confused about CV %p called as %s at %s line %d (please report as a bug)\n",
                     (void*)called_cv, SvPV_nolen(sub_sv), OutCopFILE(prev_cop), (int)CopLINE(prev_cop));
                 /* looks like Class::MOP doesn't give the CV GV stash a name */
                 if (trace_level >= 2)
@@ -3019,6 +3040,10 @@ enable_profile(pTHX_ char *file)
 {
     /* enable the run-time aspects to profiling */
     int prev_is_profiling = is_profiling;
+#ifdef MULTIPLICITY
+    if (my_perl != orig_my_perl)
+        return 0;
+#endif
 
     if (trace_level)
         logwarn("~ enable_profile (previously %s) to %s\n",
@@ -3053,6 +3078,10 @@ static int
 disable_profile(pTHX)
 {
     int prev_is_profiling = is_profiling;
+#ifdef MULTIPLICITY
+    if (my_perl != orig_my_perl)
+        return 0;
+#endif
     if (is_profiling) {
         if (opt_use_db_sub)
             sv_setiv(PL_DBsingle, 0);
@@ -3071,6 +3100,10 @@ static void
 finish_profile(pTHX)
 {
     int saved_errno = errno;
+#ifdef MULTIPLICITY
+    if (my_perl != orig_my_perl)
+        return;
+#endif
 
     if (trace_level >= 1)
         logwarn("~ finish_profile (overhead %"NVff"s, is_profiling %d)\n",
@@ -3102,6 +3135,15 @@ init_profiler(pTHX)
     SV **svp;
 #endif
 
+#ifdef MULTIPLICITY
+    if (!orig_my_perl)
+        orig_my_perl = my_perl;
+    else if (orig_my_perl != my_perl) {
+        logwarn("NYTProf: threads/multiplicity not supported!\n");
+        return 0;
+    }
+#endif
+
     /* Save the process id early. We monitor it to detect forks */
     last_pid = getpid();
     ticks_per_sec = (usecputime) ? CLOCKS_PER_SEC : CLOCKS_PER_TICK;
@@ -3121,6 +3163,11 @@ init_profiler(pTHX)
         /* ask perl to keep the source lines so we can copy them */
         PL_perldb |= PERLDBf_SAVESRC | PERLDBf_SAVESRC_NOSUBS;
     }
+
+    if (!opt_nameevals)
+        PL_perldb &= PERLDBf_NAMEEVAL;
+    if (!opt_nameanonsubs)
+        PL_perldb &= PERLDBf_NAMEANON;
 
     if (opt_perldb) /* force a PL_perldb value - for testing only, not documented */
         PL_perldb = opt_perldb;
