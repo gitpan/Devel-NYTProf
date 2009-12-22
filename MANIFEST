@@ -2,16 +2,20 @@
 .indent.pro
 .perltidyrc
 Changes
+FileHandle.h
+FileHandle.xs
 HACKING
 INSTALL
 MANIFEST
 Makefile.PL
+NYTProf.h
 NYTProf.xs
 README
 benchmark.pl
 bin/nytprofcg
 bin/nytprofcsv
 bin/nytprofhtml
+bin/nytprofmerge
 demo/README
 demo/demo-code.pl
 demo/demo-run.pl
@@ -21,6 +25,7 @@ lib/Devel/NYTProf/Apache.pm
 lib/Devel/NYTProf/Constants.pm
 lib/Devel/NYTProf/Core.pm
 lib/Devel/NYTProf/Data.pm
+lib/Devel/NYTProf/FileHandle.pm
 lib/Devel/NYTProf/FileInfo.pm
 lib/Devel/NYTProf/PgPLPerl.pm
 lib/Devel/NYTProf/ReadStream.pm
@@ -184,5 +189,6 @@ xt/test23-strevalxs.rdt
 xt/test23-strevalxs.t
 xt/test45-overload.p
 xt/test71-while.p
+xt/test82-stress.t
 xt/test90-stress.p
 META.yml                                 Module meta-data (added by MakeMaker)

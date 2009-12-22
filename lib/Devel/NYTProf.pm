@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 945 2009-12-10 15:29:00Z tim.bunce $
+## $Id: NYTProf.pm 987 2009-12-22 19:21:57Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
@@ -606,11 +606,12 @@ For perl versions prior to 5.8.9 and 5.10.1, some implicit subroutine calls
 can't be seen by the I<subroutine> profiler. Technically this affects calls
 made via the various perl C<call_*()> internal APIs.
 
-For example, the C<TIE><whatever> subroutine called by C<tie()>, all calls
-made via operator overloading, and callbacks from XS code, are not seen.
+For example, BEGIN/CHECK/INIT/END blocks, the C<TIE>I<whatever> subroutine
+called by C<tie()>, all calls made via operator overloading, and callbacks from
+XS code, are not seen.
 
-The effect is that time in the subroutines for those calls is
-accumulated by the subs that trigger them. So time spent in calls invoked by
+The effect is that time in those subroutines is accumulated by the
+subs that triggered the call to them. So time spent in calls invoked by
 perl to handle overloading are accumulated by the subroutines that trigger
 overloading (so it is measured, but the cost is dispersed across possibly many
 calling locations).
@@ -624,18 +625,20 @@ statement profiler.
 The reporting code currently doesn't handle #line directives, but at least it
 warns about them. Patches welcome.
 
-=head2 Scope::Upper unwind()
+=head2 Freed values in @_ may be mutated
 
-NYTProf is currently incompatible with the deep magic performed by
-Scope::Upper's unwind() function. As a partial workaround you can set the
-C<subs=0:leave=0> options, but you won't get any subroutine timings.
-See L<http://rt.cpan.org/Public/Bug/Display.html?id=50634>
+Perl has a class of bugs related to the fact that values placed in the stack
+are not reference counted. Consider this example:
 
-=head2 Slowops doesn't include all kinds of s/// substitutions
+  @a = (1..9);  sub s { undef @a; print $_ for @_ }  s(@a);
 
-Currently the C<substcont> opcode isn't profiled. This means that substitutions
-using variables in the replacement string, or that use the C</e> modifier,
-are not fully profiled.
+The C<undef @a> frees the values that C<@_> refers to. Perl can sometimes
+detect when a freed value is accessed and treats it as an undef. However, if
+the freed value is assigned some new value then @_ is effectively corrupted.
+
+NYTProf allocates new values while it's profiling, in order to record program
+activity, and so may appear to corrupt C<@_> in this (rare) situation.  If this
+happens, NYTProf is simply exposing an existing problem in the code.
 
 =head1 CLOCKS
 

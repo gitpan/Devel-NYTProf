@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-# $Id: Makefile.PL 940 2009-12-10 12:08:45Z tim.bunce $
+# $Id: Makefile.PL 983 2009-12-20 20:22:26Z tim.bunce $
 ###########################################################
 
 use 5.008001;
@@ -135,7 +135,8 @@ WriteMakefile(
 	'JSON::Any'    => 0,
     },
     LIBS      => [join ' ', @libs],
-    EXE_FILES => ['bin/nytprofhtml', 'bin/nytprofcsv', 'bin/nytprofcg'],
+    OBJECT    => q/$(O_FILES)/,
+    EXE_FILES => ['bin/nytprofhtml', 'bin/nytprofcsv', 'bin/nytprofcg', 'bin/nytprofmerge'],
     @man,
     INC   => $INCLUDE,
     clean => {
@@ -204,7 +205,6 @@ prove:: pure_all
 # not dofile because it's an alias for require
 # (and causes problems like http://www.nntp.perl.org/group/perl.cpan.testers/2009/12/msg6409150.html)
 # not fork because it doesn't make much sense
-# not substcont yet - needs more work XXX
 slowops::
 	$(NOECHO) $(PERL) -e 'require v5.10.0; # only regenerate with 5.10+ to get all ops'
 	$(PERL) -MOpcode=opset_to_ops,opset \

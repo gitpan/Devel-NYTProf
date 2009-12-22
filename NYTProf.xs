@@ -12,7 +12,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 949 2009-12-11 10:08:02Z tim.bunce $
+ * $Id: NYTProf.xs 985 2009-12-20 23:44:19Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -22,6 +22,9 @@
 #include "EXTERN.h"
 #include "perl.h"
 #include "XSUB.h"
+
+#include "FileHandle.h"
+#include "NYTProf.h"
 
 #ifndef NO_PPPORT_H
 #define NEED_eval_pv
@@ -134,7 +137,6 @@ Perl_gv_fetchfile_flags(pTHX_ const char *const name, const STRLEN namelen, cons
 #define NYTP_TAG_STRING          '\'' 
 #define NYTP_TAG_STRING_UTF8     '"' 
 #define NYTP_TAG_START_DEFLATE   'z' 
-#define NYTP_TAG_NO_TAG          '\0'   /* Used as a flag to mean "no tag" */
 
 /* indices to elements of the file info array */
 #define NYTP_FIDi_FILENAME      0
@@ -211,44 +213,6 @@ typedef struct hash_table
 static Hash_table hashtable = { NULL, MAX_HASH_SIZE, NULL, NULL };
 /* END Hash table definitions */
 
-#define NYTP_FILE_STDIO         0
-#define NYTP_FILE_DEFLATE       1
-#define NYTP_FILE_INFLATE       2
-
-/* During profiling the large buffer collects the raw data until full.
- * Then flush_output zips it into the small buffer and writes it to disk.
- * A scale factor of ~90 makes the large buffer usually almost fill the small
- * one when zipped (so calls to flush_output() almost always trigger one fwrite()).
- * We use a lower number to save some memory as there's little performance
- * impact either way.
- */
-#define NYTP_FILE_SMALL_BUFFER_SIZE   4096
-#define NYTP_FILE_LARGE_BUFFER_SIZE   (NYTP_FILE_SMALL_BUFFER_SIZE * 40)
-
-#ifdef HAS_ZLIB
-#  define FILE_STATE(f)         ((f)->state)
-#else
-#  define FILE_STATE(f)         NYTP_FILE_STDIO
-#endif
-
-typedef struct {
-    FILE *file;
-#ifdef HAS_ZLIB
-    unsigned char state;
-    bool stdio_at_eof;
-    bool zlib_at_eof;
-    /* For input only, the position we are in large_buffer.  */
-    unsigned int count;
-    z_stream zs;
-    unsigned char small_buffer[NYTP_FILE_SMALL_BUFFER_SIZE];
-    unsigned char large_buffer[NYTP_FILE_LARGE_BUFFER_SIZE];
-#endif
-} NYTP_file_t;
-
-typedef NYTP_file_t *NYTP_file;
-
-static int NYTP_eof(NYTP_file ifile);
-static const char * NYTP_fstrerror(NYTP_file file);
 
 /* defaults */
 static NYTP_file out;
@@ -361,10 +325,6 @@ static unsigned int ticks_per_sec = 0;            /* 0 forces error if not set *
 
 /* prototypes */
 static void output_header(pTHX);
-static void output_tag_int(unsigned char tag, unsigned int);
-#define     output_int(i)   output_tag_int(NYTP_TAG_NO_TAG, (unsigned int)(i))
-static void output_str(char *str, I32 len);
-static void output_nv(NV nv);
 static unsigned int read_int(void);
 static SV *read_str(pTHX_ SV *sv);
 static unsigned int get_file_id(pTHX_ char*, STRLEN, int created_via);
@@ -375,6 +335,7 @@ static int disable_profile(pTHX);
 static void finish_profile(pTHX);
 static void open_output_file(pTHX_ char *);
 static int reinit_if_forked(pTHX);
+static int parse_DBsub_value(pTHX_ SV *sv, STRLEN *filename_len_p, UV *first_line_p, UV *last_line_p);
 static void write_cached_fids(void);
 static void write_src_of_files(pTHX);
 static void write_sub_line_ranges(pTHX);
@@ -418,493 +379,6 @@ logwarn(const char *pat, ...)
 /***********************************
  * Devel::NYTProf Functions        *
  ***********************************/
-
-/* XXX The proper return value would be Off_t */
-static long
-NYTP_tell(NYTP_file file) {
-#ifdef HAS_ZLIB
-    /* This has to work with compressed files as it's used in the croaking
-       routine.  */
-    if (FILE_STATE(file) != NYTP_FILE_STDIO) {
-        return FILE_STATE(file) == NYTP_FILE_INFLATE
-            ? file->zs.total_out : file->zs.total_in;
-    }
-#endif
-    return (long)ftell(file->file);
-}
-
-static const char *
-NYTP_type_of_offset(NYTP_file file) {
-    switch (FILE_STATE(file)) {
-    case NYTP_FILE_STDIO:
-        return "";
-    case NYTP_FILE_DEFLATE:
-        return " in compressed output data";
-        break;
-    case NYTP_FILE_INFLATE:
-        return " in compressed input data";
-        break;
-    default:
-        return Perl_form_nocontext(" in stream in unknown state %d",
-                                   FILE_STATE(file));
-    }
-}
-
-#ifdef HASATTRIBUTE_NORETURN
-__attribute__noreturn__
-#endif 
-static void
-compressed_io_croak(NYTP_file file, const char *function) {
-    const char *what;
-
-    switch (FILE_STATE(file)) {
-    case NYTP_FILE_STDIO:
-        what = "stdio";
-        break;
-    case NYTP_FILE_DEFLATE:
-        what = "compressed output";
-        break;
-    case NYTP_FILE_INFLATE:
-        what = "compressed input";
-        break;
-    default:
-        croak("Can't use function %s() on a stream of type %d at offset %ld",
-              function, FILE_STATE(file), NYTP_tell(file));
-    }
-    croak("Can't use function %s() on a %s stream at offset %ld", function,
-          what, NYTP_tell(file));
-}
-
-#ifdef HAS_ZLIB
-static void
-NYTP_start_deflate(NYTP_file file) {
-    int status;
-
-    if (FILE_STATE(file) != NYTP_FILE_STDIO) {
-        compressed_io_croak(in, "NYTP_start_deflate");
-    }
-    FILE_STATE(file) = NYTP_FILE_DEFLATE;
-    file->zs.next_in = (Bytef *) file->large_buffer;
-    file->zs.avail_in = 0;
-    file->zs.next_out = (Bytef *) file->small_buffer;
-    file->zs.avail_out = NYTP_FILE_SMALL_BUFFER_SIZE;
-    file->zs.zalloc = (alloc_func) 0;
-    file->zs.zfree = (free_func) 0;
-    file->zs.opaque = 0;
-
-    status = deflateInit2(&(file->zs), compression_level, Z_DEFLATED,
-        15 /* windowBits */,
-        9 /* memLevel */, Z_DEFAULT_STRATEGY);
-    if (status != Z_OK) {
-        croak("deflateInit2 failed, error %d (%s)", status, file->zs.msg);
-    }
-}
-
-static void
-NYTP_start_inflate(NYTP_file file) {
-    int status;
-    if (FILE_STATE(file) != NYTP_FILE_STDIO) {
-        compressed_io_croak(in, "NYTP_start_inflate");
-    }
-    FILE_STATE(file) = NYTP_FILE_INFLATE;
-
-    file->zs.next_in = (Bytef *) file->small_buffer;
-    file->zs.avail_in = 0;
-    file->zs.next_out = (Bytef *) file->large_buffer;
-    file->zs.avail_out = NYTP_FILE_LARGE_BUFFER_SIZE;
-    file->zs.zalloc = (alloc_func) 0;
-    file->zs.zfree = (free_func) 0;
-    file->zs.opaque = 0;
-
-    status = inflateInit2(&(file->zs), 15);
-    if (status != Z_OK) {
-        croak("inflateInit2 failed, error %d (%s)", status, file->zs.msg);
-    }
-}
-#endif
-
-static NYTP_file_t *
-NYTP_open(const char *name, const char *mode) {
-    FILE *raw_file = fopen(name, mode);
-    NYTP_file file;
-
-    if (!raw_file)
-        return NULL;
-
-    Newx(file, 1, NYTP_file_t);
-    file->file = raw_file;
-
-#ifdef HAS_ZLIB
-    file->state = NYTP_FILE_STDIO;
-    file->count = 0;
-    file->stdio_at_eof = FALSE;
-    file->zlib_at_eof = FALSE;
-
-    file->zs.msg = "[Oops. zlib hasn't updated this error string]";
-#endif
-
-    return file;
-}
-
-static char *
-NYTP_gets(NYTP_file ifile, char *buffer, unsigned int len) {
-    if (FILE_STATE(ifile) != NYTP_FILE_STDIO) {
-        compressed_io_croak(ifile, "NYTP_gets");
-    }
-
-    return fgets(buffer, len, ifile->file);
-}
-
-#ifdef HAS_ZLIB
-
-static void
-grab_input(NYTP_file ifile) {
-    ifile->count = 0;
-    ifile->zs.next_out = (Bytef *) ifile->large_buffer;
-    ifile->zs.avail_out = NYTP_FILE_LARGE_BUFFER_SIZE;
-
-#ifdef DEBUG_INFLATE
-    fprintf(stderr, "grab_input enter\n");
-#endif
-
-    while (1) {
-        int status;
-
-        if (ifile->zs.avail_in == 0 && !ifile->stdio_at_eof) {
-            size_t got = fread(ifile->small_buffer, 1,
-                               NYTP_FILE_SMALL_BUFFER_SIZE, ifile->file);
-
-            if (got == 0) {
-                if (!feof(ifile->file)) {
-                    dTHX;
-                    croak("grab_input failed: %d (%s)", errno, strerror(errno));
-                }
-                ifile->stdio_at_eof = TRUE;
-            }
-
-            ifile->zs.avail_in = got;
-            ifile->zs.next_in = (Bytef *) ifile->small_buffer;
-        }
-
-#ifdef DEBUG_INFLATE
-        fprintf(stderr, "grab_input predef  next_in= %p avail_in= %08x\n"
-                        "                   next_out=%p avail_out=%08x"
-                " eof=%d,%d\n", ifile->zs.next_in, ifile->zs.avail_in,
-                ifile->zs.next_out, ifile->zs.avail_out, ifile->stdio_at_eof,
-                ifile->zlib_at_eof);
-#endif
-
-        status = inflate(&(ifile->zs), Z_NO_FLUSH);
-
-#ifdef DEBUG_INFLATE
-        fprintf(stderr, "grab_input postdef next_in= %p avail_in= %08x\n"
-                        "                   next_out=%p avail_out=%08x "
-                "status=%d\n", ifile->zs.next_in, ifile->zs.avail_in,
-                ifile->zs.next_out, ifile->zs.avail_out, status);
-#endif
-
-        if (!(status == Z_OK || status == Z_STREAM_END)) {
-            if (ifile->stdio_at_eof)
-                croak("Error reading file: inflate failed, error %d (%s) at end of input file, "
-                    " perhaps the process didn't exit cleanly or the file has been truncated",
-                    status, ifile->zs.msg);
-            croak("Error reading file: inflate failed, error %d (%s) at offset %ld in input file",
-                  status, ifile->zs.msg, (long)ftell(ifile->file));
-        }
-
-        if (ifile->zs.avail_out == 0 || status == Z_STREAM_END) {
-            if (status == Z_STREAM_END) {
-                ifile->zlib_at_eof = TRUE;
-            }
-            return;
-        }
-    }
-}
-
-#endif
-
-
-static size_t
-NYTP_read_unchecked(NYTP_file ifile, void *buffer, size_t len) {
-#ifdef HAS_ZLIB
-    size_t result = 0;
-#endif
-    if (FILE_STATE(ifile) == NYTP_FILE_STDIO) {
-        return fread(buffer, 1, len, ifile->file);
-    }
-    else if (FILE_STATE(ifile) != NYTP_FILE_INFLATE) {
-        compressed_io_croak(ifile, "NYTP_read");
-        return 0;
-    }
-#ifdef HAS_ZLIB
-    while (1) {
-        unsigned char *p = ifile->large_buffer + ifile->count;
-        unsigned int remaining = ((unsigned char *) ifile->zs.next_out) - p;
-
-        if (remaining >= len) {
-            Copy(p, buffer, len, unsigned char);
-            ifile->count += len;
-            result += len;
-            return result;
-        }
-        Copy(p, buffer, remaining, unsigned char);
-        ifile->count = NYTP_FILE_LARGE_BUFFER_SIZE;
-        result += remaining;
-        len -= remaining;
-        buffer = (void *)(remaining + (char *)buffer);
-        if (ifile->zlib_at_eof)
-            return result;
-        grab_input(ifile);
-    }
-#endif
-}
-
-
-static size_t
-NYTP_read(NYTP_file ifile, void *buffer, size_t len, const char *what) {
-    size_t got = NYTP_read_unchecked(ifile, buffer, len);
-    if (got != len) {
-        croak("Profile format error whilst reading %s at %ld%s: expected %ld got %ld, %s",
-              what, NYTP_tell(ifile), NYTP_type_of_offset(ifile), (long)len, (long)got,
-                (NYTP_eof(in)) ? "end of file" : NYTP_fstrerror(in));
-    }
-    return len;
-}
-
-
-#ifdef HAS_ZLIB
-/* Cheat, by telling zlib about a reduced amount of available output space,
-   such that our next write of the (slightly underused) output buffer will
-   align the underlying file pointer back with the size of our output buffer
-   (and hopefully the underlying OS block writes).  */
-static void
-sync_avail_out_to_ftell(NYTP_file ofile) {
-    const long result = ftell(ofile->file);
-    const unsigned long where = result < 0 ? 0 : result;
-    ofile->zs.avail_out =
-        NYTP_FILE_SMALL_BUFFER_SIZE - where % NYTP_FILE_SMALL_BUFFER_SIZE;
-#ifdef DEBUG_DEFLATE
-    fprintf(stderr, "sync_avail_out_to_ftell pos=%ld, avail_out=%lu\n",
-            result, (unsigned long) ofile->zs.avail_out);
-#endif
-}
-
-/* flush has values as described for "allowed flush values" in zlib.h  */
-static void
-flush_output(NYTP_file ofile, int flush) {
-    ofile->zs.next_in = (Bytef *) ofile->large_buffer;
-
-#ifdef DEBUG_DEFLATE
-    fprintf(stderr, "flush_output enter   flush = %d\n", flush);
-#endif
-    while (1) {
-        int status;
-#ifdef DEBUG_DEFLATE
-        fprintf(stderr, "flush_output predef  next_in= %p avail_in= %08x\n"
-                        "                     next_out=%p avail_out=%08x"
-                " flush=%d\n", ofile->zs.next_in, ofile->zs.avail_in,
-                ofile->zs.next_out, ofile->zs.avail_out, flush);
-#endif
-        status = deflate(&(ofile->zs), flush);
-
-        /* workaround for RT#50851 */
-        if (status == Z_BUF_ERROR && flush != Z_NO_FLUSH
-                && !ofile->zs.avail_in && ofile->zs.avail_out)
-            status = Z_OK;
-
-#ifdef DEBUG_DEFLATE
-        fprintf(stderr, "flush_output postdef next_in= %p avail_in= %08x\n"
-                        "                     next_out=%p avail_out=%08x "
-                "status=%d\n", ofile->zs.next_in, ofile->zs.avail_in,
-                ofile->zs.next_out, ofile->zs.avail_out, status);
-#endif
-      
-        if (status == Z_OK || status == Z_STREAM_END) {
-            if (ofile->zs.avail_out == 0 || flush != Z_NO_FLUSH) {
-                int terminate
-                    = ofile->zs.avail_in == 0 && ofile->zs.avail_out > 0;
-                size_t avail = ((unsigned char *) ofile->zs.next_out)
-                    - ofile->small_buffer;
-                const unsigned char *where = ofile->small_buffer;
-
-                while (avail > 0) {
-                    size_t count = fwrite(where, 1, avail, ofile->file);
-
-                    if (count > 0) {
-                        where += count;
-                        avail -= count;
-                    } else {
-                        dTHX;
-                        croak("fwrite in flush error %d: %s", errno,
-                              strerror(errno));
-                    }
-                }
-                ofile->zs.next_out = (Bytef *) ofile->small_buffer;
-                ofile->zs.avail_out = NYTP_FILE_SMALL_BUFFER_SIZE;
-                if (terminate) {
-                    ofile->zs.avail_in = 0;
-                    if (flush == Z_SYNC_FLUSH) {
-                        sync_avail_out_to_ftell(ofile);
-                    }
-                    return;
-                }
-            } else {
-                ofile->zs.avail_in = 0;
-                return;
-            }
-        } else {
-            croak("deflate(%ld,%d) failed, error %d (%s) in pid %d",
-                (long)ofile->zs.avail_in, flush, status, ofile->zs.msg, getpid());
-        }
-    }
-}
-#endif
-
-static size_t
-NYTP_write(NYTP_file ofile, const void *buffer, size_t len) {
-#ifdef HAS_ZLIB
-    size_t result = 0;
-#endif
-    if (FILE_STATE(ofile) == NYTP_FILE_STDIO) {
-        /* fwrite with len==0 is problematic */
-        /* http://www.opengroup.org/platform/resolutions/bwg98-007.html */
-        if (len == 0)
-            return len;
-        if (fwrite(buffer, 1, len, ofile->file) < 1) {
-            dTHX;
-            croak("fwrite error %d writing %ld bytes to fd%d: %s",
-                errno, (long)len, fileno(ofile->file), strerror(errno));
-        }
-        return len;
-    }
-    else if (FILE_STATE(ofile) != NYTP_FILE_DEFLATE) {
-        compressed_io_croak(ofile, "NYTP_write");
-        return 0;
-    }
-#ifdef HAS_ZLIB
-    while (1) {
-        unsigned int remaining
-            = NYTP_FILE_LARGE_BUFFER_SIZE - ofile->zs.avail_in;
-        unsigned char *p = ofile->large_buffer + ofile->zs.avail_in;
-
-        if (remaining >= len) {
-            Copy(buffer, p, len, unsigned char);
-            ofile->zs.avail_in += len;
-            result += len;
-            return result;
-        } else {
-            /* Copy what we can, then flush the buffer. Lather, rinse, repeat.
-             */
-            Copy(buffer, p, remaining, unsigned char);
-            ofile->zs.avail_in = NYTP_FILE_LARGE_BUFFER_SIZE;
-            result += remaining;
-            len -= remaining;
-            buffer = (void *)(remaining + (char *)buffer);
-            flush_output(ofile, Z_NO_FLUSH);
-        }
-    }
-#endif
-}
-
-static int
-NYTP_printf(NYTP_file ofile, const char *format, ...) {
-    int retval;
-    va_list args;
-
-    if (FILE_STATE(ofile) != NYTP_FILE_STDIO) {
-        compressed_io_croak(ofile, "NYTP_printf");
-    }
-
-    va_start(args, format);
-    retval = vfprintf(ofile->file, format, args);
-    va_end(args);
-
-    return retval;
-}
-
-static int
-NYTP_flush(NYTP_file file) {
-#ifdef HAS_ZLIB
-    if (FILE_STATE(file) == NYTP_FILE_DEFLATE) {
-        flush_output(file, Z_SYNC_FLUSH);
-    }
-#endif
-    return fflush(file->file);
-}
-
-static int
-NYTP_eof(NYTP_file ifile) {
-#ifdef HAS_ZLIB
-    if (FILE_STATE(ifile) == NYTP_FILE_INFLATE) {
-        return ifile->zlib_at_eof;
-    }
-#endif
-    return feof(ifile->file);
-}
-
-static const char *
-NYTP_fstrerror(NYTP_file file) {
-    dTHX;
-#ifdef HAS_ZLIB
-    if (FILE_STATE(file) == NYTP_FILE_DEFLATE || FILE_STATE(file) == NYTP_FILE_INFLATE) {
-        return file->zs.msg;
-    }
-#endif
-    return strerror(errno);
-}
-
-static int
-NYTP_close(NYTP_file file, int discard) {
-    FILE *raw_file = file->file;
-
-#ifdef HAS_ZLIB
-    if (!discard && FILE_STATE(file) == NYTP_FILE_DEFLATE) {
-        const double ratio = file->zs.total_in / (double) file->zs.total_out;
-        flush_output(file, Z_FINISH);
-        fprintf(raw_file, "#\n"
-                "# Total uncompressed bytes %lu\n"
-                "# Total compressed bytes %lu\n"
-                "# Compression ratio 1:%2f, data shrunk by %.2f%%\n",
-                file->zs.total_in, file->zs.total_out, ratio,
-                100 * (1 - 1 / ratio));
-    }
-
-    if (FILE_STATE(file) == NYTP_FILE_DEFLATE) {
-        int status = deflateEnd(&(file->zs));
-        if (status != Z_OK) {
-            if (discard && status == Z_DATA_ERROR) {
-                /* deflateEnd returns Z_OK if success, Z_STREAM_ERROR if the
-                   stream state was inconsistent, Z_DATA_ERROR if the stream
-                   was freed prematurely (some input or output was discarded).
-                */
-            } else {
-                croak("deflateEnd failed, error %d (%s) in %d", status,
-                      file->zs.msg, getpid());
-            }
-        }
-    }
-    else if (FILE_STATE(file) == NYTP_FILE_INFLATE) {
-        int err = inflateEnd(&(file->zs));
-        if (err != Z_OK) {
-            croak("inflateEnd failed, error %d (%s)", err, file->zs.msg);
-        }
-    }
-#endif
-
-    Safefree(file);
-
-    if (ferror(raw_file))
-        logwarn("There was an error writing to the profile data file\n");
-
-    if (discard) {
-        /* close the underlying fd first so any buffered data gets discarded
-         * when fclose is called below */
-        close(fileno(raw_file));
-    }
-
-    return fclose(raw_file);
-}
-
 
 static NV
 gettimeofday_nv(void)
@@ -967,13 +441,13 @@ output_header(pTHX)
         NYTP_printf(out, "# Compressed at level %d with zlib %s\n",
                     compression_level, zlibVersion());
         NYTP_write(out, &tag, sizeof(tag));
-        NYTP_start_deflate(out);
+        NYTP_start_deflate(out, compression_level);
     }
 #endif
         
-    output_tag_int(NYTP_TAG_PID_START, getpid());
-    output_int(getppid());
-    output_nv(gettimeofday_nv());
+    output_tag_int(out, NYTP_TAG_PID_START, getpid());
+    output_int(out, getppid());
+    output_nv(out, gettimeofday_nv());
 
     write_cached_fids();                          /* empty initially, non-empty after fork */
 
@@ -981,8 +455,8 @@ output_header(pTHX)
 }
 
 
-static void
-output_str(char *str, I32 len) {    /* negative len signifies utf8 */
+void
+output_str(NYTP_file file, char *str, I32 len) {    /* negative len signifies utf8 */
     unsigned char tag = NYTP_TAG_STRING;
     if (len < 0) {
         tag = NYTP_TAG_STRING_UTF8;
@@ -990,8 +464,8 @@ output_str(char *str, I32 len) {    /* negative len signifies utf8 */
     }
     if (trace_level >= 10)
         logwarn("output_str('%.*s', %d)\n", (int)len, str, (int)len);
-    output_tag_int(tag, len);
-    NYTP_write(out, str, len);
+    output_tag_int(file, tag, len);
+    NYTP_write(file, str, len);
 }
 
 
@@ -1131,12 +605,12 @@ emit_fid (Hash_entry *fid_info)
         file_name = fid_info->key_abs;
         file_name_len = strlen(file_name);
     }
-    output_tag_int(NYTP_TAG_NEW_FID, fid_info->id);
-    output_int(fid_info->eval_fid);
-    output_int(fid_info->eval_line_num);
-    output_int(fid_info->fid_flags);
-    output_int(fid_info->file_size);
-    output_int(fid_info->file_mtime);
+    output_tag_int(out, NYTP_TAG_NEW_FID, fid_info->id);
+    output_int(out, fid_info->eval_fid);
+    output_int(out, fid_info->eval_line_num);
+    output_int(out, fid_info->fid_flags);
+    output_int(out, fid_info->file_size);
+    output_int(out, fid_info->file_mtime);
 
 #ifdef WIN32
     /* Make sure we only use forward slashes in filenames */
@@ -1147,13 +621,13 @@ emit_fid (Hash_entry *fid_info)
             char ch = file_name[i];
             file_name_copy[i] = ch == '\\' ? '/' : ch;
         }
-        output_str(file_name_copy, (I32)file_name_len);
+        output_str(out, file_name_copy, (I32)file_name_len);
         Safefree(file_name_copy);
         return;
     }
 #endif
 
-    output_str(file_name, (I32)file_name_len);
+    output_str(out, file_name, (I32)file_name_len);
 }
 
 
@@ -1307,6 +781,7 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
         else if (strnEQ(file_name, "(eval ", 6)) {
             /* strange eval that doesn't have a filename associated */
             /* seen in mod_perl, possibly from eval_sv(sv) api call */
+            /* also when nameevals=0 option is in effect */
             char *eval_file = "/unknown-eval-invoker";
             found->eval_fid = get_file_id(aTHX_ eval_file, strlen(eval_file),
                 NYTP_FIDf_IS_FAKE | created_via
@@ -1446,13 +921,13 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
 
 /**
  * Output an integer in bytes, optionally preceded by a tag. Use the special tag
- * NYTP_TAG_NO_TAG to suppress the tag output. A wrapper macro output_int(i)
+ * NYTP_TAG_NO_TAG to suppress the tag output. A wrapper macro output_int(fh, i)
  * does this for you.
  * "In bytes" means output the number in binary, using the least number of bytes
  * possible.  All numbers are positive. Use sign slot as a marker
  */
-static void
-output_tag_int(unsigned char tag, unsigned int i)
+void
+output_tag_int(NYTP_file file, unsigned char tag, unsigned int i)
 {
     U8 buffer[6];
     U8 *p = buffer;
@@ -1486,7 +961,7 @@ output_tag_int(unsigned char tag, unsigned int i)
         *p++ = (U8)(i >> 8);
         *p++ = (U8)i;
     }
-    NYTP_write(out, buffer, p - buffer);
+    NYTP_write(file, buffer, p - buffer);
 }
 
 
@@ -1495,7 +970,7 @@ output_uv_from_av(pTHX_ AV *av, int idx, UV default_uv)
 {
     SV **svp = av_fetch(av, idx, 0);
     UV uv = (!svp || !SvOK(*svp)) ? default_uv : SvUV(*svp);
-    output_int( uv );
+    output_int( out, uv );
     return uv;
 }
         
@@ -1505,10 +980,10 @@ output_uv_from_av(pTHX_ AV *av, int idx, UV default_uv)
  * Output a double precision float via a simple binary write of the memory.
  * (Minor portbility issues are seen as less important than speed and space.)
  */
-static void
-output_nv(NV nv)
+void
+output_nv(NYTP_file file, NV nv)
 {
-    NYTP_write(out, (unsigned char *)&nv, sizeof(NV));
+    NYTP_write(file, (unsigned char *)&nv, sizeof(NV));
 }
 
 
@@ -1517,7 +992,7 @@ output_nv_from_av(pTHX_ AV *av, int idx, NV default_nv)
 {
     SV **svp = av_fetch(av, idx, 0);
     NV nv = (!svp || !SvOK(*svp)) ? default_nv : SvNV(*svp);
-    output_nv( nv );
+    output_nv( out, nv );
     return nv;
 }
 
@@ -1855,13 +1330,13 @@ DB_stmt(pTHX_ COP *cop, OP *op)
 
     if (last_executed_fid) {
 
-        output_tag_int((unsigned char)((profile_blocks)
+        output_tag_int(out, (unsigned char)((profile_blocks)
                         ? NYTP_TAG_TIME_BLOCK : NYTP_TAG_TIME_LINE), elapsed);
-        output_int(last_executed_fid);
-        output_int(last_executed_line);
+        output_int(out, last_executed_fid);
+        output_int(out, last_executed_line);
         if (profile_blocks) {
-            output_int(last_block_line);
-            output_int(last_sub_line);
+            output_int(out, last_block_line);
+            output_int(out, last_sub_line);
         }
         if (trace_level >= 4)
             logwarn("Wrote %d:%-4d %2ld ticks (%u, %u)\n", last_executed_fid,
@@ -2114,6 +1589,7 @@ open_output_file(pTHX_ char *filename)
 
 static void
 close_output_file(pTHX) {
+    int result;
     if (!out)
         return;
 
@@ -2123,11 +1599,11 @@ close_output_file(pTHX) {
     /* mark end of profile data for last_pid pid
      * which is the pid that this file relates to
      */
-    output_tag_int(NYTP_TAG_PID_END, last_pid);
-    output_nv(gettimeofday_nv());
+    output_tag_int(out, NYTP_TAG_PID_END, last_pid);
+    output_nv(out, gettimeofday_nv());
 
-    if (-1 == NYTP_close(out, 0))
-        logwarn("Error closing profile data file: %s\n", strerror(errno));
+    if ((result = NYTP_close(out, 0)))
+        logwarn("Error closing profile data file: %s\n", strerror(result));
     out = NULL;
 }
 
@@ -2157,7 +1633,9 @@ reinit_if_forked(pTHX)
         * is now duplicated unflushed in this child,
         * so discard it when we close the inherited filehandle.
         */
-        NYTP_close(out, 1);
+        int result = NYTP_close(out, 1);
+        if (result)
+            logwarn("Error closing profile data file: %s\n", strerror(result));
         out = NULL;
         /* if we fork while profiling then ensure we'll get a distinct filename */
         profile_opts |= NYTP_OPTf_ADDPID;
@@ -2226,6 +1704,34 @@ struct subr_entry_st {
 static I32 subr_entry_ix = 0;
 
 #define subr_entry_ix_ptr(ix) ((ix) ? SSPTR(ix, subr_entry_t *) : NULL)
+
+
+static void
+append_linenum_to_begin(pTHX_ subr_entry_t *subr_entry) {
+    UV line = 0;
+    SV *fullnamesv;
+    SV *DBsv;
+    char *subname = SvPVX(subr_entry->called_subnam_sv);
+
+    /* If sub is a BEGIN then append the line number to our name
+     * so multiple BEGINs (either explicit or implicit, e.g., "use")
+     * in the same file/package can be distinguished.
+     */
+    if (!subname || *subname != 'B' || strNE(subname,"BEGIN"))
+        return;
+
+    /* get, and delete, the entry for this sub in the PL_DBsub hash */
+    fullnamesv = newSVpvf("%s::%s", subr_entry->called_subpkg_pv, subname);
+    DBsv = hv_delete(GvHV(PL_DBsub), SvPV_nolen(fullnamesv), SvCUR(fullnamesv), 1);
+
+    if (DBsv && parse_DBsub_value(aTHX_ DBsv, NULL, &line, NULL)) {
+        SvREFCNT_inc(DBsv); /* was made mortal by hv_delete */
+        sv_catpvf(subr_entry->called_subnam_sv, "@%u", (unsigned int)line);
+        sv_catpvf(fullnamesv,                   "@%u", (unsigned int)line);
+        hv_store(GvHV(PL_DBsub), SvPV_nolen(fullnamesv), SvCUR(fullnamesv), DBsv, 0);
+    }
+    SvREFCNT_dec(fullnamesv);
+}
 
 
 static char *
@@ -2561,17 +2067,17 @@ subr_entry_setup(pTHX_ COP *prev_cop, subr_entry_t *clone_subr_entry, OPCODE op_
     /* XXX "warning: cast from pointer to integer of different size" with use64bitall=define */
     prev_subr_entry_ix = subr_entry_ix;
     subr_entry_ix = SSNEWa(sizeof(*subr_entry), MEM_ALIGNBYTES);
-    subr_entry = subr_entry_ix_ptr(subr_entry_ix);
-    Zero(subr_entry, 1, subr_entry_t);
 
     if (subr_entry_ix <= prev_subr_entry_ix) {
         /* one cause of this is running NYTProf with threads */
         logwarn("NYTProf panic: stack is confused, giving up!\n");
         /* limit the damage */
         disable_profile(aTHX);
-        subr_entry->already_counted++;
-        return subr_entry_ix;
+        return prev_subr_entry_ix;
     }
+
+    subr_entry = subr_entry_ix_ptr(subr_entry_ix);
+    Zero(subr_entry, 1, subr_entry_t);
 
     subr_entry->prev_subr_entry_ix = prev_subr_entry_ix;
     caller_subr_entry = subr_entry_ix_ptr(prev_subr_entry_ix);
@@ -2615,6 +2121,12 @@ subr_entry_setup(pTHX_ COP *prev_cop, subr_entry_t *clone_subr_entry, OPCODE op_
         subr_entry->called_is_xs = "sop";
     }
 
+    /* These refer to the last perl statement executed, so aren't
+     * strictly correct where an opcode or xsub is making the call,
+     * but they're still more useful than nothing.
+     * In reports the references line shows calls made by the
+     * opcode or xsub that's called at that line.
+     */
     file = OutCopFILE(prev_cop);
     subr_entry->caller_fid = (file == last_executed_fileptr)
         ? last_executed_fid
@@ -2695,8 +2207,22 @@ subr_entry_setup(pTHX_ COP *prev_cop, subr_entry_t *clone_subr_entry, OPCODE op_
         found_caller_by = (profile_findcaller) ? "" : "(calculated)";
     }
     else {
-        subr_entry->caller_subpkg_pv = caller_subr_entry->called_subpkg_pv;
-        subr_entry->caller_subnam_sv = SvREFCNT_inc(caller_subr_entry->called_subnam_sv);
+        subr_entry_t *caller_se = caller_subr_entry;
+        int caller_is_op = caller_se->called_is_xs && strEQ(caller_se->called_is_xs,"sop");
+        /* if the caller is an op then use the caller of that op as our caller.
+         * that makes more sense from the users perspective (and is consistent
+         * with the findcaller=1 option).
+         * XXX disabled for now because (I'm pretty sure) it needs a corresponding
+         * change in incr_sub_inclusive_time otherwise the incl/excl times are distorted.
+         */
+        if (0 && caller_is_op) {
+            subr_entry->caller_subpkg_pv = caller_se->caller_subpkg_pv;
+            subr_entry->caller_subnam_sv = SvREFCNT_inc(caller_se->caller_subnam_sv);
+        }
+        else {
+            subr_entry->caller_subpkg_pv = caller_se->called_subpkg_pv;
+            subr_entry->caller_subnam_sv = SvREFCNT_inc(caller_se->called_subnam_sv);
+        }
         found_caller_by = "(inherited)";
     }
 
@@ -2713,7 +2239,7 @@ subr_entry_setup(pTHX_ COP *prev_cop, subr_entry_t *clone_subr_entry, OPCODE op_
     }
 
     /* This is our safety-net destructor. For perl subs an identical destructor
-     * will be pushed onto the stack inside the scope we're interested in.
+     * will be pushed onto the stack _inside_ the scope we're interested in.
      * That destructor will be more accurate than this one. This one is here
      * mainly to catch exceptions thrown from xs subs and slowops.
      */
@@ -2809,6 +2335,7 @@ pp_subcall_profiler(pTHX_ int is_slowop)
         SETERRNO(saved_errno, 0);
         op = run_original_op(op_type);
         saved_errno = errno;
+
     }
     else {
 
@@ -2858,7 +2385,7 @@ pp_subcall_profiler(pTHX_ int is_slowop)
 
     subr_entry = subr_entry_ix_ptr(this_subr_entry_ix);
 
-    /* detect wiedness/corruption */
+    /* detect wierdness/corruption */
     assert(subr_entry->caller_fid < next_fid);
 
     /* Check if this call has already been counted because the op performed
@@ -2879,7 +2406,7 @@ pp_subcall_profiler(pTHX_ int is_slowop)
     }
 
     if (is_slowop) {
-        /* else already fully handled by subr_entry_setup */
+        /* already fully handled by subr_entry_setup */
     }
     else {
         char *stash_name = NULL;
@@ -2950,7 +2477,10 @@ pp_subcall_profiler(pTHX_ int is_slowop)
             if (trace_level >= 9)
                 sv_dump(sub_sv);
         }
+        
         subr_entry->called_subpkg_pv = stash_name;
+        if (*SvPVX(subr_entry->called_subnam_sv) == 'B')
+            append_linenum_to_begin(aTHX_ subr_entry);
 
         /* if called was xsub then we've already left it, so use depth+1 */
         subr_entry->called_cv_depth = (called_cv) ? CvDEPTH(called_cv)+(is_xs?1:0) : 0;
@@ -3391,6 +2921,24 @@ sub_pkg_filename_sv(pTHX_ char *sub_name, I32 len)
 }
 
 
+static int
+parse_DBsub_value(pTHX_ SV *sv, STRLEN *filename_len_p, UV *first_line_p, UV *last_line_p) {
+    /* "filename:first-last" */
+    char *filename = SvPV_nolen(sv);
+    char *first = strrchr(filename, ':');
+    char *last = (first) ? strchr(first, '-') : NULL;
+
+    if (!first || !last || !grok_number(first+1, last-first-1, first_line_p))
+        return 0;
+    if (last_line_p)
+        *last_line_p = atoi(++last);
+    if (filename_len_p)
+        *filename_len_p = first - filename;
+
+    return 1;
+}
+
+
 static void
 write_sub_line_ranges(pTHX)
 {
@@ -3466,19 +3014,13 @@ write_sub_line_ranges(pTHX)
     while (NULL != (file_lines_sv = hv_iternextsv(hv, &sub_name, &sub_name_len))) {
         /* "filename:first-last" */
         char *filename = SvPV_nolen(file_lines_sv);
-        char *first = strrchr(filename, ':');
-        char *last = (first) ? strchr(first, '-') : NULL;
-        STRLEN filename_len = first - filename;
+        STRLEN filename_len;
         UV first_line, last_line;
 
-        if (!first || !last || !grok_number(first+1, last-first-1, &first_line)) {
+        if (!parse_DBsub_value(aTHX_ file_lines_sv, &filename_len, &first_line, &last_line)) {
             logwarn("Can't parse %%DB::sub entry for %s '%s'\n", sub_name, filename);
             continue;
         }
-        last_line = atoi(++last);
-
-        if (0 &&!first_line && !last_line && strstr(sub_name, "::BEGIN"))
-            continue;                             /* no point writing these XXX? */
 
         if (!filename_len) {    /* no filename, so presumably a fake entry for xsub */
             /* do we know a filename that contains subs in the same package */
@@ -3503,11 +3045,11 @@ write_sub_line_ranges(pTHX)
             logwarn("Sub %s fid %u lines %lu..%lu\n",
                 sub_name, fid, (unsigned long)first_line, (unsigned long)last_line);
 
-        output_tag_int(NYTP_TAG_SUB_INFO, fid);
-        output_str(sub_name, sub_name_len);
-        output_int(first_line);
-        output_int(last_line);
-        output_int(0);  /* how many extra items follow */
+        output_tag_int(out, NYTP_TAG_SUB_INFO, fid);
+        output_str(out, sub_name, sub_name_len);
+        output_int(out, first_line);
+        output_int(out, last_line);
+        output_int(out, 0);  /* how many extra items follow */
     }
 }
 
@@ -3527,10 +3069,16 @@ write_sub_callers(pTHX)
 
     hv_iterinit(sub_callers_hv);
     while (NULL != (fid_line_rvhv = hv_iternextsv(sub_callers_hv, &called_subname, &called_subname_len))) {
-        HV *fid_lines_hv = (HV*)SvRV(fid_line_rvhv);
+        HV *fid_lines_hv;
         char *caller_subname;
         I32 caller_subname_len;
         SV *sv;
+
+        if (!SvROK(fid_line_rvhv) || SvTYPE(SvRV(fid_line_rvhv))!=SVt_PVHV) {
+            logwarn("bad entry %s in sub_callers_hv\n", called_subname);
+            continue;
+        }
+        fid_lines_hv = (HV*)SvRV(fid_line_rvhv);
 
         if (0) {
             logwarn("Callers of %s:\n", called_subname);
@@ -3559,9 +3107,9 @@ write_sub_callers(pTHX)
             /* trim length to effectively hide the [fid:line] suffix */
             caller_subname_len = fid_line_start-caller_subname;
 
-            output_tag_int(NYTP_TAG_SUB_CALLERS, fid);
-            output_int(line);
-            output_str(caller_subname, caller_subname_len);
+            output_tag_int(out, NYTP_TAG_SUB_CALLERS, fid);
+            output_int(out, line);
+            output_str(out, caller_subname, caller_subname_len);
             sc[NYTP_SCi_CALL_COUNT] = output_uv_from_av(aTHX_ av, NYTP_SCi_CALL_COUNT, 0) * 1.0;
             sc[NYTP_SCi_INCL_RTIME] = output_nv_from_av(aTHX_ av, NYTP_SCi_INCL_RTIME, 0.0);
             sc[NYTP_SCi_EXCL_RTIME] = output_nv_from_av(aTHX_ av, NYTP_SCi_EXCL_RTIME, 0.0);
@@ -3569,7 +3117,7 @@ write_sub_callers(pTHX)
             sc[NYTP_SCi_INCL_STIME] = output_nv_from_av(aTHX_ av, NYTP_SCi_INCL_STIME, 0.0);
             sc[NYTP_SCi_RECI_RTIME] = output_nv_from_av(aTHX_ av, NYTP_SCi_RECI_RTIME, 0.0);
             sc[NYTP_SCi_REC_DEPTH]  = output_uv_from_av(aTHX_ av, NYTP_SCi_REC_DEPTH , 0) * 1.0;
-            output_str(called_subname, called_subname_len);
+            output_str(out, called_subname, called_subname_len);
 
             /* sanity check - early warning */
             if (sc[NYTP_SCi_INCL_RTIME] < 0.0 || sc[NYTP_SCi_EXCL_RTIME] < 0.0) {
@@ -3659,9 +3207,9 @@ write_src_of_files(pTHX)
             char *src = (svp) ? SvPV(*svp, len) : "";
             /* outputting the tag and fid for each (non empty) line
              * is a little inefficient, but not enough to worry about */
-            output_tag_int(NYTP_TAG_SRC_LINE, e->id);
-            output_int(line);
-            output_str(src, (I32)len);    /* includes newline */
+            output_tag_int(out, NYTP_TAG_SRC_LINE, e->id);
+            output_int(out, line);
+            output_str(out, src, (I32)len);    /* includes newline */
             if (trace_level >= 5) {
                 logwarn("fid %d src line %d: %s%s", e->id, line, src,
                     (*src && src[strlen(src)-1]=='\n') ? "" : "\n");
@@ -3737,7 +3285,7 @@ read_nv()
 }
 
 
-static SV *
+static void
 normalize_eval_seqn(pTHX_ SV *sv) {
     /* in-place-edit any eval sequence numbers to 0 */
     int found = 0;
@@ -3747,7 +3295,7 @@ normalize_eval_seqn(pTHX_ SV *sv) {
     char *dst = start;
 
     if (len < 5)
-        return sv;
+        return;
 
     /* effectively does $sv =~ s/(?<!$assert) \s \d+/eval 0/xg;
      * where $assert is qr/\((?:re_)?eval/ so it only matches '(eval ' and '(re_eval '
@@ -3778,8 +3326,6 @@ normalize_eval_seqn(pTHX_ SV *sv) {
         if (trace_level >= 5)
             logwarn("edited it to: %s\n", start);
     }
-
-    return sv;
 }
 
 
@@ -3909,10 +3455,7 @@ load_profile_data_from_stream(SV *cb)
     av_extend(fid_srclines_av, 64);
     av_extend(fid_line_time_av, 64);
 
-    if (FILE_STATE(in) != NYTP_FILE_STDIO) {
-        compressed_io_croak(in, "load_profile_data_from_stream");
-    }
-    if (2 != fscanf(in->file, "NYTProf %d %d\n", &file_major, &file_minor)) {
+    if (2 != NYTP_scanf(in, "NYTProf %d %d\n", &file_major, &file_minor)) {
         croak("NYTProf data format error while parsing header");
     }
     if (file_major != 3)
@@ -3945,6 +3488,7 @@ load_profile_data_from_stream(SV *cb)
         sv_setiv(cb_args[i], file_minor);  XPUSHs(cb_args[i++]);
         PUTBACK;
         call_sv(cb, G_DISCARD);
+        SPAGAIN;
     }
     else {
         cb = Nullsv;
@@ -3978,6 +3522,7 @@ load_profile_data_from_stream(SV *cb)
                     XPUSHs(cb_DISCOUNT_tag);
                     PUTBACK;
                     call_sv(cb, G_DISCARD);
+                    SPAGAIN;
                     break;
                 }
 
@@ -4021,6 +3566,7 @@ load_profile_data_from_stream(SV *cb)
 
                     PUTBACK;
                     call_sv(cb, G_DISCARD);
+                    SPAGAIN;
                     break;
                 }
 
@@ -4099,8 +3645,6 @@ load_profile_data_from_stream(SV *cb)
                 unsigned int file_mtime    = read_int();
 
                 filename_sv = read_str(aTHX_ NULL);
-                if (eval_file_num)
-                    normalize_eval_seqn(aTHX_ filename_sv);
 
                 if (cb) {
                     PUSHMARK(SP);
@@ -4119,8 +3663,12 @@ load_profile_data_from_stream(SV *cb)
 
                     PUTBACK;
                     call_sv(cb, G_DISCARD);
+                    SPAGAIN;
                     break;
                 }
+
+                if (eval_file_num)
+                    normalize_eval_seqn(aTHX_ filename_sv);
 
                 if (trace_level >= 2) {
                     logwarn("Fid %2u is %s (eval %u:%u) 0x%x sz%u mt%u\n",
@@ -4201,6 +3749,7 @@ load_profile_data_from_stream(SV *cb)
 
                     PUTBACK;
                     call_sv(cb, G_DISCARD);
+                    SPAGAIN;
                     break;
                 }
 
@@ -4226,7 +3775,7 @@ load_profile_data_from_stream(SV *cb)
                 AV *av;
                 SV *sv;
                 unsigned int fid        = read_int();
-                SV *subname_sv = normalize_eval_seqn(aTHX_ read_str(aTHX_ tmp_str1_sv));
+                SV *subname_sv = read_str(aTHX_ tmp_str1_sv);
                 unsigned int first_line = read_int();
                 unsigned int last_line  = read_int();
                 int skip_subinfo_store = 0;
@@ -4249,8 +3798,11 @@ load_profile_data_from_stream(SV *cb)
 
                     PUTBACK;
                     call_sv(cb, G_DISCARD);
+                    SPAGAIN;
                     break;
                 }
+
+                normalize_eval_seqn(aTHX_ subname_sv);
 
                 subname_pv = SvPV(subname_sv, subname_len);
                 if (trace_level >= 2)
@@ -4300,7 +3852,7 @@ load_profile_data_from_stream(SV *cb)
                 int len;
                 unsigned int fid   = read_int();
                 unsigned int line  = read_int();
-                SV *caller_subname_sv = normalize_eval_seqn(aTHX_ read_str(aTHX_ tmp_str2_sv));
+                SV *caller_subname_sv = read_str(aTHX_ tmp_str2_sv);
                 unsigned int count = read_int();
                 NV incl_time       = read_nv();
                 NV excl_time       = read_nv();
@@ -4308,7 +3860,7 @@ load_profile_data_from_stream(SV *cb)
                 NV scpu_time       = read_nv();
                 NV reci_time       = read_nv();
                 UV rec_depth       = read_int();
-                SV *called_subname_sv = normalize_eval_seqn(aTHX_ read_str(aTHX_ tmp_str1_sv));
+                SV *called_subname_sv = read_str(aTHX_ tmp_str1_sv);
 
                 if (cb) {
                     PUSHMARK(SP);
@@ -4325,12 +3877,17 @@ load_profile_data_from_stream(SV *cb)
                     sv_setnv(cb_args[i], reci_time);      XPUSHs(cb_args[i++]);
                     sv_setiv(cb_args[i], rec_depth);      XPUSHs(cb_args[i++]);
                     sv_setsv(cb_args[i], called_subname_sv);     XPUSHs(cb_args[i++]);
+                    sv_setsv(cb_args[i], caller_subname_sv);     XPUSHs(cb_args[i++]);
                     assert(i <= C_ARRAY_LENGTH(cb_args));
 
                     PUTBACK;
                     call_sv(cb, G_DISCARD);
+                    SPAGAIN;
                     break;
                 }
+
+                normalize_eval_seqn(aTHX_ caller_subname_sv);
+                normalize_eval_seqn(aTHX_ called_subname_sv);
 
                 if (trace_level >= 3)
                     logwarn("Sub %s called by %s %u:%u: count %d, incl %"NVff", excl %"NVff", ucpu %"NVff" scpu %"NVff"\n",
@@ -4439,6 +3996,7 @@ load_profile_data_from_stream(SV *cb)
 
                     PUTBACK;
                     call_sv(cb, G_DISCARD);
+                    SPAGAIN;
                     break;
                 }
 
@@ -4469,6 +4027,7 @@ load_profile_data_from_stream(SV *cb)
 
                     PUTBACK;
                     call_sv(cb, G_DISCARD);
+                    SPAGAIN;
                     break;
                 }
 
@@ -4480,7 +4039,7 @@ load_profile_data_from_stream(SV *cb)
                         HvKEYS(live_pids_hv), profiler_end_time);
 
                 store_attrib_sv(aTHX_ attr_hv, "profiler_end_time", newSVnv(profiler_end_time));
-                profiler_duration = profiler_end_time - profiler_start_time;
+                profiler_duration += profiler_end_time - profiler_start_time;
                 store_attrib_sv(aTHX_ attr_hv, "profiler_duration", newSVnv(profiler_duration));
 
                 break;
@@ -4513,6 +4072,7 @@ load_profile_data_from_stream(SV *cb)
 
                     PUTBACK;
                     call_sv(cb, G_DISCARD);
+                    SPAGAIN;
                 }
 
                 store_attrib_sv(aTHX_ attr_hv, text, value_sv);
@@ -4544,6 +4104,7 @@ load_profile_data_from_stream(SV *cb)
 
                     PUTBACK;
                     call_sv(cb, G_DISCARD);
+                    SPAGAIN;
                     break;
                 }
 
@@ -4563,6 +4124,7 @@ load_profile_data_from_stream(SV *cb)
 
                     PUTBACK;
                     call_sv(cb, G_DISCARD);
+                    SPAGAIN;
                 }
                 NYTP_start_inflate(in);
 #else
@@ -4825,6 +4387,8 @@ HV*
 load_profile_data_from_file(file,cb=NULL)
 char *file;
 SV* cb;
+    PREINIT:
+    int result;
     CODE:
     if (trace_level)
         logwarn("reading profile data from file %s\n", file);
@@ -4833,6 +4397,7 @@ SV* cb;
         croak("Failed to open input '%s': %s", file, strerror(errno));
     }
     RETVAL = load_profile_data_from_stream(cb);
-    NYTP_close(in, 0);
+    if ((result = NYTP_close(in, 0)))
+        logwarn("Error closing profile data file: %s\n", strerror(result));
     OUTPUT:
     RETVAL
