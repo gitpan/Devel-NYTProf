@@ -7,7 +7,7 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ##########################################################
-# $Id: nytprofhtml 956 2009-12-17 23:48:46Z tim.bunce $
+# $Id: nytprofhtml 998 2009-12-24 14:40:14Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -30,7 +30,7 @@ use Devel::NYTProf::Constants qw(NYTP_SCi_CALLING_SUB);
 my $json_any = eval { require JSON::Any; JSON::Any->import; JSON::Any->new }
     or warn "Can't load JSON::Any module - HTML visualizations skipped.\n";
 
-our $VERSION = '2.11';
+our $VERSION = '3.00';
 
 if ($VERSION != $Devel::NYTProf::Core::VERSION) {
     die "$0 version '$VERSION' doesn't match version '$Devel::NYTProf::Core::VERSION' of $INC{'Devel/NYTProf/Core.pm'}\n";
@@ -134,8 +134,8 @@ $reporter->set_param(
 <td align="left">!~TOTAL_CALLS~!</td>
 </tr>
 <tr>
-<td class="h" align="right">Total Time</td>
-<td align="left">!~TOTAL_TIME~! seconds</td>
+<td class="h" align="right">Statement Execution Time</td>
+<td align="left">!~TOTAL_TIME~!</td>
 </tr>
 </table>
 };
@@ -466,10 +466,12 @@ sub report_src_line {
                 $count, $count == 1 ? "" : "s";
             (my $subname_trimmed = $subname) =~ s/$inc_path_regex//g;
             $html .= sprintf qq{<a %s>%s</a>}, $reporter->href_for_sub($subname), $subname_trimmed;
-            $html .= sprintf qq{, avg %s/call}, fmt_time($incl_time / $count)
+            $html .= sprintf qq{, avg %s/call}, fmt_time(($incl_time+$reci_time) / $count),
                 if $count > 1;
-            $html .= sprintf qq{, max recursion depth %d}, $rec_depth
-                if $rec_depth;
+            if ($rec_depth) {
+                $html .= sprintf qq{, recursion: max depth %d, time %s},
+                    $rec_depth, fmt_time($reci_time);
+            }
             $html;
         } @calls_to;
         $epilogue = sprintf qq{<div class="calls"><div class="calls_out">%s</div></div>}, $epilogue;
@@ -580,9 +582,14 @@ sub output_index_page {
         }, "index-subs-excl.html", $all_subs;
     }
 
-    output_subs_treemap_page($reporter, "subs-treemap-excl.html",
-        "Subroutine Exclusive Time Treemap", sub { shift->excl_time });
-    print $fh q{<br/>You can view subroutines in a treemap of <a href="subs-treemap-excl.html">exclusive time</a>, grouped by package.<br/>};
+    if ($json_any) {
+        output_subs_treemap_page($reporter, "subs-treemap-excl.html",
+            "Subroutine Exclusive Time Treemap", sub { shift->excl_time });
+        print $fh q{<br/>You can view a <a href="subs-treemap-excl.html">treemap of subroutine exclusive time</a>, grouped by package.<br/>};
+    }
+    else {
+        print $fh q{<br/>(Can't create visual treemap of subroutine exclusive times without the <a href="http://search.cpan.org/dist/JSON-Any/">JSON::Any</a> module.)<br/>};
+    }
 
     output_subs_callgraph_dot_file($reporter, "packages-callgraph.dot", undef, 1);
     print $fh q{<br/>NYTProf also generates call-graph files in }
@@ -850,15 +857,6 @@ sub output_subs_treemap_page {
                 $area_sub || sub { shift->excl_time }, 0);
         }
     };
-    push @specs, {
-        id => 2,
-        title => "Treemap of subroutine inclusive time",
-        get_data => sub {
-            package_subinfo_map_to_tm_data(
-                $profile->package_subinfo_map(0,1),
-                sub { shift->incl_time }, 0);
-        }
-    } if 0; # XXX overlays first treemap!
 
     my @root_ids;
     for my $spec (@specs) {
@@ -869,7 +867,7 @@ sub output_subs_treemap_page {
         );
     }
 
-    print $fh qq{<div class="vis_header"><br/>Boxes represent time spent in a subroutine. Coloring represents packages. Click to drill-down into package hierarchy.</div>\n};
+    print $fh qq{<div class="vis_header"><br/>Boxes represent time spent in a subroutine. Coloring represents packages. Click to drill-down into package hierarchy, reload page to reset.</div>\n};
     print $fh qq{<div id="infovis">\n};
     print $fh qq{<br /><div id="$_"></div>\n} for @root_ids;
     print $fh qq{</div>\n};

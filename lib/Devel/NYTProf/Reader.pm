@@ -7,11 +7,11 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: Reader.pm 873 2009-10-22 16:24:17Z tim.bunce $
+## $Id: Reader.pm 998 2009-12-24 14:40:14Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Reader;
 
-our $VERSION = '2.11';
+our $VERSION = '3.00';
 
 use warnings;
 use strict;
@@ -22,6 +22,8 @@ use List::Util qw(sum);
 
 use Devel::NYTProf::Data;
 use Devel::NYTProf::Util qw(
+    fmt_float
+    fmt_time
     strip_prefix_from_paths
     html_safe_filename
     calculate_median_absolute_deviation
@@ -98,7 +100,7 @@ sub new {
                 replace => "\$self->{filestats}->{\$filestr}->{'calls'}"
             },
             {   pattern => '!~TOTAL_TIME~!',
-                replace => "\$self->{filestats}->{\$filestr}->{'time'}"
+                replace => "fmt_time(\$self->{filestats}->{\$filestr}->{'time'})"
             },
         ],
         callsfunc         => undef,

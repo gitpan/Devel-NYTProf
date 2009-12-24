@@ -7,11 +7,11 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 987 2009-12-22 19:21:57Z tim.bunce $
+## $Id: NYTProf.pm 998 2009-12-24 14:40:14Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
-our $VERSION = '2.11';
+our $VERSION = '3.00';
 
 package    # hide the package from the PAUSE indexer
     DB;
@@ -555,6 +555,46 @@ If $newfile already exists it will be deleted first.
 Calls DB::disable_profile(), then completes the profile data file by writing
 subroutine profile data, and then closes the file. The in memory subroutine
 profile data is then discarded.
+
+=head1 DATA COLLECTION AND INTERPRETATION
+
+NYTProf tries very hard to gather accurate information.  The nature of the
+internals of perl mean that, in some cases, the information that's gathered is
+accurate but surprising. In some cases it can appear to be misleading.
+(Of course, in some cases it may actually be plain wrong. Caveat lector.)
+
+=head2 Perl 5.10.1+ (or else 5.8.9+) are Recommended
+
+These versions of perl yield much more detailed information about calls to
+BEGIN, CHECK, INIT, and END blocks, the code handling tied or overloaded
+variables, and callbacks from XS code.
+
+Perl 5.12 will hopefully also fix an inaccuracy in the timing of the last
+statement and the condition clause of some kinds of loops:
+L<http://rt.perl.org/rt3/Ticket/Display.html?id=60954>
+
+=head2 Calls from XSUBs and Opcodes
+
+Calls record the current filename and line number of the perl code at the time
+the call was made. That's fine and accurate for calls from perl code. For calls
+that originate from C code however, such as an XSUB or an opcode, the filename and
+line number recorded are still those of the last I<perl> statement executed.
+
+For example, a line that calls an xsub will appear in reports to also have also
+called any subroutines that that xsub called. This can be construed as a feature.
+
+As an extreme example, the first time a regular expression that uses character
+classes is executed on a unicode string you'll find profile data like this:
+
+      # spent 1ms within main::BEGIN@4 which was called
+      #    once (1ms+0s) by main::CORE:subst at line 0
+  4   s/ (?: [A-Z] | [\d] )+ (?= [\s] ) //x;
+      # spent  38.8ms making 1 call to main::CORE:subst
+      # spent  25.4ms making 2 calls to utf8::SWASHNEW, avg 12.7ms/call
+      # spent  12.4ms making 1 call to utf8::AUTOLOAD
+
+=for comment
+No doubt more odd cases will be added here over time.
 
 =head1 REPORTS
 
