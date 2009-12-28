@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ##########################################################
-# $Id: nytprofcsv 998 2009-12-24 14:40:14Z tim.bunce $
+# $Id: nytprofcsv 999 2009-12-25 19:09:40Z tim.bunce $
 ##########################################################
 
 use warnings;
@@ -18,7 +18,7 @@ use Getopt::Long;
 
 use Devel::NYTProf::Reader;
 
-our $VERSION = '3.00';
+our $VERSION = '3.01';
 
 use constant NUMERIC_PRECISION => 5;
 
@@ -146,11 +146,13 @@ nytprofcsv - L<Devel::NYTProf::Reader> CSV format implementation
 
 A bit of history and a shameless plug...
 
-NYTProf stands for 'New York Times Profiler'. Indeed, this module was developed
-by The New York Times Co. to help our developers quickly identify bottlenecks in
-large Perl applications.  The NY Times loves Perl and we hope the community will benefit from our work as much as we have from theirs.
+NYTProf stands for 'New York Times Profiler'. Indeed, the original version of this
+module was developed by The New York Times Co. to help our developers quickly
+identify bottlenecks in large Perl applications.  The NY Times loves Perl and
+we hope the community will benefit from our work as much as we have from theirs.
 
-Please visit L<http://open.nytimes.com>, our open source blog to see what we are up to, L<http://code.nytimes.com> to see some of our open projects and then 
+Please visit L<http://open.nytimes.com>, our open source blog to see what we are
+up to, L<http://code.nytimes.com> to see some of our open projects and then 
 check out L<htt://nytimes.com> for the latest news!
 
 =head1 DESCRIPTION
@@ -194,7 +196,7 @@ Print the help message
  0,0,0,#--------------------------------------------------------------------
  0,0,0,# My New Source File!
  0,0,0,#--------------------------------------------------------------------
- 0,0,0,# $Id: nytprofcsv 998 2009-12-24 14:40:14Z tim.bunce $
+ 0,0,0,# $Id: nytprofcsv 999 2009-12-25 19:09:40Z tim.bunce $
  0,0,0,#--------------------------------------------------------------------
  0,0,0,
  0,0,0,package NYT::Feeds::Util;

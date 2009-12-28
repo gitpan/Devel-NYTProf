@@ -7,11 +7,11 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: Reader.pm 998 2009-12-24 14:40:14Z tim.bunce $
+## $Id: Reader.pm 1001 2009-12-28 11:52:34Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Reader;
 
-our $VERSION = '3.00';
+our $VERSION = '3.01';
 
 use warnings;
 use strict;
@@ -629,7 +629,7 @@ returns the current value of parameter.
 
 Basic Parameters:
 
-  Paramter       Description
+  Parameter       Description
   ------------   --------------
   suffix         The file suffix for the output file
   header         Text printed at the start of the output file
