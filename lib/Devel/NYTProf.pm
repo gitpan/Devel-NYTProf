@@ -7,11 +7,11 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 1004 2009-12-28 22:29:41Z tim.bunce $
+## $Id: NYTProf.pm 1076 2010-02-20 16:31:12Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
-our $VERSION = '3.01';
+our $VERSION = '3.02';
 
 package    # hide the package from the PAUSE indexer
     DB;
@@ -421,7 +421,7 @@ The opcodes are currently profiled using their internal names, so C<printf> is C
 and the C<-x> file test is C<fteexec>. This may change in future.
 
 Opcodes that call subroutines, perhaps by triggering a FETCH from a tied
-variable, currently appear in the call tree as the call of the sub. This is
+variable, currently appear in the call tree as the caller of the sub. This is
 likely to change in future.
 
 =head2 usecputime=1
@@ -439,7 +439,8 @@ happen so rarely relative to the activity of a most applications that you'd
 have to run the code for many hours to have any hope of reasonably useful results.
 
 A better alternative would be to use the C<clock=N> option to select a
-high-resolution cpu time clock, if available on your system.
+high-resolution cpu time clock, if available on your system, because that'll
+give you higher resolution and work for the subroutine profiler as well.
 
 =head2 file=...
 
@@ -598,6 +599,23 @@ classes is executed on a unicode string you'll find profile data like this:
 
 =for comment
 No doubt more odd cases will be added here over time.
+
+=head1 MAKING NYTPROF FASTER
+
+You can reduce the cost of profiling by adjusting some options. The trade-off
+is reduced detail and/or accuracy in reports.
+
+If you don't need statement-level profiling then you can disable it via L</stmts=0>.
+If you do need it but don't mind loosing block-level timings then set L</blocks=0>.
+If you want need still more speed then set L</leave=0> to disable the
+adjustments made for statements that 'leave' the current control flow (doing
+this I<will> make timings for some kinds of statements less accurate).
+
+If you don't need subroutine profiling then you can disable it via L</subs=0>.
+If you do need it but don't need timings for perl opcodes then set L</slowops=0>.
+
+Another approach is to only enable NYTProf in the sections of code that
+interest you. See L</RUN-TIME CONTROL OF PROFILING> for more details.
 
 =head1 REPORTS
 
@@ -842,6 +860,18 @@ Processor affinity can be set using the C<taskset> command on Linux.
 Note that processor affinity is inherited by child processes, so if the process
 you're profiling spawns cpu intensive sub processes then your process will be
 impacted by those more than it otherwise would.
+
+=head3 Windows
+
+On Windows NYTProf uses Time::HiRes which uses the windows
+QueryPerformanceCounter() API with some extra logic to adjust for the current
+clock speed and try to resync the raw counter to wallclock time every so often
+(every 30 seconds or if the timer drifts by more than 0.5 of a seconds).
+This extra logic may lead to occasional spurious results.
+
+(It would be great if someone could contribute a patch to NYTProf to use
+QueryPerformanceCounter() directly and avoid the overheads and resyncing
+behaviour of Time::HiRes.)
 
 =head2 Virtual Machines
 

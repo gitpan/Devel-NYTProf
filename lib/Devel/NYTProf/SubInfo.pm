@@ -10,8 +10,7 @@ use Devel::NYTProf::Constants qw(
     NYTP_SIi_SUB_NAME NYTP_SIi_PROFILE
     NYTP_SIi_REC_DEPTH NYTP_SIi_RECI_RTIME NYTP_SIi_CALLED_BY
 
-    NYTP_SCi_INCL_RTIME NYTP_SCi_EXCL_RTIME
-    NYTP_SCi_INCL_UTIME NYTP_SCi_INCL_STIME NYTP_SCi_RECI_RTIME
+    NYTP_SCi_INCL_RTIME NYTP_SCi_EXCL_RTIME NYTP_SCi_RECI_RTIME
     NYTP_SCi_CALLING_SUB
 );
 
@@ -166,7 +165,6 @@ sub merge_in {
             # merge @$src_line_info into @$dst_line_info
             $dst_line_info->[$_] += $src_line_info->[$_] for (
                 NYTP_SCi_INCL_RTIME, NYTP_SCi_EXCL_RTIME,
-                NYTP_SCi_INCL_UTIME, NYTP_SCi_INCL_STIME
             );
             # ug, we can't really combine recursive incl_time, but this is better than undef
             $dst_line_info->[NYTP_SCi_RECI_RTIME] = max($dst_line_info->[NYTP_SCi_RECI_RTIME],
@@ -220,11 +218,12 @@ sub normalize_for_test {
     # { fid => { line => [ count, incl, excl, ucpu, scpu, reci, recdepth ] } }
     my $callers = $self->caller_fid_line_places || {};
 
-    # delete calls from modules shipped with perl
+    # delete calls from modules shipped with perl that some tests use
+    # (because the line numbers vary between perl versions)
     for my $fid (keys %$callers) {
         next if not $fid;
         my $fileinfo = $profile->fileinfo_of($fid) or next;
-        next if not $fileinfo->is_perl_std_lib;
+        next if $fileinfo->filename !~ /(AutoLoader|Exporter)\.pm$/;
         delete $callers->{$fid};
     }
 
@@ -232,8 +231,6 @@ sub normalize_for_test {
     for my $sc (map { values %$_ } values %$callers) {
         $sc->[NYTP_SCi_INCL_RTIME] =
         $sc->[NYTP_SCi_EXCL_RTIME] =
-        $sc->[NYTP_SCi_INCL_UTIME] =
-        $sc->[NYTP_SCi_INCL_STIME] =
         $sc->[NYTP_SCi_RECI_RTIME] = 0;
     }
 }

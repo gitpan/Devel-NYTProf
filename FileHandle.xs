@@ -186,17 +186,10 @@ NYTP_open(const char *name, const char *mode) {
     file->stdio_at_eof = FALSE;
     file->zlib_at_eof = FALSE;
 
-    file->zs.msg = "[Oops. zlib hasn't updated this error string]";
+    file->zs.msg = (char *)"[Oops. zlib hasn't updated this error string]";
 #endif
 
     return file;
-}
-
-char *
-NYTP_gets(NYTP_file ifile, char *buffer, unsigned int len) {
-    CROAK_IF_NOT_STDIO(ifile, "NYTP_gets");
-
-    return fgets(buffer, len, ifile->file);
 }
 
 #ifdef HAS_ZLIB
@@ -313,6 +306,82 @@ NYTP_read(NYTP_file ifile, void *buffer, size_t len, const char *what) {
                 (NYTP_eof(ifile)) ? "end of file" : NYTP_fstrerror(ifile));
     }
     return len;
+}
+
+/* This isn't exactly fgets. It will resize the buffer as needed, and returns
+   a pointer to one beyond the read data (usually the terminating '\0'), or
+   NULL if it hit error/EOF */
+
+char *
+NYTP_gets(NYTP_file ifile, char **buffer_p, size_t *len_p) {
+    char *buffer = *buffer_p;
+    size_t len = *len_p;
+    size_t prev_len = 0;
+
+#ifdef HAS_ZLIB
+    if (FILE_STATE(ifile) == NYTP_FILE_INFLATE) {
+        while (1) {
+            const unsigned char *const p = ifile->large_buffer + ifile->count;
+            const unsigned int remaining = ((unsigned char *) ifile->zs.next_out) - p;
+            unsigned char *const nl = (unsigned char *)memchr(p, '\n', remaining);
+            size_t got;
+            size_t want;
+            size_t extra;
+
+            if (nl) {
+                want = nl + 1 - p;
+                extra = want + 1; /* 1 more to add a \0 */
+            } else {
+                want = extra = remaining;
+            }
+
+            if (extra > len - prev_len) {
+                prev_len = len;
+                len += extra;
+                buffer = (char *)saferealloc(buffer, len);
+            }
+
+            got = NYTP_read_unchecked(ifile, buffer + prev_len, want);
+            if (got != want)
+                croak("NYTP_gets unexpected short read. got %lu, expected %lu\n",
+                      (unsigned long)got, (unsigned long)want);
+
+            if (nl) {
+                buffer[prev_len + want] = '\0';
+                *buffer_p = buffer;
+                *len_p = len;
+                return buffer + prev_len + want;
+            }
+            if (ifile->zlib_at_eof) {
+                *buffer_p = buffer;
+                *len_p = len;
+                return NULL;
+            }
+            grab_input(ifile);
+        }
+    }
+#endif
+    if (FILE_STATE(ifile) != NYTP_FILE_STDIO) {
+        compressed_io_croak(ifile, "NYTP_gets");
+        return 0;
+    }
+
+    while(fgets(buffer + prev_len, len - prev_len, ifile->file)) {
+        /* We know that there are no '\0' bytes in the part we've already
+           read, so don't bother running strlen() over that part.  */
+        char *end = buffer + prev_len + strlen(buffer + prev_len);
+        if (end[-1] == '\n') {
+            *buffer_p = buffer;
+            *len_p = len;
+            return end;
+        }
+        prev_len = len - 1; /* -1 to take off the '\0' at the end */
+        len *= 2;
+        buffer = (char *)saferealloc(buffer, len);
+    }
+    *buffer_p = buffer;
+    *len_p = len;
+    return NULL;
 }
 
 
@@ -552,7 +621,7 @@ NYTP_close(NYTP_file file, int discard) {
     return fclose(raw_file) == 0 ? 0 : errno;
 }
 
-MODULE = Devel::NYTProf::FileHandle     PACKAGE = Devel::NYTProf::FileHandle
+MODULE = Devel::NYTProf::FileHandle     PACKAGE = Devel::NYTProf::FileHandle    PREFIX = NYTP_
 
 PROTOTYPES: DISABLE
 
@@ -573,19 +642,17 @@ char *mode
 
 int
 DESTROY(handle)
-SV *handle
+NYTP_file handle
     ALIAS:
         close = 1
     PREINIT:
         SV *guts;
     CODE:
+	guts = SvRV(ST(0));
         if (ix == ix) {
             /* Unused argument.  */
         }
-        if(!sv_isa(handle, "Devel::NYTProf::FileHandle"))
-            croak("handle is not a Devel::NYTProf::FileHandle");
-        guts = SvRV(handle);
-        RETVAL = NYTP_close((NYTP_file)SvPVX(guts), 0);
+        RETVAL = NYTP_close(handle, 0);
         SvPV_set(guts, NULL);
         SvLEN_set(guts, 0);
     OUTPUT:
@@ -593,65 +660,58 @@ SV *handle
 
 size_t
 write(handle, string)
-SV *handle
+NYTP_file handle
 SV *string
     PREINIT:
         STRLEN len;
         char *p;
-        NYTP_file fh;
     CODE:
-        if(!sv_isa(handle, "Devel::NYTProf::FileHandle"))
-            croak("handle is not a Devel::NYTProf::FileHandle");
         p = SvPVbyte(string, len);
-        fh = (NYTP_file)SvPVX(SvRV(handle));
-        RETVAL = NYTP_write(fh, p, len);
+        RETVAL = NYTP_write(handle, p, len);
     OUTPUT:
         RETVAL
 
 void
 output_int(handle, ...)
-SV *handle
+NYTP_file handle
     PREINIT:
-        NYTP_file fh;
         SV **last = sp + items;
     PPCODE:
-        if(!sv_isa(handle, "Devel::NYTProf::FileHandle"))
-            croak("handle is not a Devel::NYTProf::FileHandle");
-        fh = (NYTP_file)SvPVX(SvRV(handle));
         ++sp; /* A pointer to the function is first item on the stack.
                  It's not included in items  */
         while(sp++ < last)
-            output_int(fh, SvUV(*sp));
+            output_int(handle, SvUV(*sp));
         XSRETURN(0);
 
 void
 output_nv(handle, ...)
-SV *handle
+NYTP_file handle
     PREINIT:
-        NYTP_file fh;
         SV **last = sp + items;
     PPCODE:
-        if(!sv_isa(handle, "Devel::NYTProf::FileHandle"))
-            croak("handle is not a Devel::NYTProf::FileHandle");
-        fh = (NYTP_file)SvPVX(SvRV(handle));
         ++sp; /* A pointer to the function is first item on the stack.
                  It's not included in items  */
         while(sp++ < last)
-            output_nv(fh, SvNV(*sp));
+            output_nv(handle, SvNV(*sp));
         XSRETURN(0);
 
 
 void
 output_str(handle, value)
-SV *handle
+NYTP_file handle
 SV *value
     PREINIT:
         STRLEN len;
         char *p;
-        NYTP_file fh;
     CODE:
-        if(!sv_isa(handle, "Devel::NYTProf::FileHandle"))
-            croak("handle is not a Devel::NYTProf::FileHandle");
-        fh = (NYTP_file)SvPVX(SvRV(handle));
         p = SvPV(value, len);
-        output_str(fh, p, SvUTF8(value) ? -(I32)len : (I32) len);
+        output_str(handle, p, SvUTF8(value) ? -(I32)len : (I32) len);
+
+#ifdef HAS_ZLIB
+
+void
+NYTP_start_deflate(handle, compression_level = 6)
+NYTP_file handle
+int compression_level
+
+#endif

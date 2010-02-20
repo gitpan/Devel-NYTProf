@@ -12,8 +12,7 @@ use Devel::NYTProf::Constants qw(
     NYTP_FIDi_EVAL_FI NYTP_FIDi_HAS_EVALS NYTP_FIDi_SUBS_DEFINED NYTP_FIDi_SUBS_CALLED
     NYTP_FIDf_IS_PMC
 
-    NYTP_SCi_CALL_COUNT NYTP_SCi_INCL_RTIME NYTP_SCi_EXCL_RTIME
-    NYTP_SCi_INCL_UTIME NYTP_SCi_INCL_STIME NYTP_SCi_RECI_RTIME
+    NYTP_SCi_CALL_COUNT NYTP_SCi_INCL_RTIME NYTP_SCi_EXCL_RTIME NYTP_SCi_RECI_RTIME
     NYTP_SCi_CALLING_SUB
 );
 
@@ -115,18 +114,6 @@ sub is_pmc {
 }
 
 
-sub is_perl_std_lib {
-    my $self = shift;
-    my $filename = $self->filename;
-    my $attributes = $self->profile->attributes;
-    for (@{$attributes}{qw(PRIVLIB_EXP ARCHLIB_EXP)}) {
-        next unless $_;
-        return 1 if $filename =~ /\Q$_/;
-    }
-    return 0;
-}
-
-
 # should return the filename that the application used
 # when loading the file
 sub filename_without_inc {
@@ -201,8 +188,6 @@ sub normalize_for_test {
     for my $sc (map { values %$_ } values %{ $self->sub_call_lines }) {
         $sc->[NYTP_SCi_INCL_RTIME] =
         $sc->[NYTP_SCi_EXCL_RTIME] =
-        $sc->[NYTP_SCi_INCL_UTIME] =
-        $sc->[NYTP_SCi_INCL_STIME] =
         $sc->[NYTP_SCi_RECI_RTIME] = 0;
     }
 

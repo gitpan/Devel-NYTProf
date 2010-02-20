@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-# $Id: Makefile.PL 983 2009-12-20 20:22:26Z tim.bunce $
+# $Id: Makefile.PL 1012 2010-01-06 21:56:15Z tim.bunce $
 ###########################################################
 
 use 5.008001;
@@ -26,19 +26,19 @@ unless($ENV{PERL_CORE}) {
 }
 my @man;
 if ($ENV{PERL_CORE}) {
-  @man = ( MAN1PODS => {}, MAN3PODS => {} );
+    @man = ( MAN1PODS => {}, MAN3PODS => {} );
 } else {
-  @man = ( MAN1PODS  => {
+    @man = ( MAN1PODS  => {
         'bin/nytprofhtml' => '$(INST_MAN1DIR)/nytprofhtml.1',
         'bin/nytprofcsv'  => '$(INST_MAN1DIR)/nytprofcsv.1',
         'bin/nytprofcg'   => '$(INST_MAN1DIR)/nytprofcg.1',
-  } );
+    } );
 }
 
 # --- Options
 GetOptions(
     'g!'      => \my $opt_g,            # compile with -g (for debugging)
-    'assert!' => \my $opt_assert,	# enable assert()ions in the code (and perl headers)
+    'assert!' => \my $opt_assert,       # enable assert()ions in the code (and perl headers)
     'pg!'     => \my $opt_pg,           # compile with -pg (for profiling NYTProf itself)
 ) or exit 1;
 
@@ -67,7 +67,7 @@ my $h_files;
 my @h_dirs;
 push @h_dirs, split /:/, $ENV{INCLUDE} if $ENV{INCLUDE};
 push @h_dirs, split ' ', $Config{libsdirs};
-push @h_dirs, qw(/include /usr/include /usr/local/include);
+push @h_dirs, qw(/include /usr/include /usr/local/include /usr/include/mach);
 @h_dirs = grep { -d $_ } @h_dirs;
 
 $h_files = find_h_files(@h_dirs);
@@ -77,16 +77,22 @@ $h_files = find_h_files(@h_dirs);
 my %mm_opts;
 my @libs = ();
 
-foreach (['time.h', qr/(clock_gettime)\s*\(/, '-DHAS_CLOCK_GETTIME', '-lrt'],
-	 ['zlib.h', qr/(deflateInit2)(?:_)?\s*\(/, '-DHAS_ZLIB', '-lz'],
-	) {
+foreach (['time.h', qr/(clock_gettime)\s*\(/,      '-DHAS_CLOCK_GETTIME', '-lrt'],
+         ['zlib.h', qr/(deflateInit2)(?:_)?\s*\(/, '-DHAS_ZLIB',          '-lz'],
+        ) {
     my ($header, $regexp, $define, $libs) = @$_;
     if (my $result = search_h_file($header, $regexp)) {
-	print "Found $result in $header\n";
-	push @libs, $libs;
-	$mm_opts{DEFINE} .= " $define";
+        print "Found $result in $header\n";
+        push @libs, $libs;
+        $mm_opts{DEFINE} .= " $define";
     }
 }
+
+if( $^O eq 'darwin' and search_h_file('mach_time.h', qr/(mach_absolute_time)\s*\(/)) {
+    print "Found mach_absolute_time in mach/mach_time.h\n";
+    $mm_opts{DEFINE} .= " -DHAS_MACH_TIME";
+}
+
 if ($opt_assert or (not defined $opt_assert and $is_developer)) {
     warn "Assertion testing enabled\n";
     $mm_opts{DEFINE} .= " -DUSE_HARD_ASSERT";
@@ -132,7 +138,7 @@ WriteMakefile(
         'Test::More'   => '0.84',
         'XSLoader'     => 0,
         'Getopt::Long' => 0,
-	'JSON::Any'    => 0,
+        'JSON::Any'    => 0,
     },
     LIBS      => [join ' ', @libs],
     OBJECT    => q/$(O_FILES)/,
@@ -140,11 +146,11 @@ WriteMakefile(
     @man,
     INC   => $INCLUDE,
     clean => {
-	FILES => join(" ",
-	    "nytprof demo-out",
-	    map { ("t/$_", "xt/$_") } qw(
-		nytprof nytprof*.out nytprof*.out.* *_outdir test*.*_new auto
-	    ))
+        FILES => join(" ",
+            "nytprof demo-out",
+            map { ("t/$_", "xt/$_") } qw(
+                nytprof nytprof*.out nytprof*.out.* *_outdir test*.*_new auto
+            ))
     },
     dist  => {
         DIST_DEFAULT => 'clean distcheck disttest tardist',

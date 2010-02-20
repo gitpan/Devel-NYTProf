@@ -7,18 +7,18 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: Reader.pm 1001 2009-12-28 11:52:34Z tim.bunce $
+## $Id: Reader.pm 1076 2010-02-20 16:31:12Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Reader;
 
-our $VERSION = '3.01';
+our $VERSION = '3.02';
 
 use warnings;
 use strict;
 use Carp;
 use Config;
 
-use List::Util qw(sum);
+use List::Util qw(sum max);
 
 use Devel::NYTProf::Data;
 use Devel::NYTProf::Util qw(
@@ -413,11 +413,23 @@ sub _generate_report {
             $src_lines = [ $msg ];
             $LINE = 0;
         }
+        
+        # if we don't have source code, still pad out the lines to match the data we have
+        # so the report page isn't completely useless
+        if (@$src_lines <= 1) {
+            my @interesting_lines = grep { m/^\d+$/ } (
+                keys %$subcalls_at_line,
+                keys %$subs_defined_hash,
+                keys %stats_by_line
+            );
+            $src_lines->[$_] ||= '' for 0..max(@interesting_lines)-1; # grow array
+        }
 
         my $line_sub = $self->{mk_report_source_line}
             or die "mk_report_source_line not set";
 
-        while ( my $line = shift @$src_lines ) {
+        while ( @$src_lines ) {
+            my $line = shift @$src_lines;
             chomp $line;
 
             if ($line =~ m/^\# \s* line \s+ (\d+) \b/x) {

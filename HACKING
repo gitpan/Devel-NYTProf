@@ -1,5 +1,5 @@
 # vim: ts=8 sw=2 sts=0 noexpandtab:
-# $Id: HACKING 957 2009-12-18 00:01:26Z tim.bunce $
+# $Id: HACKING 1070 2010-02-20 13:21:47Z tim.bunce $
 
 HACKING Devel::NYTProf
 ======================
@@ -144,6 +144,15 @@ pointers to functions to get the time, subtract times to get ticks, return
 the resolution etc. Give them names and attributes (cpu, realtime etc).
 User could then pick a clock by name. By default we'd pick the best available
 realtime clock (or best available cputime clock if usecputime=1 option set).
+
+[Conjectural terminology: "clock" means some measuring mechanism, like
+get_clock(), times(), getrusage(), that may yield multiple pieces of
+information, and "measure" is one specific item.
+Clock "time"=times(), measures: "time.user", "time.user+sys" etc
+Clock "clock"=clock_gettime(), measures: "clock.realtime", "clock.monotonic" etc
+Clock "rusage"=getrusage(), measures: "rusage.majflt", "rusage.nvcsw" etc
+Clock "memory" measures: "memory.bytes", "mem.allocs" etc
+] 
 
 Add help option which would print a summary of the options and exit.
 Could also print list of available clocks for the clock=N option
@@ -336,7 +345,8 @@ ASAP (to avoid problems with scripts that chdir).
 
 Add (very) basic nytprofhtml test (ie it runs and produces output) so we check the VERSION has been updated.
 
-called by list: "by $subname line $line of $file" make the file not include the inc portion
+In the called by list in html: "by $subname line $line of $file"
+make the file not include the @INC portion
 
 Monitor and report when method cache is invalidated. Watch generation number
 and output a tag when it changes. Report locations of changes. Highlight those
@@ -359,7 +369,7 @@ reports can include a list of autoloaded subs.
 Check if pp_leavegiven and pp_leavewhen need handling in init_profiler().
 
 Copy the nytprof.out file into the output report dir, so a report is more
-'self-contained' and can be archives and thrown around as a tarball/zip and
+'self-contained' and can be archived and thrown around as a tarball/zip and
 still used for further analysis.
 
 The pseudo-sub "main::BEGIN" doesn't appear to be 'called' in NYTProf data.
@@ -381,3 +391,11 @@ for xsubs & opcodes, add a list of subs that it called (typically none).
 That would be handy because currently calls from xsubs & opcodes appear in the
 reports at the line of the last _perl_ statement executed, and not in the fake
 'stub' that we add to the end of the package source.
+
+Use gethrtime() on platforms that support it.
+http://developers.sun.com/solaris/articles/time_stamp.html
+http://www.informit.com/guides/content.aspx?g=cplusplus&seqNum=332
+
+Use clock_gettime clone on OS X?
+http://developer.apple.com/mac/library/qa/qa2004/qa1398.html
+http://le-depotoir.googlecode.com/svn/trunk/misc/clock_gettime_stub.c
