@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 1076 2010-02-20 16:31:12Z tim.bunce $
+## $Id: NYTProf.pm 1083 2010-02-24 10:50:05Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
@@ -702,6 +702,11 @@ the freed value is assigned some new value then @_ is effectively corrupted.
 NYTProf allocates new values while it's profiling, in order to record program
 activity, and so may appear to corrupt C<@_> in this (rare) situation.  If this
 happens, NYTProf is simply exposing an existing problem in the code.
+
+=head2 Lvalue subroutines aren't profiled when using use_db_sub=1
+
+Currently 'lvalue' subroutines (subs that can be assigned to, like C<foo() =
+42>) are not profiled when using use_db_sub=1.
 
 =head1 CLOCKS
 

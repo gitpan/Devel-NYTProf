@@ -13,7 +13,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 1079 2010-02-21 16:38:54Z tim.bunce $
+ * $Id: NYTProf.xs 1084 2010-02-24 14:48:26Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -1349,7 +1349,7 @@ DB_stmt(pTHX_ COP *cop, OP *op)
         times(&end_ctime);
         overflow = 0;                             /* XXX */
         elapsed = end_ctime.tms_utime - start_ctime.tms_utime
-            + end_ctime.tms_stime - start_ctime.tms_stime;
+                + end_ctime.tms_stime - start_ctime.tms_stime;
     }
     else {
         get_time_of_day(end_time);
@@ -3098,7 +3098,7 @@ write_sub_line_ranges(pTHX)
         if (file_lines_len > 4
             && filename[file_lines_len - 2] == '-' && filename[file_lines_len - 1] == '0'
             && filename[file_lines_len - 4] != ':' && filename[file_lines_len - 3] != '0')
-	    continue;
+            continue;
 
         first = strrchr(filename, ':');
         filename_len = (first) ? first - filename : 0;

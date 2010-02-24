@@ -1,5 +1,5 @@
 # vim: ts=8 sw=2 sts=0 noexpandtab:
-# $Id: HACKING 1080 2010-02-23 09:40:54Z tim.bunce $
+# $Id: HACKING 1083 2010-02-24 10:50:05Z tim.bunce $
 
 HACKING Devel::NYTProf
 ======================
@@ -395,4 +395,7 @@ reports at the line of the last _perl_ statement executed, and not in the fake
 Use gethrtime() on platforms that support it.
 http://developers.sun.com/solaris/articles/time_stamp.html
 http://www.informit.com/guides/content.aspx?g=cplusplus&seqNum=332
+
+Currently lvalue subs aren't profiled when use_db_sub is in effect.
+http://www.xray.mpe.mpg.de/mailing-lists/perl5-porters/2010-02/msg00824.html
 
