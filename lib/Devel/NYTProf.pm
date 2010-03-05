@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 1083 2010-02-24 10:50:05Z tim.bunce $
+## $Id: NYTProf.pm 1090 2010-03-01 17:18:51Z tim.bunce $
 ###########################################################
 package Devel::NYTProf;
 
@@ -34,7 +34,11 @@ if ($use_db_sub) {                     # install DB::DB sub
         ? sub { goto &DB_profiler }    # workaround bug in old perl versions (slow)
         : \&DB_profiler;
 }
-sub sub { die "DB::sub" }              # needed for perl <5.8.7 (<perl@24265)
+
+# DB::sub shouldn't be called, but needs to exist for perl <5.8.7 (<perl@24265)
+# Could be called in obscure cases, e.g. if "perl -d" (not -d:NYTProf)
+# was used with Devel::NYTProf loaded some other way
+sub sub { die "DB::sub called unexpectly" }
 
 sub CLONE { DB::disable_profiler }
 
@@ -567,7 +571,7 @@ internals of perl mean that, in some cases, the information that's gathered is
 accurate but surprising. In some cases it can appear to be misleading.
 (Of course, in some cases it may actually be plain wrong. Caveat lector.)
 
-=head2 Perl 5.10.1+ (or else 5.8.9+) are Recommended
+=head2 Perl 5.10.1+ (or else 5.8.9+) is Recommended
 
 These versions of perl yield much more detailed information about calls to
 BEGIN, CHECK, INIT, and END blocks, the code handling tied or overloaded
