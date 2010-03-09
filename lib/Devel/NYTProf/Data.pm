@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Data.pm 1076 2010-02-20 16:31:12Z tim.bunce $
+# $Id: Data.pm 1157 2010-03-09 10:35:10Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -52,7 +52,7 @@ use Devel::NYTProf::FileInfo;
 use Devel::NYTProf::SubInfo;
 use Devel::NYTProf::Util qw(make_path_strip_editor strip_prefix_from_paths get_abs_paths_alternation_regex);
 
-our $VERSION = '3.02';
+our $VERSION = '3.11';
 
 my $trace = (($ENV{NYTPROF}||'') =~ m/\b trace=(\d+) /x) && $1; # XXX a hack
 

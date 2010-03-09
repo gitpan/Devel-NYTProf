@@ -7,11 +7,11 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Apache.pm 1076 2010-02-20 16:31:12Z tim.bunce $
+# $Id: Apache.pm 1157 2010-03-09 10:35:10Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Apache;
 
-our $VERSION = '3.02';
+our $VERSION = '3.11';
 
 BEGIN {
 

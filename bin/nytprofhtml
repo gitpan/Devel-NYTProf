@@ -7,7 +7,7 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ##########################################################
-# $Id: nytprofhtml 1088 2010-02-27 22:11:08Z tim.bunce $
+# $Id: nytprofhtml 1157 2010-03-09 10:35:10Z tim.bunce $
 ###########################################################
 use warnings;
 use strict;
@@ -30,7 +30,7 @@ use Devel::NYTProf::Constants qw(NYTP_SCi_CALLING_SUB);
 my $json_any = eval { require JSON::Any; JSON::Any->import; JSON::Any->new }
     or warn "Can't load JSON::Any module - HTML visualizations skipped.\n";
 
-our $VERSION = '3.02';
+our $VERSION = '3.11';
 
 if ($VERSION != $Devel::NYTProf::Core::VERSION) {
     die "$0 version '$VERSION' doesn't match version '$Devel::NYTProf::Core::VERSION' of $INC{'Devel/NYTProf/Core.pm'}\n";

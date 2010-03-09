@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Util.pm 1076 2010-02-20 16:31:12Z tim.bunce $
+# $Id: Util.pm 1157 2010-03-09 10:35:10Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Util;
 
@@ -40,7 +40,7 @@ use Cwd qw(getcwd);
 use List::Util qw(sum);
 #use UNIVERSAL qw( isa can VERSION );
 
-our $VERSION = '3.02';
+our $VERSION = '3.11';
 
 our @EXPORT_OK = qw(
     fmt_float

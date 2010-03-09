@@ -15,10 +15,10 @@ use strict;
 
 use Devel::NYTProf::Core;
 require Devel::NYTProf::FileHandle;
-use Devel::NYTProf::ReadStream qw(for_chunks);
+require Devel::NYTProf::Data;
 use List::Util qw(min);
 
-our $VERSION = '3.02';
+our $VERSION = '3.11';
     
 if ($VERSION != $Devel::NYTProf::Core::VERSION) {
     die "$0 version '$VERSION' doesn't match version '$Devel::NYTProf::Core::VERSION' of $INC{'Devel/NYTProf/Core.pm'}\n";
@@ -69,11 +69,10 @@ sub _time_block_or_line {
     my $mapped_fid = $map_range{$fid}[$line];
     $fid = $mapped_fid if defined $mapped_fid;
 
-    $out->write($is_line ? '+' : '*');
-    $out->output_int($ticks, $fid, $line);
-    if (!$is_line) {
-	$out->output_int($block_line);
-	$out->output_int($sub_line);
+    if ($is_line) {
+	$out->write_time_line($ticks, $fid, $line);
+    } else {
+	$out->write_time_block($ticks, $fid, $line, $block_line, $sub_line);
     }
 }
 
@@ -89,6 +88,9 @@ my $deflating;
 
 my %dispatcher =
     (
+     '' => sub {
+	 die "Unknown tag '$_[0]' in $input\n";
+     },
      VERSION => sub {
 	 my (undef, $major, $minor) = @_;
 	 my $this_version = "$major $minor";
@@ -97,16 +99,17 @@ my %dispatcher =
 		 unless $this_version eq $version;
 	 } else {
 	     $version = $this_version;
-	     $out->write("NYTProf $version\n");
+	     $out->write_header($major, $minor);
 	 }
      },
      COMMENT => sub {
 	 my (undef, $text) = @_;
+	 chomp $text; # Arguably this is a bug in the callback interface.
 	 # This isn't true unless we enable compression ourselves, and if we
 	 # do that, the low level code will write out a correct comment
 	 # automatically.
-	 return if $text =~ /\ACompressed at level \d with zlib [0-9.]+\n\z/;
-	 $out->write("#$text")
+	 return if $text =~ /\ACompressed at level \d with zlib [0-9.]+\z/;
+	 $out->write_comment($text)
      },
      ATTRIBUTE => sub {
 	 my (undef, $key, $value) = @_;
@@ -117,7 +120,7 @@ my %dispatcher =
 		 }
 	     } else {
 		 $attributes{$key} = $value;
-		 $out->write(":$key=$value\n");
+		 $out->write_attribute($key, $value);
 	     }
 	 } else {
 	     push @{$attributes{$key}}, $value;
@@ -125,24 +128,19 @@ my %dispatcher =
      },
 
      START_DEFLATE => sub {
-	 if (!$deflating && $out->can('start_deflate')) {
-	     $out->write('z');
-	     $out->start_deflate;
+	 if (!$deflating && $out->can('start_deflate_write_tag_comment')) {
+	     $out->start_deflate_write_tag_comment;
 	     ++$deflating;
 	 }
      },
 
      PID_START => sub {
 	 my (undef, $pid, $parent, $time) = @_;
-	 $out->write('P');
-	 $out->output_int($pid, $parent);
-	 $out->output_nv($time);
+	 $out->write_process_start($pid, $parent, $time);
      },
      PID_END => sub {
 	 my (undef, $pid, $time) = @_;
-	 $out->write('p');
-	 $out->output_int($pid);
-	 $out->output_nv($time);
+	 $out->write_process_end($pid, $time);
      },
 
      NEW_FID => sub {
@@ -151,15 +149,14 @@ my %dispatcher =
 	 return unless $pending_fids[$fid];
 	 my ($new_fid, $new_eval_fid) = @{$pending_fids[$fid]};
 
-	 $out->write('@');
-	 $out->output_int($new_fid, $new_eval_fid, $eval_line, $flags, $size, $mtime);
-	 $out->output_str($name);
+	 $out->write_new_fid($new_fid, $new_eval_fid, $eval_line, $flags,
+			     $size, $mtime, $name);
      },
      TIME_BLOCK => \&_time_block_or_line,
      TIME_LINE => \&_time_block_or_line,
 
      DISCOUNT => sub {
-	 $out->write('-');
+	 $out->write_discount();
      },
      SUB_INFO => sub {
 	 my (undef, $fid, $first_line, $last_line, $name) = @_;
@@ -167,10 +164,7 @@ my %dispatcher =
 	 my $output_fid = $pending_subs{"$fid,$first_line,$last_line,$name"};
 	 return unless defined $output_fid;
 
-	 $out->write('s');
-	 $out->output_int($output_fid);
-	 $out->output_str($name);
-	 $out->output_int($first_line, $last_line, 0);
+	 $out->write_sub_info($output_fid, $name, $first_line, $last_line);
      },
      SUB_CALLERS => sub {
 	 my (undef, $fid, $line, $count, $incl_time, $excl_time, $ucpu_time, $scpu_time, $reci_time, $rec_depth, $called, $caller) = @_;
@@ -209,9 +203,7 @@ my %dispatcher =
 	 # Is this a subroutine (re)defined in an eval?
 	 my $mapped_fid = $map_range{$fid}[$line];
 	 $fid = $mapped_fid if defined $mapped_fid;
-	 $out->write('S');
-	 $out->output_int($fid, $line);
-	 $out->output_str($text);
+	 $out->write_src_line($fid, $line, $text);
      },
     );
 
@@ -220,10 +212,9 @@ foreach $input (@ARGV) {
     @pending_fids = ();
     %pending_subs = ();
 
-    for_chunks {
-	my $tag = shift;
-	if($tag eq 'NEW_FID') {
-	    my ($fid, $eval_fid, $eval_line, $flags, $size, $mtime, $name) = @_;
+    Devel::NYTProf::Data->new({filename => $input, callback => {
+	NEW_FID => sub {
+	    my (undef, $fid, $eval_fid, $eval_line, $flags, $size, $mtime, $name) = @_;
 	    my ($new_fid, $new_eval_fid);
 	    if($eval_fid) {
 		# Generally, treat every eval as distinct, even at the same location
@@ -260,8 +251,9 @@ foreach $input (@ARGV) {
 	    }
 	    $fid_to_file{$new_fid} = $name;
 	    $pending_fids[$fid] = [$new_fid, $new_eval_fid];
-	} elsif ($tag eq 'SUB_INFO') {
-	    my ($fid, $first_line, $last_line, $name) = @_;
+	},
+	SUB_INFO => sub {
+	    my (undef, $fid, $first_line, $last_line, $name) = @_;
 	    my $output_fid;
 	    if ($name =~ $sub_is_anon_in_eval) {
 		confess("No mapping for $fid") unless defined $fids{$fid};
@@ -297,14 +289,10 @@ foreach $input (@ARGV) {
 	    }
 	    $pending_subs{"$fid,$first_line,$last_line,$name"} = $output_fid;
 	}
-    } filename => $input;
+    }});
 
     print "Re-reading $input...\n" if $opt_verbose;
-    for_chunks {
-	my $sub = $dispatcher{$_[0]}
-            or die "Unknown tag '$_[0]' in $input\n";
-	&$sub(@_);
-    } filename => $input;
+    Devel::NYTProf::Data->new({filename => $input, callback => \%dispatcher});
 }
 
 print "Finalizing...\n" if $opt_verbose;
@@ -314,13 +302,9 @@ foreach my $fid_line (sort keys %callers) {
     foreach my $called (sort keys %{$callers{$fid_line}}) {
 	foreach my $caller (sort keys %{$callers{$fid_line}{$called}}) {
 	    my $sum = $callers{$fid_line}{$called}{$caller};
-	    $out->write('c');
-	    $out->output_int($fid, $line);
-	    $out->output_str($caller);
-	    $out->output_int($sum->{count});
-	    $out->output_nv(@{$sum}{qw(incl excl ucpu scpu reci)});
-	    $out->output_int($sum->{depth});
-	    $out->output_str($called);
+	    $out->write_sub_callers($fid, $line, $caller, $sum->{count},
+				    @{$sum}{qw(incl excl ucpu scpu reci)},
+				    $sum->{depth}, $called);
 	}
     }
 }
@@ -329,7 +313,7 @@ foreach my $key (sort grep {!$identical{$_}} keys %attributes) {
     my @values = @{$attributes{$key}};
     if ($key eq 'basetime') {
 	my $value = min(@values);
-	$out->write(":$key=$value\n");
+	$out->write_attribute($key, $value);
     } elsif ($key eq 'application') {
 	my %counts;
 	$counts{$_}++ foreach @values;
@@ -341,10 +325,10 @@ foreach my $key (sort grep {!$identical{$_}} keys %attributes) {
 	}
 	my $last = pop @grouped;
 	my $value = @grouped ? join (', ', @grouped) . " and $last" : $last;
-	$out->write(":$key=$value\n");
+	$out->write_attribute($key, $value);
     } else {
 	warn "Unknown attribute $key\n";
-	$out->write(":$key=$_\n") foreach @values;
+	$out->write_attribute($key, $_) foreach @values;
     }
 }
 
