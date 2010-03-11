@@ -364,7 +364,7 @@ NYTP_gets(NYTP_file ifile, char **buffer_p, size_t *len_p) {
 #endif
     CROAK_IF_NOT_STDIO(ifile, "NYTP_gets");
 
-    while(fgets(buffer + prev_len, len - prev_len, ifile->file)) {
+    while(fgets(buffer + prev_len, (int)(len - prev_len), ifile->file)) {
         /* We know that there are no '\0' bytes in the part we've already
            read, so don't bother running strlen() over that part.  */
         char *end = buffer + prev_len + strlen(buffer + prev_len);
@@ -898,7 +898,7 @@ NYTP_write_new_fid(NYTP_file ofile, unsigned int id, unsigned int eval_fid,
 }
 
 static size_t
-write_time_common(NYTP_file ofile, int tag, unsigned int elapsed,
+write_time_common(NYTP_file ofile, unsigned char tag, unsigned int elapsed,
                   unsigned int fid, unsigned int line)
 {
     size_t total;
@@ -1135,7 +1135,7 @@ int compression_level
 
 #endif
 
-int
+size_t
 NYTP_write_comment(handle, comment)
 NYTP_file handle
 char *comment
