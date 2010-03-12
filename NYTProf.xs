@@ -13,7 +13,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 1161 2010-03-11 00:42:21Z dubiously $
+ * $Id: NYTProf.xs 1169 2010-03-12 10:35:37Z tim.bunce $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -1174,12 +1174,12 @@ _check_context(pTHX_ PERL_CONTEXT *cx, UV *cx_type_mask_ptr)
                 last_block_line = last_sub_line;
         }
 
-        if (trace_level >= 6) {
+        if (trace_level >= 8) {
             GV *sv = CvGV(cx->blk_sub.cv);
             logwarn("\tat %d: block %d sub %d for %s %s\n",
                 last_executed_line, last_block_line, last_sub_line,
                 cx_block_type(cx), (sv) ? GvNAME(sv) : "");
-            if (trace_level >= 9)
+            if (trace_level >= 99)
                 sv_dump((SV*)cx->blk_sub.cv);
         }
 
@@ -4758,6 +4758,11 @@ example_xsub_eval(...)
      * We need a better test, closer to true embedded.
      */
     eval_pv("Devel::NYTProf::Test::example_xsub()", 1);
+
+void
+set_errno(int e)
+    CODE:
+    SETERRNO(e, 0);
 
 
 MODULE = Devel::NYTProf     PACKAGE = DB
