@@ -4,6 +4,8 @@ use strict;
 use warnings;
 use Carp;
 
+use List::Util qw(sum min max);
+
 use Devel::NYTProf::Constants qw(
     NYTP_SIi_FID NYTP_SIi_FIRST_LINE NYTP_SIi_LAST_LINE
     NYTP_SIi_CALL_COUNT NYTP_SIi_INCL_RTIME NYTP_SIi_EXCL_RTIME
@@ -13,8 +15,6 @@ use Devel::NYTProf::Constants qw(
     NYTP_SCi_INCL_RTIME NYTP_SCi_EXCL_RTIME NYTP_SCi_RECI_RTIME
     NYTP_SCi_CALLING_SUB
 );
-
-use List::Util qw(sum min max);
 
 sub fid        { $_[0]->[NYTP_SIi_FID] || croak "No fid for $_[0][6]" }
 
@@ -56,7 +56,10 @@ sub recur_incl_time { shift->[NYTP_SIi_RECI_RTIME] }
 sub caller_fid_line_places {
     my ($self, $merge_evals) = @_;
     carp "caller_fid_line_places doesn't merge evals yet" if $merge_evals;
-    return $self->[NYTP_SIi_CALLED_BY];
+    # shallow clone to remove fid 0 is_sub hack
+    my %tmp = %{ $self->[NYTP_SIi_CALLED_BY] || {} };
+    delete $tmp{0};
+    return \%tmp;
 }
 
 sub called_by_subnames {
@@ -76,10 +79,25 @@ sub is_xsub {
     my $self = shift;
 
     # XXX should test == 0 but some xsubs still have undef first_line etc
+    # XXX shouldn't include opcode
     my $first = $self->first_line;
     return undef if not defined $first;
     return 1     if $first == 0 && $self->last_line == 0;
     return 0;
+}
+
+sub is_opcode {
+    my $self = shift;
+    return 0 if $self->first_line or $self->last_line;
+    return 1 if $self->subname =~ m/(?:^CORE::|::CORE:)\w+$/;
+    return 0;
+}
+
+sub kind {
+    my $self = shift;
+    return 'opcode' if $self->is_opcode;
+    return 'xsub'   if $self->is_xsub;
+    return 'perl';
 }
 
 sub fileinfo {
@@ -113,6 +131,33 @@ sub _max {
     return undef unless defined $a;
     return max($a, $b);
 }
+
+
+sub alter_fileinfo {
+    my ($self, $remove_fi, $new_fi) = @_;
+    my $remove_fid = $remove_fi->fid;
+    my $new_fid    = $new_fi->fid;
+
+    # remove mentions of $remove_fid from called-by details
+    # { fid => { line => [ count, incl, excl, ... ] } }
+    if (my $called_by = $self->[NYTP_SIi_CALLED_BY]) {
+        my $cb = delete $called_by->{$remove_fid};
+
+        if ($cb && $new_fid) {
+            if (my $new_cb = $called_by->{$new_fid}) {
+                # need to merge $cb into $new_cb
+                while ( my ($line, $cb_li) = each %$cb ) {
+                    my $dst_line_info = $new_cb->{$line} ||= [];
+                    _merge_in_caller_info($dst_line_info, $cb->{$line});
+                }
+            }
+            else {
+                $called_by->{$new_fid} = $cb;
+            }
+        }
+    }
+}
+
 
 # merge details of another sub into this one
 # there are very few cases where this is sane thing to do
@@ -156,30 +201,37 @@ sub merge_in {
 
         # merge lines in %$src_line_hash into %$dst_line_hash
         while (my ($line, $src_line_info) = each %$src_line_hash) {
-            my $dst_line_info = $dst_line_hash->{$line};
-            if (!$dst_line_info) {
-                $dst_line_hash->{$line} = $src_line_info;
-                next;
-            }
-
-            # merge @$src_line_info into @$dst_line_info
-            $dst_line_info->[$_] += $src_line_info->[$_] for (
-                NYTP_SCi_INCL_RTIME, NYTP_SCi_EXCL_RTIME,
-            );
-            # ug, we can't really combine recursive incl_time, but this is better than undef
-            $dst_line_info->[NYTP_SCi_RECI_RTIME] = max($dst_line_info->[NYTP_SCi_RECI_RTIME],
-                                                        $src_line_info->[NYTP_SCi_RECI_RTIME]);
-
-            my $src_cs = $src_line_info->[NYTP_SCi_CALLING_SUB]||={};
-            my $dst_cs = $dst_line_info->[NYTP_SCi_CALLING_SUB]||={};
-            $dst_cs->{$_} = $src_cs->{$_} for keys %$src_cs;
-
-            #push @{$src_line_info}, "merged"; # flag hack, for debug
+            my $dst_line_info = $dst_line_hash->{$line} ||= [];
+            _merge_in_caller_info($dst_line_info, $src_line_info);
         }
     }
-
     return;
 }
+
+
+sub _merge_in_caller_info {
+    my ($dst_line_info, $src_line_info) = @_;
+
+    if (!@$dst_line_info) {
+        @$dst_line_info = @$src_line_info;
+    }
+    else {
+
+        # merge @$src_line_info into @$dst_line_info
+        $dst_line_info->[$_] += $src_line_info->[$_] for (
+            NYTP_SCi_INCL_RTIME, NYTP_SCi_EXCL_RTIME,
+        );
+        # ug, we can't really combine recursive incl_time, but this is better than undef
+        $dst_line_info->[NYTP_SCi_RECI_RTIME] = max($dst_line_info->[NYTP_SCi_RECI_RTIME],
+                                                    $src_line_info->[NYTP_SCi_RECI_RTIME]);
+
+        my $src_cs = $src_line_info->[NYTP_SCi_CALLING_SUB]||={};
+        my $dst_cs = $dst_line_info->[NYTP_SCi_CALLING_SUB]||={};
+        $dst_cs->{$_} = $src_cs->{$_} for keys %$src_cs;
+    }
+    return;
+}
+
 
 sub caller_fids {
     my ($self, $merge_evals) = @_;
@@ -215,16 +267,21 @@ sub normalize_for_test {
     $self->[NYTP_SIi_EXCL_RTIME] = 0;
     $self->[NYTP_SIi_RECI_RTIME] = 0;
 
-    # { fid => { line => [ count, incl, excl, ucpu, scpu, reci, recdepth ] } }
-    my $callers = $self->caller_fid_line_places || {};
+    # { fid => { line => [ count, incl, excl, ... ] } }
+    my $callers = $self->[NYTP_SIi_CALLED_BY] || {};
 
-    # delete calls from modules shipped with perl that some tests use
-    # (because the line numbers vary between perl versions)
+    # calls from modules shipped with perl cause problems for tests
+    # because the line numbers vary between perl versions, so here we
+    # edit the line number of calls from these modules
     for my $fid (keys %$callers) {
         next if not $fid;
         my $fileinfo = $profile->fileinfo_of($fid) or next;
         next if $fileinfo->filename !~ /(AutoLoader|Exporter)\.pm$/;
-        delete $callers->{$fid};
+
+        # normalize the lines X,Y,Z to 1,2,3
+        my %lines = %{ delete $callers->{$fid} };
+        my @lines = @lines{sort { $a <=> $b } keys %lines};
+        $callers->{$fid} = { map { $_ => shift @lines } 1..@lines };
     }
 
     # zero per-call-location subroutine inclusive time
@@ -260,4 +317,5 @@ sub dump {
     }
 }
 
+# vim:ts=8:sw=4:et
 1;

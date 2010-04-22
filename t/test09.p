@@ -5,7 +5,7 @@ sub foo {
 }
 
 sub bar {
-    eval "3;";
+    eval 'for ($a=0; $a < 10_000; ++$a) { ++$b }';
 }
 
 foo();

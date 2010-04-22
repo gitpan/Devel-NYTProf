@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ##########################################################
-# $Id: nytprofcsv 1157 2010-03-09 10:35:10Z tim.bunce $
+# $Id: nytprofcsv 1183 2010-04-05 23:22:16Z tim.bunce@gmail.com $
 ##########################################################
 
 use warnings;
@@ -74,13 +74,19 @@ my $reporter = new Devel::NYTProf::Reader($opt{file});
 $reporter->output_dir($opt{out});
 
 $reporter->set_param(mk_report_source_line => sub {
-    my ($linenum, $line, $stats_for_line, $statistics, $subs_defined, $makes_calls_to, $profile, $filestr) = @_;
+    my ($linenum, $line, $stats_for_line, $statistics, $profile, $filestr) = @_;
     $line =~ s/^\s*//; # trim leading spaces
     my $delim = $opt{delim};
+
+	my $time  = $stats_for_line->{'time'} || 0;
+	my $calls = $stats_for_line->{'calls'} || 0;
+	$time  += $stats_for_line->{evalcall_stmts_time_nested} || 0;
+	#$calls ||= 1 if exists $stats_for_line->{evalcall_stmts_time_nested};
+
     my $text = sprintf("%f%s%g%s%f%s%s\n",
-        $stats_for_line->{'time'}      || 0, $delim,
-        $stats_for_line->{'calls'}     || 0, $delim,
-        $stats_for_line->{'time/call'} || 0, $delim,
+        $time, $delim,
+        $calls, $delim,
+		($calls) ? $time/$calls : 0, $delim,
         $line,
     );
     return $text unless $opt{annotated};
@@ -88,13 +94,6 @@ $reporter->set_param(mk_report_source_line => sub {
     # srcline
     $text = "srcline$delim$text";
 
-    if (@$subs_defined) {
-        # subdefn
-        # callers
-    }
-    if (@$makes_calls_to) {
-        # calling
-    }
     return $text;
 });
 
@@ -196,7 +195,7 @@ Print the help message
  0,0,0,#--------------------------------------------------------------------
  0,0,0,# My New Source File!
  0,0,0,#--------------------------------------------------------------------
- 0,0,0,# $Id: nytprofcsv 1157 2010-03-09 10:35:10Z tim.bunce $
+ 0,0,0,# $Id: nytprofcsv 1183 2010-04-05 23:22:16Z tim.bunce@gmail.com $
  0,0,0,#--------------------------------------------------------------------
  0,0,0,
  0,0,0,package NYT::Feeds::Util;

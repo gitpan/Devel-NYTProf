@@ -1,5 +1,5 @@
 # vim: ts=8 sw=2 sts=0 noexpandtab:
-# $Id: HACKING 1172 2010-03-12 16:52:49Z tim.bunce $
+# $Id: HACKING 1192 2010-04-21 13:25:45Z tim.bunce@gmail.com $
 
 HACKING Devel::NYTProf
 ======================
@@ -388,3 +388,20 @@ Any volunteers to explore writing an nytprofimport for SQLite?
 Option to add sub call and return events into the data file as they happen.
 Would enable a dprofpp -T like output. See https://rt.cpan.org/Ticket/Display.html?id=50766
 
+For eval fid reports:
+- Add header with link to location of the invoking string eval
+- Add links to 'sibling' evals
+- fix sub caller info to not rollup over evals
+- merge string evals which have identical src and invoking location
+- fix inconsistency in results of href_for_*() subs
+- Add eval information (evals and time) to file summary header
+
+Make generation of call graph .dot files optional and/or optimize to make faster
+
+String evals could/should be tied into the subroutine profiler.
+That would give inclusive timings which we don't have at the moment.
+The evals appear in the html report as if they're calls but the timings are
+statement timings of the eval fid that don't include time spent in subs defined
+elsewhere but called from the string eval. The inconsistency is confusing.
+
+Modify csv output to optionally include extra metadata lines. Use for testing.

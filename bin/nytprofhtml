@@ -7,7 +7,7 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ##########################################################
-# $Id: nytprofhtml 1157 2010-03-09 10:35:10Z tim.bunce $
+# $Id: nytprofhtml 1192 2010-04-21 13:25:45Z tim.bunce@gmail.com $
 ###########################################################
 use warnings;
 use strict;
@@ -105,39 +105,38 @@ $reporter->output_dir($opt{out});
 $reporter->set_param(
     'header',
     sub {
-        my ($profile, $filestr, $output_filestr, $level) = @_;
+        my ($profile, $fi, $output_filestr, $level) = @_;
 
-        my $profile_level_buttons =
-            get_level_buttons($profile->get_profile_levels, $output_filestr, $level);
+        my $profile_level_buttons = ($fi->is_eval)
+            ? '' : get_level_buttons($profile->get_profile_levels, $output_filestr, $level);
 
         my $subhead = qq{&emsp;&emsp;$profile_level_buttons<br />
             For ${ \($profile->{attribute}{application}) }
         };
 
-        get_html_header("Profile of !~FILENAME~!")
-            . get_page_header(
+        my $html_header = get_html_header("Profile of ".$fi->filename_without_inc);
+        my $page_header = get_page_header(
             profile  => $profile,
             title    => "NYTProf Performance Profile",
             subtitle => $subhead,
-            )
-            . qq{
-<div class="body_content">
-<br />
-<table>
-<tr>
-<td class="h" align="right">File</td>
-<td align="left">!~FILENAME~!</td>
-</tr>
-<tr>
-<td class="h" align="right">Statements Executed</td>
-<td align="left">!~TOTAL_CALLS~!</td>
-</tr>
-<tr>
-<td class="h" align="right">Statement Execution Time</td>
-<td align="left">!~TOTAL_TIME~!</td>
-</tr>
-</table>
-};
+        );
+        my $filename_escaped = _escape_html($fi->filename);
+        my @intro_rows = (
+            [ "Filename", $fi->is_file
+                ? sprintf(q{<a href="file://%s">%s</a>}, $fi->filename, $filename_escaped)
+                : $filename_escaped ],
+            [ "Statements", sprintf "Executed %d statements in %s",
+                $fi->sum_of_stmts_count, fmt_time($fi->sum_of_stmts_time) ],
+        );
+        # XXX if string eval then add link to calling location
+
+        my $intro_table = join "\n", map {
+            sprintf q{<tr><td class="h">%s</td><td align="left">%s</td></tr>}, @$_
+        } @intro_rows;
+
+        return join "\n", $html_header, $page_header,
+            q{<div class="body_content"><br />},
+            qq{<table class="file_summary">$intro_table</table>},
     }
 );
 
@@ -145,19 +144,29 @@ $reporter->set_param(
     'taintmsg',
     qq{<div class="warn_title">WARNING!</div>\n
 <div class="warn">The source file used to generate this report was modified
-after the profiler database was generated. The database might be out of sync, you should regenerate it.  This page might not make any sense!</div><br />\n}
+after the profiler data was generated.
+The data might be out of sync with the modified source code so you should regenerate it.
+Meanwhile, the data on this page might not make much sense!</div><br />\n}
+);
+
+$reporter->set_param(
+    'merged_fids',
+    sub {
+        my ($profile, $fi) = @_;
+        my $merged_fids = $fi->meta->{merged_fids};
+        return sprintf qq{<div class="warn_title">NOTE!</div>\n
+            <div class="warn">The data used to generate this report page was merged from %d executions<br />
+            of the string eval on line %d of %s.<br />
+            The source code shown below is the text of just one of the calls to the eval.<br />\n
+            If the argument source code of those eval calls varied then this page might not make much sense.</div><br />\n
+        }, 1+scalar @$merged_fids, $fi->eval_line, $fi->eval_fi->filename;
+    },
 );
 
 
 sub calc_mad_from_objects {
     my ($ary, $meth, $ignore_zeros) = @_;
-    return calculate_median_absolute_deviation([map { scalar $_->$meth } @$ary], $ignore_zeros,);
-}
-
-sub calc_mad_from_hashes {
-    my ($ary, $meth, $ignore_zeros) = @_;
-    return calculate_median_absolute_deviation([map { scalar $_->{$meth} } @$ary], $ignore_zeros,
-    );
+    return calculate_median_absolute_deviation([map { scalar $_->$meth } @$ary], $ignore_zeros);
 }
 
 sub subroutine_table {
@@ -194,7 +203,7 @@ sub subroutine_table {
     my $sortby_desc = ($sortby eq 'excl_time') ? "exclusive time" : "inclusive time";
     $sub_links .= qq{
         <table id="subs_table" border="1" cellpadding="0" class="tablesorter">
-        <caption>${qualifier}Subroutines &mdash; ordered by $sortby_desc</caption>
+        <caption>${qualifier}Subroutines</caption>
         <thead>
         <tr>
         <th>Calls</th>
@@ -260,10 +269,8 @@ sub subroutine_table {
 
         $sub_links .= "</tr>\n";
     }
-    $sub_links .= q{
-        </tbody>
-        </table>
-    };
+    $sub_links .= q{</tbody>};
+    $sub_links .= q{</table>};
 
     # make table sortable if it contains all the subs
     push @on_ready_js, q{
@@ -283,32 +290,41 @@ sub subroutine_table {
 $reporter->set_param(
     'datastart',
     sub {
-        my ($profile, $filestr) = @_;
+        my ($profile, $fi) = @_;
+        my $filestr = $fi->filename;
 
         my $sub_table = subroutine_table($profile, $filestr, undef, undef);
 
-        my $dot_file = html_safe_filename($filestr) . ".dot";
-        our %dot_file_generated;
-        if ($dot_file_generated{$dot_file}++) { # just once for line/block/sub
-            my $subs_in_file = $profile->subs_defined_in_file($filestr, 0);
-            # include subs defined in this file
-            # and/or called from subs defined in this file
-            #warn "$dot_file: @{[ keys %$subs_in_file ]}\n";
-            my $sub_filter = sub {
-                my ($si, $calledby) = @_;
-                return 1 if not defined $calledby;
-                my $subname = $si->subname;
-                my $include = ($subs_in_file->{$subname}
-                            || $subs_in_file->{$calledby});
-                #warn "Call graph $subname<-$calledby: ".($include ? "SHOW" : "skip")."\n";
-                return $include;
+        if ($sub_table) {
+            my $dot_file = html_safe_filename($filestr) . ".dot";
+
+            $sub_table .= qq{
+                Call graph for these subroutines as a
+                <a href="http://en.wikipedia.org/wiki/Graphviz">Graphviz</a>
+                <a href="$dot_file">dot language file</a>.
             };
-            output_subs_callgraph_dot_file($reporter, $dot_file, $sub_filter, 0);
+
+            our %dot_file_generated;
+            if ($dot_file_generated{$dot_file}++) { # just once for line/block/sub
+                my $subs_in_file = $profile->subs_defined_in_file($filestr, 0);
+                # include subs defined in this file
+                # and/or called from subs defined in this file
+                #warn "$dot_file: @{[ keys %$subs_in_file ]}\n";
+                my $sub_filter = sub {
+                    my ($si, $calledby) = @_;
+                    return 1 if not defined $calledby;
+                    my $subname = $si->subname;
+                    my $include = ($subs_in_file->{$subname}
+                                || $subs_in_file->{$calledby});
+                    #warn "Call graph $subname<-$calledby: ".($include ? "SHOW" : "skip")."\n";
+                    return $include;
+                };
+                output_subs_callgraph_dot_file($reporter, $dot_file, $sub_filter, 0);
+            }
         }
 
         return qq{
         $sub_table
-        Call graph for these subroutines as a <a href="http://en.wikipedia.org/wiki/Graphviz">Graphviz</a> <a href="$dot_file">dot language file</a>.
       <table border="1" cellpadding="0">
       <thead>
       <tr><th>Line</th>
@@ -316,7 +332,7 @@ $reporter->set_param(
       <th><span title="Time spend executing statements on the line,
         excluding time spent executing statements in any called subroutines">Time<br />on line</span></th>
       <th><span title="Number of subroutines calls">Calls</span></th>
-      <th><span title="Time spent in subroutines called">Time<br />in subs</span></th>
+      <th><span title="Time spent in subroutines called (inclusive)">Time<br />in subs</span></th>
       <th class="left_indent_header">Code</th>
       </tr>\n
       </thead>
@@ -326,19 +342,20 @@ $reporter->set_param(
 );
 
 $reporter->set_param( footer => sub {
-    my ($profile, $filestr) = @_;
+    my ($profile, $fi) = @_;
     my $footer = get_footer($profile);
     return "</tbody></table></div>$footer</body></html>";
 } );
 
 $reporter->set_param(mk_report_source_line => \&mk_report_source_line);
 $reporter->set_param(mk_report_xsub_line   => \&mk_report_xsub_line  );
+$reporter->set_param(mk_report_separator_line => \&mk_report_separator_line  );
 
 sub mk_report_source_line {
-    my ($linenum, $line, $stats_for_line, $stats_for_file, $subs_defined, $makes_calls_to, $profile, $filestr) = @_;
+    my ($linenum, $line, $stats_for_line, $stats_for_file, $profile, $fi) = @_;
 
     my $l = sprintf(qq{<td class="h"><a name="%s"></a>%s</td>}, $linenum, $linenum);
-    my $s = report_src_line(undef, $linenum, $line, $profile, $subs_defined, $makes_calls_to, $filestr);
+    my $s = report_src_line(undef, $linenum, $line, $profile, $fi, $stats_for_line);
 
     return "<tr>$l<td></td><td></td><td></td><td></td>$s</tr>\n"
         if not %$stats_for_line;
@@ -354,12 +371,21 @@ sub mk_report_source_line {
 }
 
 sub mk_report_xsub_line {
-    my ($subname, $line, $stats_for_line, $stats_for_file, $subs_defined, $makes_calls_to, $profile, $filestr) = @_;
+    my ($subname, $line, $stats_for_line, $stats_for_file, $profile, $fi) = @_;
     (my $anchor = $subname) =~ s/\W/_/g;
     return join "",
         sprintf(qq{<tr><td class="h"><a name="%s"></a>%s</td>}, $anchor, ''),
         "<td></td><td></td><td></td><td></td>",
-        report_src_line(undef, undef, $line, $profile, $subs_defined, $makes_calls_to, $filestr),
+        report_src_line(undef, undef, $line, $profile, $fi, $stats_for_line),
+        "</tr>\n";
+}
+
+sub mk_report_separator_line {
+    my ($profile, $fi) = @_;
+    return join "",
+        sprintf(qq{<tr><td class="s"><a name="%s"></a>%s</td>}, '', '&nbsp;'),
+        "<td></td><td></td><td></td><td></td>",
+        '<td class="s"></td>',
         "</tr>\n";
 }
 
@@ -377,7 +403,7 @@ sub _escape_html {
 
 
 sub report_src_line {
-    my ($value, undef, $linesrc, $profile, $subs, $calls, $thisfile) = @_;
+    my ($value, undef, $linesrc, $profile, $fi, $stats_for_line) = @_;
 
     $linesrc = _escape_html($linesrc);
 
@@ -386,7 +412,8 @@ sub report_src_line {
     my @prologue;
 
     # for each of the subs defined on this line, who called them
-    for my $sub_info (@$subs) {
+    my $subdef_info = $stats_for_line->{subdef_info} || [];
+    for my $sub_info (@$subdef_info) {
         my $callers = $sub_info->caller_fid_line_places;
         next unless $callers && %$callers;
 
@@ -404,12 +431,13 @@ sub report_src_line {
             ? ""
             : " $total_calls times, avg ${avg_per_call}/call:";
 
-        # order by most frequent caller first
+        # order by most frequent caller first, then by time
         @callers = sort { $b->[2] <=> $a->[2] || $b->[3] <=> $a->[3] } @callers;
+
         for my $caller (@callers) {
             my ($fid, $line, $count, $incl_time, $excl_time, undef, undef,
                 undef, undef, $calling_subs) = @$caller;
-            my $fi = $profile->fileinfo_of($fid);
+            my $caller_fi = $profile->fileinfo_of($fid);
 
             my @subnames = sort keys %$calling_subs;
             ref $_ and $_ = sprintf "%s (merge of %d subs)", $_->[0], scalar @$_
@@ -422,23 +450,16 @@ sub report_src_line {
             my $times = sprintf " (%s+%s)", fmt_time($excl_time),
                 fmt_time($incl_time - $excl_time);
 
-            my $filename = $fi->filename($fid);
+            my $filename = $caller_fi->filename($fid);
             my $line_desc = "line $line of $filename";
-            # chase string eval chain back to a real file
-            while ( my ($outer_fileinfo, $outer_line) = $fi->outer ) {
-                ($filename, $line) = ($outer_fileinfo->filename, $outer_line);
-                $line_desc .= sprintf " at line %s of %s", $line, $filename;
-                $fi = $outer_fileinfo;
-            }
-
-            my $href = $reporter->get_file_stats()->{$filename}{html_safe} || "unknown";
-            $line_desc =~ s/ of \Q$filename\E$//g if $filename eq $thisfile;
+            $line_desc =~ s/ of \Q$filename\E$//g if $filename eq $fi->filename;
             # remove @INC prefix from paths
             $line_desc =~ s/$inc_path_regex//g;
 
+            my $href = $reporter->href_for_file($caller_fi, $line) || 'unknown';
             push @prologue,
-                sprintf q{# %*s times%s%s at <a href="%s#%d">%s</a>%s},
-                length($max_calls), $count, $times, $subname, "$href.html", $line,
+                sprintf q{# %*s times%s%s at <a href="%s">%s</a>%s},
+                length($max_calls), $count, $times, $subname, $href,
                 $line_desc, $avg_time;
             $prologue[-1] =~ s/^(# +)1 times/$1   once/;  # better English
         }
@@ -447,20 +468,23 @@ sub report_src_line {
     $prologue = sprintf qq{<div class="calls"><div class="calls_in">%s</div></div>}, join("\n", @prologue)
         if @prologue;
 
-    # give details of each of the subs called by this line
     my $epilogue = '';
-    if (%$calls) {
+    my $ws;
+
+    # give details of each of the subs called by this line
+    my $subcall_info = $stats_for_line->{subcall_info};
+    if ($subcall_info && %$subcall_info) {
 
         my @calls_to = sort {
-            $calls->{$b}[1] <=> $calls->{$a}[1] or    # incl_time
+            $subcall_info->{$b}[1] <=> $subcall_info->{$a}[1] or    # incl_time
                 $a cmp $b
-        } keys %$calls;
-        my $max_calls_to = max(map { $_->[0] } values %$calls);
-        my $ws = ($linesrc =~ m/^((?:&nbsp;|\s)+)/) ? $1 : '';
+        } keys %$subcall_info;
+        my $max_calls_to = max(map { $_->[0] } values %$subcall_info);
+        $ws ||= ($linesrc =~ m/^((?:&nbsp;|\s)+)/) ? $1 : '';
 
-        $epilogue = join "\n", map {
+        my $subs_called_html = join "\n", map {
             my $subname = $_;
-            my ($count, $incl_time, $reci_time, $rec_depth) = (@{$calls->{$subname}})[0,1,5,6];
+            my ($count, $incl_time, $reci_time, $rec_depth) = (@{$subcall_info->{$subname}})[0,1,5,6];
             my $html = sprintf qq{%s# spent %s making %*d call%s to }, $ws,
                 fmt_time($incl_time+$reci_time, 5), length($max_calls_to),
                 $count, $count == 1 ? "" : "s";
@@ -474,7 +498,52 @@ sub report_src_line {
             }
             $html;
         } @calls_to;
-        $epilogue = sprintf qq{<div class="calls"><div class="calls_out">%s</div></div>}, $epilogue;
+        $epilogue .= sprintf qq{<div class="calls"><div class="calls_out">%s</div></div>}, $subs_called_html;
+    }
+
+    # give details of each of the string evals executed on this line
+    my $evals_called = $stats_for_line->{evalcall_info};
+    if ($evals_called && %$evals_called) {
+        $ws ||= ($linesrc =~ m/^((?:&nbsp;|\s)+)/) ? $1 : '';
+
+        my @eval_fis = sort {
+            $b->sum_of_stmts_time <=> $a->sum_of_stmts_time or
+            $a->filename cmp $b->filename
+        } values %$evals_called;
+
+        my $evals_called_html = join "\n", map {
+            my $eval_fi = $_;
+            my $sum_of_stmts_time = $eval_fi->sum_of_stmts_time;
+            my $what = "string eval";
+
+            my @nested_evals = $eval_fi->has_evals(1);
+            my ($nest_eval_time, $extra) = (0, '');
+            if (@nested_evals) {
+                $nest_eval_time = sum map { $_->sum_of_stmts_time } @nested_evals;
+
+                $extra .= sprintf " (%s in this eval plus %s in %d nested evals)",
+                        fmt_time($sum_of_stmts_time), fmt_time($nest_eval_time),
+                        scalar @nested_evals
+                    if $nest_eval_time;
+            }
+
+            my $merged_fids = $eval_fi->meta->{merged_fids};
+            if ($merged_fids) {
+                $extra .= sprintf " (data for these has been merged)";
+                $what .= "s";
+            }
+
+            my $href = $reporter->href_for_file($eval_fi, undef);
+            my $link = ($href) ? sprintf(q{<a href="%s">%s</a>}, $href, $what) : $what;
+            my $html = sprintf qq{%s# spent %s executing statements in %s%s%s},
+                $ws, fmt_time($sum_of_stmts_time+$nest_eval_time, 5),
+                ($merged_fids) ? sprintf("%d ",1+scalar @$merged_fids) : '',
+                $link, $extra;
+
+            $html;
+        } @eval_fis;
+
+        $epilogue .= sprintf qq{<div class="calls"><div class="calls_out">%s</div></div>}, $evals_called_html;
     }
 
     return qq{<td class="s">$prologue$linesrc$epilogue</td>};
@@ -529,7 +598,6 @@ sub output_subs_index_page {
 sub output_index_page {
     my ($r, $filename) = @_;
     my $profile = $reporter->{profile};
-    my $stats   = $r->get_file_stats();
 
     ###
     open my $fh, '>', "$opt{out}/$filename"
@@ -543,7 +611,7 @@ sub output_index_page {
 
     # overall description
     my @all_fileinfos = $profile->all_fileinfos;
-    my $eval_fileinfos = grep { $_->eval_line } @all_fileinfos;
+    my $eval_fileinfos = $profile->eval_fileinfos;
     my $summary = sprintf "Profile of %s for %s,",
         $profile->{attribute}{application},
         fmt_time($profile->{attribute}{profiler_duration});
@@ -559,13 +627,12 @@ sub output_index_page {
     printf $fh qq{<div class="index_summary">%s.</div>}, _escape_html($summary);
 
     # generate name-sorted select options for files, if there are many
-    if (keys %$stats > 30) {
+    if ($profile->noneval_fileinfos > 30) {
         print $fh qq{<div class="jump_to_file"><form name="jump">};
         print $fh qq{<select name="file" onChange="location.href=document.jump.file.value;">\n};
         printf $fh qq{<option disabled="disabled">%s</option>\n}, "Jump to file...";
-        foreach (sort keys %$stats) {
-            my $fid = $profile->resolve_fid($_) or warn "Can't find fid for $_";
-            printf $fh qq{<option value="#f%s">%s</option>\n}, $fid, $_;
+        foreach my $fi ($profile->noneval_fileinfos) {
+            printf $fh qq{<option value="#f%s">%s</option>\n}, $fi->fid, $fi->filename;
         }
         print $fh "</select></form></div>\n";
     }
@@ -591,7 +658,7 @@ sub output_index_page {
     }
 
     output_subs_callgraph_dot_file($reporter, "packages-callgraph.dot", undef, 1);
-    print $fh q{<br/>NYTProf also generates call-graph files in }
+    print $fh q{NYTProf also generates call-graph files in }
         .q{<a href="http://en.wikipedia.org/wiki/Graphviz">Graphviz</a> format: }
         .q{<a href="packages-callgraph.dot">inter-package calls</a>};
     output_subs_callgraph_dot_file($reporter, "subs-callgraph.dot", undef, 0);
@@ -600,7 +667,11 @@ sub output_index_page {
         if $all_subs > 200; # arbitrary
     print $fh q{.<br/>};
     
-    output_file_table($fh, $profile, $stats, 1);
+    print $fh q{<br/>You can hover over some table cells and headings to view extra information.};
+    print $fh q{<br/>Some table column headings can be clicked on to sort the table by that column.};
+    print $fh q{<br/>};
+
+    output_file_table($fh, $profile, 1);
 
     my $footer = get_footer($profile);
     print $fh "</div>$footer</body></html>";
@@ -1089,14 +1160,7 @@ sub have_prog {
 
 
 sub output_file_table {
-    my ($fh, $profile, $stats, $add_totals) = @_;
-
-    for (values %$stats) {
-        next if not $_;
-        $_->{'time/call'} = ($_->{calls}) ? $_->{'time'} / $_->{calls} : 0;
-    }
-
-    my $dev_time = calc_mad_from_hashes([values %$stats], 'time',      0);
+    my ($fh, $profile, $add_totals) = @_;
 
     # generate time-sorted sections for files
     print $fh qq{
@@ -1117,41 +1181,50 @@ sub output_file_table {
     my $allCalls = $profile->{attribute}{total_stmts_measured}
                  - $profile->{attribute}{total_stmts_discounted};
 
-    my ($t_stmt_exec, $t_stmt_time) = (0,0);
-    foreach my $filestats (sort { $b->{'time'} <=> $a->{'time'} } values %$stats) {
-        my $fi = $profile->fileinfo_of($filestats->{filename})
-            or die "Can't find fileinfo for $filestats->{filename}";
+    my (@t_stmt_exec, @t_stmt_time);
+    my @fis = $profile->noneval_fileinfos;
+    @fis = sort { $b->meta->{'time'} <=> $a->meta->{'time'} } @fis;
+
+    my $dev_time = calculate_median_absolute_deviation([map { scalar $_->meta->{'time'} } @fis], 0);
+    
+    foreach my $fi (@fis) {
+        my $meta = $fi->meta;
         my @extra;
 
-        my $has_evals = $fi->has_evals(1) || [];
-        #my $eval_stmts = 0;
-        if (@$has_evals) {
-            my $n_evals = scalar @$has_evals;
-            my $msg = sprintf "executed %d string eval%s", $n_evals, ($n_evals>1) ? "s" : "";
-            if (my @nested = grep { $_->eval_fid != $fi->fid } @$has_evals) {
+        # The stats in this table include rolled up sums of nested evals.
+
+        my @has_evals = $fi->has_evals(1);
+        my ($eval_stmts, $eval_time) = (0,0);
+        if (@has_evals) {
+            my $n_evals = scalar @has_evals;
+            my $msg = sprintf "including %d string eval%s", $n_evals, ($n_evals>1) ? "s" : "";
+            if (my @nested = grep { $_->eval_fid != $fi->fid } @has_evals) {
                 $msg .= sprintf ": %d direct plus %d nested",
                     $n_evals-@nested, scalar @nested;
             }
             push @extra, $msg;
-            #$eval_stmts += sum(map { $_->number_of_statements_executed } @$has_evals);
+            $eval_stmts = sum(map { $_->sum_of_stmts_count } @has_evals);
+            $eval_time  = sum(map { $_->sum_of_stmts_time  } @has_evals);
         }
 
         print $fh qq{<tr class="index">};
 
-        print $fh determine_severity($filestats->{'calls'},     undef, 0,
-            ($allCalls) ? sprintf("%.1f%%", $filestats->{'calls'}/$allCalls*100) : ''
+        my $stmts = $meta->{'calls'} + $eval_stmts;
+        print $fh determine_severity($stmts,     undef, 0,
+            ($allCalls) ? sprintf("%.1f%%", $stmts/$allCalls*100) : ''
         );
-        $t_stmt_exec += $filestats->{'calls'};
+        push @t_stmt_exec, $stmts;
 
-        print $fh determine_severity($filestats->{'time'},      $dev_time, 1,
-            ($allTimes) ? sprintf("%.1f%%", $filestats->{'time'}/$allTimes*100) : ''
+        my $time = $meta->{'time'} + $eval_time;
+        print $fh determine_severity($time,      $dev_time, 1,
+            ($allTimes) ? sprintf("%.1f%%", $time/$allTimes*100) : ''
         );
-        $t_stmt_time += $filestats->{'time'};
+        push @t_stmt_time, $time;
 
         my $rep_links = join '&nbsp;&bull;&nbsp;', map {
-            my $level_html_safe = $filestats->{$_}->{html_safe};
-            ($level_html_safe)
-                ? sprintf(qq{<a href="%s.html">%s</a>}, $level_html_safe, $_)
+            my $href = $reporter->href_for_file($fi, undef, $_);
+            ($href)
+                ? sprintf(qq{<a href="%s">%s</a>}, $href, $_)
                 : ()
         } qw(line block sub);
         print $fh "<td>$rep_links</td>";
@@ -1168,30 +1241,34 @@ sub output_file_table {
         my $stats_fmt =
             qq{<tr class="index"><td class="n">%s</td><td class="n">%s</td><td colspan="2" style="font-style: italic">%s</td></tr>};
         my $t_notes = "";
-        my $stmt_time_diff = $allTimes - $t_stmt_time;
-        if ($t_stmt_exec != $allCalls or $stmt_time_diff > 0.000_010) {
+        my $stmt_time_diff = $allTimes - sum(@t_stmt_time);
+        if (sum(@t_stmt_exec) != $allCalls or $stmt_time_diff > 0.000_010) {
             my $eval_fileinfos = grep { $_->eval_line } $profile->all_fileinfos;
             $stmt_time_diff = ($stmt_time_diff > 0.000_010)
                 ? sprintf(" and %s", fmt_time($stmt_time_diff)) : "";
             $t_notes = sprintf "(%d string evals account for a further %d statements%s)",
-                $eval_fileinfos, $allCalls - $t_stmt_exec, $stmt_time_diff;
+                $eval_fileinfos, $allCalls - sum(@t_stmt_exec), $stmt_time_diff;
         }
-        print $fh sprintf $stats_fmt, fmt_float($t_stmt_exec), fmt_time($t_stmt_time),
-            "Total $t_notes";
+        print $fh sprintf $stats_fmt, fmt_float(sum(@t_stmt_exec)), fmt_time(sum(@t_stmt_time)),
+                "Total $t_notes"
+            if @t_stmt_exec > 1 or $t_notes;
 
-        print $fh sprintf $stats_fmt, int(fmt_float($t_stmt_exec / keys %$stats)),
-            fmt_time($t_stmt_time / keys %$stats), "Average"
-            if %$stats;    # avoid divide by zero
+        if (@t_stmt_exec > 1) {
+            print $fh sprintf $stats_fmt,
+                int(fmt_float(sum(@t_stmt_exec) / @t_stmt_exec)),
+                    fmt_time( sum(@t_stmt_time) / @t_stmt_time), "Average";
+            print $fh sprintf $stats_fmt, '', fmt_time( $dev_time->[1]), "Median";
+            print $fh sprintf $stats_fmt, '', fmt_float($dev_time->[0]), "Deviation"
+                if $dev_time->[0];
+        }
 
-        print $fh sprintf $stats_fmt, '', fmt_time($dev_time->[1]), "Median";
-        print $fh sprintf $stats_fmt, '', fmt_float($dev_time->[0]), "Deviation"
-            if $dev_time->[0];
         print $fh "</tfoot>\n";
     }
+
     print $fh '</table>';
     push @on_ready_js, q{
         $("#filestable").tablesorter({
-            sortList: [[1,1]],
+            sortList: [[1,1],[3,1]],
             headers: {
                 1: { sorter: 'fmt_time' },
                 2: { sorter: false      }
@@ -1335,6 +1412,8 @@ sub get_footer {
 sub get_html_header {
     my $title = shift || "Profile Index - NYTProf";
     my $opts = shift || {};
+
+    $title = _escape_html($title);
 
     my $html = <<EOD;
     <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
@@ -1670,11 +1749,11 @@ Options synopsis:
 Devel::NYTProf is a powerful feature-rich perl source code profiler.
 See L<Devel::NYTProf> for details.
 
-C<nytprofhtml> generates html a set of html reports from the data collected by
+C<nytprofhtml> generates a set of html reports from the data collected by
 L<Devel::NYTProf>.
 
 The reports include dynamic runtime analysis wherein each line and each file
-is analyzed based on the preformance of the other lines and files.  As a
+is analyzed based on the performance of the other lines and files.  As a
 result, you can quickly find the slowest module and the slowest line in a 
 module.  Slowness is measured in three ways: total calls, total time and
 average time per call.

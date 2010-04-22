@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Core.pm 1157 2010-03-09 10:35:10Z tim.bunce $
+# $Id: Core.pm 1194 2010-04-22 10:23:05Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf::Core;
 
@@ -24,8 +24,22 @@ if (my $NYTPROF = $ENV{NYTPROF}) {
         s/\\(.)/$1/g for $opt, $val;
 
         if ($opt eq 'sigexit') {
+            # Intercept sudden process exit caused by signals
             my @sigs = ($val eq '1') ? qw(INT HUP PIPE BUS SEGV) : split(/,/, $val);
             $SIG{uc $_} = sub { DB::finish_profile(); exit 1; } for @sigs;
+            next; # no need to tell the XS code about this
+        }
+
+        if ($opt eq 'posix_exit') {
+            # Intercept sudden process exit caused by POSIX::_exit() call.
+            # Should only be needed if subs=0.  We delay till after profiling
+            # has probably started to minimize the effect on the profile.
+            eval q{ INIT {
+                require POSIX;
+                my $orig = \&POSIX::_exit;
+                local $^W = 0; # avoid sub redef warning
+                *POSIX::_exit = sub { DB::finish_profile(); $orig->(@_) };
+            } 1 } or die if $val;
             next; # no need to tell the XS code about this
         }
 

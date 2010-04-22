@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Data.pm 1157 2010-03-09 10:35:10Z tim.bunce $
+# $Id: Data.pm 1193 2010-04-21 13:41:34Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -83,6 +83,9 @@ sub new {
         $file,
         $args->{callback},
     );
+
+    return undef if $args->{callback};
+
     bless $profile => $class;
 
     my $fid_fileinfo = $profile->{fid_fileinfo};
@@ -99,6 +102,12 @@ sub new {
     (my $sub_class = $class) =~ s/\w+$/SubInfo/;
     $_ and bless $_ => $sub_class for values %$sub_subinfo;
 
+    # Where a given eval() has been invoked more than once
+    # rollup the corresponding fids if they're "uninteresting".
+    for my $fi ($profile->noneval_fileinfos) {
+        $profile->collapse_evals_in($fi);
+    }
+
     $profile->_clear_caches;
 
     # a hack for testing/debugging
@@ -109,6 +118,65 @@ sub new {
     }
 
     return $profile;
+}
+
+
+sub collapse_evals_in {
+    my ($profile, $parent_fi) = @_;
+    my $parent_fid = $parent_fi->fid;
+
+    my %evals_on_line;
+    for my $fi ($parent_fi->has_evals) {
+        $profile->collapse_evals_in($fi); # recurse first
+        push @{ $evals_on_line{$fi->eval_line} }, $fi;
+    }
+    while ( my ($line, $siblings) = each %evals_on_line) {
+
+        next if @$siblings == 1;
+
+        my @subs  = map { values %{ $_->subs } } @$siblings;
+        my @calls = map { keys %{ $_->sub_call_lines } } @$siblings;
+        my @evals = map { $_->has_evals(0) } @$siblings;
+        my $msg = sprintf "%d:%d: multiple evals (subs %d, calls %d, evals %d, fids: %s)",
+                $parent_fid, $line, scalar @subs, scalar @calls, scalar @evals,
+                join(", ", map { $_->fid } @$siblings);
+        warn "$msg\n" if $trace >= 3;
+
+        next if @subs;  # ignore if the eval defines subs
+        next if @evals; # ignore if the eval has nested evals
+
+        # compare src code of evals and collapse identical ones
+        my %src_same;
+        for my $fi (@$siblings) {
+            my $srclines_array = $fi->srclines_array || [];
+            my $src = join "\n", @$srclines_array;
+            my $key = join ",", # XXX just a basic key
+                scalar @$srclines_array, # number of lines
+                length $src,             # total length
+                unpack("%32C*",$src);    # 32-bit checksum
+            push @{$src_same{$key}}, $fi;
+        }
+
+        warn sprintf "%s COLLAPSING (%d evals with %d distinct srcs)\n",
+                $msg, scalar @$siblings, scalar keys %src_same
+            if $trace >= 1;
+
+        # if not 'too many' distinct eval source strings then collapse
+        # the evals for each distinct source string
+        if (values %src_same < 100) {
+
+            for my $src_same_fis (values %src_same) {
+                next if @$src_same_fis == 1; # unique src code
+                warn "Collapsing identical evals: @{[ map { $_->fid } @$src_same_fis ]}\n"
+                    if $trace >= 3;
+                my $fi = $parent_fi->collapse_sibling_evals(@$src_same_fis);
+                @$src_same_fis = ( $fi ); # update list in-place
+            }
+        }
+        else {
+            $parent_fi->collapse_sibling_evals(@$siblings);
+        }
+    }
 }
 
 sub _caches       { return shift->{caches} ||= {} }
@@ -235,7 +303,16 @@ sub packages_at_depth_subinfo {
 sub all_fileinfos {
     my @all = @{shift->{fid_fileinfo}};
     shift @all;    # drop fid 0
-    return @all;
+    # return all non-nullified fileinfos
+    return grep { $_->fid } @all;
+}
+
+sub eval_fileinfos {
+    return grep {  $_->eval_line } shift->all_fileinfos;
+}
+
+sub noneval_fileinfos {
+    return grep { !$_->eval_line } shift->all_fileinfos;
 }
 
 
@@ -256,34 +333,24 @@ sub fileinfo_of {
         return undef;
     }
 
-    return $self->{fid_fileinfo}[$fid];
+    my $fi = $self->{fid_fileinfo}[$fid];
+    return undef unless defined $fi->fid; # nullified?
+    return $fi;
 }
 
 
-# map of { eval_fid => base_fid, ... }
-sub eval_fid_2_base_fid_map {
-    my ($self, $flatten_evals) = @_;
-    $flatten_evals ||= 0;
+sub subinfo_of {
+    my ($self, $subname) = @_;
 
-    my $caches = $self->_caches;
-    my $cache_key = "eval_fid_2_base_fid_map:$flatten_evals";
-    return $caches->{$cache_key} if $caches->{$cache_key};
-
-    my $fid_fileinfo = $self->{fid_fileinfo} || [];
-    my $eval_fid_map = {};
-
-    for my $fi (@$fid_fileinfo) {
-        my $base_fi = $fi && $fi->eval_fi
-            or next;
-
-        while ($flatten_evals and my $b_eval_fi = $base_fi->eval_fi) {
-            $base_fi = $b_eval_fi;
-        }
-        $eval_fid_map->{ $fi->fid } = $base_fi->fid;
+    if (not defined $subname) {
+        carp "Can't resolve subinfo of undef value";
+        return undef;
     }
 
-    $caches->{$cache_key} = $eval_fid_map;
-    return $eval_fid_map;
+    my $si = $self->{sub_subinfo}{$subname}
+        or warn carp "Can't resolve subinfo of '$subname'";
+
+    return $si;
 }
 
 
@@ -338,22 +405,27 @@ sub dump_profile_data {
 
         if (my $hook = $args->{skip_fileinfo_hook}) {
 
-            # for fid_fileinfo don't dump internal details of lib modules
+            # for fid_fileinfo elements...
             if ($path->[0] eq 'fid_fileinfo' && @$path==2) {
-                my $fi = $self->fileinfo_of($value->[0]);
+                my $fi = $value;
+
+                # skip nullified fileinfo
+                return undef unless $fi->fid;
+
+                # don't dump internal details of lib modules
                 return ({ skip_internal_details => scalar $hook->($fi, $path, $value) }, $value);
             }
 
             # skip sub_subinfo data for 'library modules'
             if ($path->[0] eq 'sub_subinfo' && @$path==2 && $value->[0]) {
                 my $fi = $self->fileinfo_of($value->[0]);
-                return undef if $hook->($fi, $path, $value);
+                return undef if !$fi or $hook->($fi, $path, $value);
             }
 
             # skip fid_*_time data for 'library modules'
             if ($path->[0] =~ /^fid_\w+_time$/ && @$path==2) {
                 my $fi = $self->fileinfo_of($path->[1]);
-                return undef if $hook->($fi, $path, $value)
+                return undef if !$fi or $hook->($fi, $path, $value);
             }
         }
         return ({}, $value);
@@ -361,6 +433,7 @@ sub dump_profile_data {
 
     _dump_elements($startnode, $separator, $filehandle, [], $callback);
 }
+
 
 sub _dump_elements {
     my ($r, $separator, $fh, $path, $callback) = @_;
@@ -392,7 +465,9 @@ sub _dump_elements {
         my $value = ($is_hash) ? $r->{$key} : $r->[$key];
 
         # skip undef elements in array
-        next if !defined($value) && !$is_hash;
+        next if !$is_hash && !defined($value);
+        # skip refs to empty arrays in array
+        next if !$is_hash && ref $value eq 'ARRAY' && !@$value;
 
         my $dump_opts = {};
         if ($callback) {
@@ -537,12 +612,8 @@ sub _filename_to_fid {
     my $self = shift;
     my $caches = $self->_caches;
     return $caches->{_filename_to_fid_cache} ||= do {
-        my $fid_fileinfo = $self->{fid_fileinfo} || [];
         my $filename_to_fid = {};
-        for my $fid (1 .. @$fid_fileinfo - 1) {
-            my $filename = $fid_fileinfo->[$fid][0];
-            $filename_to_fid->{$filename} = $fid;
-        }
+        $filename_to_fid->{$_->filename} = $_->fid for $self->all_fileinfos;
         $filename_to_fid;
     };
 }
@@ -628,29 +699,7 @@ sub subname_at_file_line {
 }
 
 
-sub fid_filename {
-    my ($self, $fid) = @_;
-
-    my $fileinfo = $self->{fid_fileinfo}->[$fid]
-        or return undef;
-
-    while ($fileinfo->[1]) {    # is an eval
-
-        # eg string eval
-        # eg [ "(eval 6)[/usr/local/perl58-i/lib/5.8.6/Benchmark.pm:634]", 2, 634 ]
-        warn sprintf "fid_filename: fid %d -> %d for %s\n", $fid, $fileinfo->[1], $fileinfo->[0]
-            if $trace;
-
-        # follow next link in chain
-        my $outer_fid = $fileinfo->[1];
-        $fileinfo = $self->{fid_fileinfo}->[$outer_fid];
-    }
-
-    return $fileinfo->[0];
-}
-
-
-=head2 file_line_range_of_sub
+=head2 file_line_range_of_subme
 
   ($file, $fid, $first, $last) = $profile->file_line_range_of_sub("main::foo");
 
@@ -676,29 +725,16 @@ don't have an associated file.
 sub file_line_range_of_sub {
     my ($self, $sub) = @_;
 
-    my $sub_subinfo = $self->{sub_subinfo}{$sub}
+    my $sub_subinfo = $self->subinfo_of($sub)
         or return;    # no such sub
     my ($fid, $first, $last) = @$sub_subinfo;
 
     return if not $fid; # sub has no known file
 
-    my $fileinfo = $fid && $self->{fid_fileinfo}->[$fid]
+    my $fileinfo = $fid && $self->fileinfo_of($fid)
         or die "No fid_fileinfo for sub $sub fid '$fid'\n";
-    while ($fileinfo->eval_fid) {
 
-        # eg string eval
-        # eg [ "(eval 6)[/usr/local/perl58-i/lib/5.8.6/Benchmark.pm:634]", 2, 634 ]
-        warn sprintf "file_line_range_of_sub: %s: fid %d -> %d for %s\n",
-                $sub, $fid, $fileinfo->eval_fid, $fileinfo->filename
-            if $trace;
-        $first = $last = $fileinfo->eval_line if 1;    # XXX control via param?
-
-        # follow next link in chain
-        my $outer_fid = $fileinfo->eval_fid;
-        $fileinfo = $self->{fid_fileinfo}->[$outer_fid];
-    }
-
-    return ($fileinfo->filename, $fid, $first, $last);
+    return ($fileinfo->filename, $fid, $first, $last, $fileinfo);
 }
 
 
@@ -748,77 +784,6 @@ sub resolve_fid {
         if @matches >= 2;
 
     return undef;
-}
-
-
-=head2 line_calls_for_file
-
-  $line_calls_hash = $profile->line_calls_for_file( $file );
-
-Returns a reference to a hash containing information about subroutine calls
-made at individual lines within a source file. The $file
-argument can be an integer file id (fid) or a file path. Returns undef if
-no subroutine calling information is available.
-
-The keys of the returned hash are line numbers. The values are references to
-hashes with fully qualified subroutine names as keys. Each hash value is an
-reference to an array containing an integer call count (how many times the sub
-was called from that line of that file) and an inclusive time (how much time
-was spent inside the sub when it was called from that line of that file).
-
-For example, if the following was line 42 of a file C<foo.pl>:
-
-  ++$wiggle if foo(24) == bar(42);
-
-that line was executed once, and foo and bar were imported from pkg1, then
-$profile->line_calls_for_file( 'foo.pl' ) would return something like:
-
-  {
-      42 => {
-	  'pkg1::foo' => [ 1, 0.02093 ],
-	  'pkg1::bar' => [ 1, 0.00154 ],
-      },
-  }
-
-=cut
-
-sub line_calls_for_file {
-    my ($self, $fid, $include_evals) = @_;
-    my $orig_fi = $self->fileinfo_of($fid);
-
-    # shallow copy
-    my $line_calls = { %{ $orig_fi->sub_call_lines } };
-    return $line_calls unless $include_evals;
-
-    for my $fi (@{ $orig_fi->has_evals(1) || [] }) {
-        # { line => { subname => [...] }, ... }
-        my $sub_call_lines = $fi->sub_call_lines;
-
-        # $outer_line is the line of the eval
-        # XXX outer(1) is a little inefficient, could refactor the loop to
-        # separate top-level evals from nested evals and use the outer_line
-        # from the top level evals
-        my (undef, $outer_line) = $fi->outer(1); # outermost
-
-        while (my ($line, $sub_calls_hash) = each %$sub_call_lines) {
-
-            my $ci_for_subs = $line_calls->{$outer_line || $line} ||= {};
-
-            while (my ($subname, $callinfo) = each %$sub_calls_hash) {
-
-                my $ci = $ci_for_subs->{$subname} ||= [];
-                if (!@$ci) {    # typical case
-                    @$ci = @$callinfo;
-                }
-                else {          # e.g., multiple calls inside the same string eval
-                    #warn "merging calls to $subname from fid $caller_fid line $caller_line ($outer_line || $line)";
-                    $ci->[$_] += $callinfo->[$_] for 0..5;
-                    $ci->[6]   = $callinfo->[6] if $callinfo->[6] > $ci->[6]; # NYTP_SCi_REC_DEPTH
-                }
-            }
-        }
-    }
-    return $line_calls;
 }
 
 

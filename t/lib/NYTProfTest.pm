@@ -282,7 +282,9 @@ sub run_test {
             or die "Profiling $test failed\n";
 
         if ($opts{html}) {
-            my $cmd = "$perl $nytprofhtml --file=$profile_datafile --out=$outdir";
+            my $htmloutdir = "/tmp/$outdir";
+            unlink <$htmloutdir/*>;
+            my $cmd = "$perl $nytprofhtml --file=$profile_datafile --out=$htmloutdir";
             $cmd .= " --open" if $opts{open};
             run_command($cmd);
         }
@@ -343,6 +345,7 @@ sub run_command {
 
 sub run_perl_command {
     my ($cmd, $show_stdout) = @_;
+    local $ENV{PERL5LIB} = $perl5lib;
     run_command("$this_perl $cmd", $show_stdout);
 }
 
@@ -368,7 +371,7 @@ sub verify_data {
     SKIP: {
         skip 'Expected profile data does not have VMS paths', 1
             if $^O eq 'VMS' and $test =~ m/test60|test14/i;
-	$profile->normalize_variables;
+        $profile->normalize_variables;
         dump_profile_to_file($profile, $test.'_new', $test.'_newp');
         my @got      = slurp_file($test.'_new'); chomp @got;
         my @expected = slurp_file($test);        chomp @expected;
@@ -434,7 +437,7 @@ sub verify_csv_report {
     $csvfile =~ s/\.x//;
     $csvfile .= ".p" unless $csvfile =~ /\.p/;
     $csvfile = html_safe_filename($csvfile);
-    $csvfile = "$outdir/${csvfile}-line.csv";
+    $csvfile = "$outdir/${csvfile}-1-line.csv";
     unlink $csvfile;
 
     my $cmd = "$perl $nytprofcsv --file=$profile_datafile --out=$outdir";
@@ -586,4 +589,4 @@ sub count_of_failed_tests {
 
 1;
 
-# vim:ts=8:sw=4
+# vim:ts=8:sw=4:et
