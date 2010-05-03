@@ -88,16 +88,19 @@ sub _delete_eval {
 }
 
 
-# return a ref to a hash of { subname => subinfo, ... }
-sub subs      { shift->[NYTP_FIDi_SUBS_DEFINED()] } # deprecated
-
 # return subs defined as list of SubInfo objects
-# XXX add $include_evals arg?
 sub subs_defined {
-    return values %{ shift->[NYTP_FIDi_SUBS_DEFINED()] };
+    my ($self, $incl_nested_evals) = @_;
+
+    return map { $_->subs_defined(0) } $self, $self->has_evals(1)
+        if $incl_nested_evals;
+
+    return values %{ $self->[NYTP_FIDi_SUBS_DEFINED()] };
 }
+
 sub subs_defined_sorted {
-    return sort { $a->subname cmp $b->subname } shift->subs_defined;
+    my ($self, $incl_nested_evals) = @_;
+    return sort { $a->subname cmp $b->subname } $self->subs_defined($incl_nested_evals);
 }
 
 
@@ -302,7 +305,7 @@ sub collapse_sibling_evals {
         }
 
         # copy line time data
-        my $d_ltd = $donor_fi->line_time_data; # XXX line only
+        my $d_ltd = $donor_fi->line_time_data || []; # XXX line only
         for my $line (0..@$d_ltd-1) {
             my $d_tld_l = $d_ltd->[$line] or next;
             my $s_tld_l = $s_ltd->[$line] ||= [];
@@ -312,6 +315,9 @@ sub collapse_sibling_evals {
         }
 
         push @{ $survivor->meta->{merged_fids} }, $donor_fi->fid;
+        ++$survivor->meta->{merged_fids_src_varied}
+            if $donor_fi->src_digest ne $survivor->src_digest;
+
         $self->_delete_eval($donor_fi);
         $donor_fi->_nullify;
     }
@@ -377,11 +383,24 @@ sub srclines_array {
     }
 
     if ($self->flags & NYTP_FIDf_IS_FAKE) {
-        my $fid = $self->fid;
-        return [ "# fid$fid: NYTP_FIDf_IS_FAKE - e.g., unknown caller of an eval.\n" ];
+        return [ "# NYTP_FIDf_IS_FAKE - e.g., unknown caller of an eval.\n" ];
     }
 
     return undef;
+}
+
+sub src_digest {
+    my $self = shift;
+    return $self->cache->{src_digest} ||= do {
+        my $srclines_array = $self->srclines_array || [];
+        my $src = join "\n", @$srclines_array;
+        my @key = (
+            scalar @$srclines_array, # number of lines
+            length $src,             # total length
+            unpack("%32C*",$src),    # 32-bit checksum
+        );
+        join ",", @key;
+    };
 }
 
 
@@ -394,12 +413,27 @@ sub normalize_for_test {
     # normalize flags to avoid failures due to savesrc and perl version
     $self->[NYTP_FIDi_FLAGS] &= ~(NYTP_FIDf_HAS_SRC|NYTP_FIDf_SAVE_SRC);
 
-    for my $sc (map { values %$_ } values %{ $self->sub_call_lines }) {
-        $sc->[NYTP_SCi_INCL_RTIME] =
-        $sc->[NYTP_SCi_EXCL_RTIME] =
-        $sc->[NYTP_SCi_RECI_RTIME] = 0;
-    }
+    # '1' => { 'main::foo' => [ 1, '1.38e-05', '1.24e-05', ..., { 'main::RUNTIME' => undef } ] }
+    for my $subscalled (values %{ $self->sub_call_lines }) {
 
+        for my $subname (keys %$subscalled) {
+            my $sc = $subscalled->{$subname};
+            $sc->[NYTP_SCi_INCL_RTIME] =
+            $sc->[NYTP_SCi_EXCL_RTIME] =
+            $sc->[NYTP_SCi_RECI_RTIME] = 0;
+
+            if (not $ENV{NYTPROF_TEST_SKIP_EVAL_NORM}) {
+                # normalize eval sequence numbers in anon sub names to 0
+                (my $newname = $subname) =~ s/ \( ((?:re_)?) eval \s \d+ \) /(${1}eval 0)/xg;
+                if ($newname ne $subname) {
+                    warn "Normalizing $subname to $newname overwrote other called-by data\n"
+                        if $subscalled->{$newname};
+                    $subscalled->{$newname} = delete $subscalled->{$subname};
+                }
+            }
+        }
+
+    }
 }
 
 

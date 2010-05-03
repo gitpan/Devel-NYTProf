@@ -1,5 +1,5 @@
 # vim: ts=8 sw=2 sts=0 noexpandtab:
-# $Id: HACKING 1192 2010-04-21 13:25:45Z tim.bunce@gmail.com $
+# $Id: HACKING 1212 2010-05-03 21:44:45Z tim.bunce@gmail.com $
 
 HACKING Devel::NYTProf
 ======================
@@ -302,9 +302,6 @@ associated with the 'next;' within the loop. Fixed by perl change 33710?
 
 Investigate style.css problem when using --outfile=some/other/dir
 
-Index should show eval fids in some form - collapsed per location?
-Or just included in the stats for the outer source file.
-
 Sub profiler should avoid sv_setpvf(subname_sv, "%s::%s", stash_name, GvNAME(gv));
 because it's expensive (Perl_sv_setpvf_nocontext accounts for 29% of pp_entersub_profiler).
 Use a two level hash: HvNAME(GvSTASH(gv)) then GvNAME(gv).
@@ -363,6 +360,7 @@ appear as the caller in the call-tree because, while strictly accurate, it's
 probably less useful from the users perspective.
 Fixing that part is easy but handling incl/excl time needs more thought.
 
+For xsubs and opcodes that call perl subs:
 In the subroutine prologue that currently lists where the sub was called from,
 for xsubs & opcodes, add a list of subs that it called (typically none).
 That would be handy because currently calls from xsubs & opcodes appear in the
@@ -383,18 +381,17 @@ Then, rather than hand-crafting inflexible data structures we could use SQL
 (or, say, DBIx::Class) to return relevant data. Would also provide another
 route for other data sources (languages/tools) to be included in a report.
 Could also simplify: comparing profiles, merging profiles, ...
+Also 'pipelines' of plugin db-to-db transformations could be developed.
 Any volunteers to explore writing an nytprofimport for SQLite?
 
 Option to add sub call and return events into the data file as they happen.
 Would enable a dprofpp -T like output. See https://rt.cpan.org/Ticket/Display.html?id=50766
 
 For eval fid reports:
-- Add header with link to location of the invoking string eval
 - Add links to 'sibling' evals
-- fix sub caller info to not rollup over evals
-- merge string evals which have identical src and invoking location
-- fix inconsistency in results of href_for_*() subs
 - Add eval information (evals and time) to file summary header
+
+Fix inconsistency in results of href_for_*() subs
 
 Make generation of call graph .dot files optional and/or optimize to make faster
 

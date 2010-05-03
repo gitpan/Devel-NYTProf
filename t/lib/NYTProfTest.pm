@@ -21,6 +21,7 @@ our @EXPORT = qw(
 use Devel::NYTProf::Data;
 use Devel::NYTProf::Reader;
 use Devel::NYTProf::Util qw(strip_prefix_from_paths html_safe_filename);
+use Devel::NYTProf::Run qw(perl_command_words);
 
 
 my $this_perl = $^X;
@@ -69,7 +70,12 @@ chdir('t') if -d 't';
 if (-d '../blib') {
     unshift @INC, '../blib/arch', '../blib/lib';
 }
-my $bindir      = (grep {-d} qw(./blib/script ../blib/script))[0];
+my $bindir      = (grep {-d} qw(./blib/script ../blib/script))[0] || do {
+    my $bin = (grep {-d} qw(./bin ../bin))[0]
+        or die "Can't find scripts";
+    warn "Couldn't find blib/script directory, so using $bin";
+    $bin;
+};
 my $nytprofcsv  = "$bindir/nytprofcsv";
 my $nytprofhtml = "$bindir/nytprofhtml";
 my $nytprofmerge= "$bindir/nytprofmerge";
@@ -343,10 +349,12 @@ sub run_command {
 }
 
 
+# some tests use profile_this() in Devel::NYTProf::Run
 sub run_perl_command {
     my ($cmd, $show_stdout) = @_;
     local $ENV{PERL5LIB} = $perl5lib;
-    run_command("$this_perl $cmd", $show_stdout);
+    my @perl = perl_command_words(skip_sitecustomize => 1);
+    run_command("@perl $cmd", $show_stdout);
 }
 
 

@@ -299,7 +299,7 @@ NYTP_read_unchecked(NYTP_file ifile, void *buffer, size_t len) {
     }
     while (1) {
         unsigned char *p = ifile->large_buffer + ifile->count;
-        unsigned int remaining = ((unsigned char *) ifile->zs.next_out) - p;
+        int remaining = ((unsigned char *) ifile->zs.next_out) - p;
 
         if (remaining >= len) {
             Copy(p, buffer, len, unsigned char);
@@ -522,8 +522,7 @@ NYTP_write(NYTP_file ofile, const void *buffer, size_t len) {
         return 0;
     }
     while (1) {
-        unsigned int remaining
-            = NYTP_FILE_LARGE_BUFFER_SIZE - ofile->zs.avail_in;
+        int remaining = NYTP_FILE_LARGE_BUFFER_SIZE - ofile->zs.avail_in;
         unsigned char *p = ofile->large_buffer + ofile->zs.avail_in;
 
         if (remaining >= len) {
@@ -604,9 +603,7 @@ NYTP_close(NYTP_file file, int discard) {
         const double ratio = file->zs.total_in / (double) file->zs.total_out;
         flush_output(file, Z_FINISH);
         fprintf(raw_file, "#\n"
-                "# Total uncompressed bytes %lu\n"
-                "# Total compressed bytes %lu\n"
-                "# Compression ratio 1:%2f, data shrunk by %.2f%%\n",
+                "# Compressed %lu bytes to %lu, ratio %f:1, data shrunk by %f%%\n",
                 file->zs.total_in, file->zs.total_out, ratio,
                 100 * (1 - 1 / ratio));
     }
