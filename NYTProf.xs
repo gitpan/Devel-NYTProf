@@ -13,7 +13,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 1217 2010-05-06 23:09:22Z tim.bunce@gmail.com $
+ * $Id: NYTProf.xs 1222 2010-05-07 11:51:32Z tim.bunce@gmail.com $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -966,7 +966,7 @@ nv_from_av(pTHX_ AV *av, int idx, NV default_nv)
 
 static const char *
 cx_block_type(PERL_CONTEXT *cx) {
-    char buf[20];
+    static char buf[20];
     switch (CxTYPE(cx)) {
     case CXt_NULL:              return "CXt_NULL";
     case CXt_SUB:               return "CXt_SUB";
@@ -1085,19 +1085,22 @@ start_cop_of_context(pTHX_ PERL_CONTEXT *cx)
                     OutCopFILE((COP*)o));
             return (COP*)o;
         }
-#ifdef CXt_LOOP
-        /* e.g. "eval $_ for @ary" */
-        if (CxTYPE(cx) == CXt_LOOP)
+        if (trace_level >= trace)
+            logwarn("\tstart_cop_of_context %s op '%s' isn't a cop, giving up\n",
+                cx_block_type(cx), OP_NAME(o));
+        return NULL;
+#if 0   /* old code that never worked very well anyway */
+        if (CxTYPE(cx) == CXt_LOOP) /* e.g. "eval $_ for @ary" */
             return NULL;
-#endif
         /* should never get here but we do */
-        if (trace_level >= trace || 1) {
+        if (trace_level >= trace) {
             logwarn("\tstart_cop_of_context %s op '%s' isn't a cop\n",
                 cx_block_type(cx), OP_NAME(o));
             if (trace_level >  trace)
                 do_op_dump(1, PerlIO_stderr(), o);
         }
         o = o->op_next;
+#endif
     }
     if (trace_level >= 3) {
         logwarn("\tstart_cop_of_context: can't find next cop for %s line %ld\n",
@@ -3869,7 +3872,7 @@ load_sub_callers_callback(Loader_state_base *cb_data, const nytp_tax_index tag, 
     NV incl_time;
     NV excl_time;
     NV reci_time;
-    UV rec_depth;
+    unsigned int rec_depth;
     SV *called_subname_sv;
     char text[MAXPATHLEN*2];
     SV *sv;
@@ -3884,7 +3887,7 @@ load_sub_callers_callback(Loader_state_base *cb_data, const nytp_tax_index tag, 
     incl_time = va_arg(args, NV);
     excl_time = va_arg(args, NV);
     reci_time = va_arg(args, NV);
-    rec_depth = va_arg(args, UV);
+    rec_depth = va_arg(args, unsigned int);
     called_subname_sv = va_arg(args, SV *);
     caller_subname_sv = va_arg(args, SV *);
 
@@ -4130,6 +4133,10 @@ load_perl_callback(Loader_state_base *cb_data, const nytp_tax_index tag, ...)
 
     if (!state->cb[tag])
         return;
+
+    if (trace_level >= 9) {
+        logwarn("\tcallback %s[%s] \n", description, arglist);
+    }
 
     sv_setuv_mg(state->input_chunk_seqn_sv, state->base_state.input_chunk_seqn);
 
@@ -4400,7 +4407,7 @@ load_profile_data_from_stream(loader_callback *callbacks,
                 NV spare_3         = read_nv(in);
                 NV spare_4         = read_nv(in);
                 NV reci_time       = read_nv(in);
-                UV rec_depth       = read_int(in);
+                unsigned int rec_depth = read_int(in);
                 SV *called_subname_sv = read_str(aTHX_ in, tmp_str1_sv);
 
                 PERL_UNUSED_VAR(spare_3);

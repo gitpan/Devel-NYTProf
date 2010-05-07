@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 1211 2010-05-03 21:06:40Z tim.bunce@gmail.com $
+## $Id: NYTProf.pm 1222 2010-05-07 11:51:32Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf;
 
@@ -50,7 +50,7 @@ __END__
 
 =head1 NAME
 
-Devel::NYTProf - Powerful feature-rich perl source code profiler
+Devel::NYTProf - Powerful fast feature-rich perl source code profiler
 
 =head1 SYNOPSIS
 
@@ -65,7 +65,7 @@ Devel::NYTProf - Powerful feature-rich perl source code profiler
 
 =head1 DESCRIPTION
 
-Devel::NYTProf is a powerful feature-rich perl source code profiler.
+Devel::NYTProf is a powerful, fast, feature-rich perl source code profiler.
 
 =over
 
