@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Apache.pm 1209 2010-05-03 15:04:05Z tim.bunce $
+# $Id: Apache.pm 1235 2010-05-26 17:35:13Z tim.bunce $
 ###########################################################
 package Devel::NYTProf::Apache;
 
@@ -24,6 +24,11 @@ BEGIN {
         warn "NYTPROF env var not set, so defaulting to NYTPROF='$ENV{NYTPROF}'";
     }
 
+    require Devel::NYTProf::Core;
+
+    DB::set_option("endatexit", 1); # for vhost with PerlOption +Parent
+    DB::set_option("addpid", 1);
+
     require Devel::NYTProf;
 }
 
@@ -35,10 +40,10 @@ use constant MP2   => (exists $ENV{MOD_PERL_API_VERSION} && $ENV{MOD_PERL_API_VE
 # https://rt.cpan.org/Ticket/Display.html?id=42862
 die "Threads not supported" if $^O eq 'MSWin32';
 
-# XXX could use ModPerl::Util::current_perl_id() to get more insight
+# help identify MULTIPLICITY issues
 *current_perl_id = (MP2 and eval "require ModPerl::Util")
         ? \&ModPerl::Util::current_perl_id
-        : sub { '0' };
+        : sub { 0+\$$ };
 
 sub trace {
     return unless TRACE;
@@ -53,7 +58,7 @@ sub child_init {
 
 sub child_exit {
     trace("child_exit(@_)") if TRACE;
-    DB::_finish();
+    DB::finish_profile();
 }
 
 # arrange for the profile to be enabled in each child
@@ -64,11 +69,13 @@ if (MP2) {
     # and for normal fork detection to detect the new child.
     # We just need to be sure the profile is finished properly
     # and an END block works well for that (if loaded right, see docs)
-    eval q{ END { child_exit('END') } 1 } or die;
+    # We rely on NYTProf's own END block to finish the profile.
+    #trace("adding child_exit hook") if TRACE;
+    #eval q{ END { child_exit('END') } 1 } or die;
 }
 else {
     # the simple steps for mod_perl2 above might also be fine for mod_perl1
-    # but I'm not in a position to check right now. Perhaps you can help.
+    # but I'm not in a position to check right now. Try it out and let me know.
     require Apache;
     if (Apache->can('push_handlers')) {
         Apache->push_handlers(PerlChildInitHandler => \&child_init);
@@ -108,9 +115,11 @@ warning and default it to:
 
   file=/tmp/nytprof.$$.out
 
+The file actually created by NTProf will also have the process id appended to
+it because the C<addpid> option is enabled by default.
+
 See L<Devel::NYTProf/"ENVIRONMENT VARIABLES"> for 
 more details on the settings effected by this environment variable.
-
 Try using C<PerlPassEnv> so you can set the NYTPROF environment variable externally.
 
 Each profiled mod_perl process will need to have terminated before you can

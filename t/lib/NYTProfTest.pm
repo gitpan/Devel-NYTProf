@@ -10,6 +10,7 @@ use Getopt::Long;
 use Test::More;
 use Data::Dumper;
 use File::Temp qw(tempfile);
+use List::Util qw(shuffle);
 
 use base qw(Exporter);
 our @EXPORT = qw(
@@ -126,10 +127,12 @@ sub mk_opt_combinations {
             }
         }
     }
+    @opt_combinations = shuffle @opt_combinations;
     return \@opt_combinations;
 }
 
 my %env_influence;
+my %env_failed;
 
 
 sub do_foreach_opt_combination {
@@ -160,6 +163,7 @@ sub do_foreach_opt_combination {
         # record what env settings may have influenced the failure
         ++$env_influence{$_}{$env->{$_}}{$failed ? 'fail' : 'pass'}
             for keys %$env;
+        $env_failed{ $ENV{NYTPROF} } = $failed;
     }
 }
 
@@ -184,13 +188,16 @@ sub report_env_influence {
         push @env_influence, sprintf "%15s: %s\n", $envvar,
             join ', ', map { "$_ => $variants->{$_}" } sort keys %$variants;
     }
-    %env_influence = ();
-
     if (@env_influence and not defined wantarray) {
+        push @env_influence, sprintf "%s with %s\n",
+                $env_failed{$_} ? 'FAILED' : 'Passed', $_
+            for sort keys %env_failed;
+
         diag "SUMMARY: Breakdown of $tag test failures by option settings:";
         diag $_ for @env_influence;
     }
 
+    %env_influence = ();
     return @env_influence;
 }
 
@@ -201,6 +208,13 @@ sub run_test_group {
     my $extra_test_code  = $rtg_opts->{extra_test_code};
     my $extra_test_count = $rtg_opts->{extra_test_count} || 0;
     my $extra_options    = $rtg_opts->{extra_options};
+    if ($ENV{NYTPROF_TEST_NOEXTRA}) {
+        diag "NYTPROF_TEST_NOEXTRA - skipping $extra_test_count extra tests"
+            if $extra_test_count;
+        $extra_test_code = undef;
+        $extra_test_count = 0;
+        $extra_options = {};
+    }
 
     # obtain group from file name
     my $group;

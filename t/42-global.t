@@ -15,7 +15,7 @@ my $src_code = join("", <DATA>);
 
 run_test_group( {
     extra_options => { start => 'begin' },
-    extra_test_count => 16,
+    extra_test_count => 15,
     extra_test_code  => sub {
         my ($profile, $env) = @_;
 
@@ -26,13 +26,12 @@ run_test_group( {
         );
         isa_ok $profile, 'Devel::NYTProf::Data';
 
-        my $subs = $profile->subname_subinfo_map;
+        my $subs1 = $profile->subname_subinfo_map;
 
-        my $begin = ($pre589) ? 'main::BEGIN' : 'main::BEGIN@3';
-        is scalar keys %$subs, 3, "should be 3 subs (got @{[ keys %$subs ]})";
-        ok $subs->{$begin};
-        ok $subs->{'main::RUNTIME'};
-        ok $subs->{'main::foo'};
+        my $begin = ($pre589) ? 'main::BEGIN' : 'main::BEGIN@4';
+        ok $subs1->{$begin};
+        ok $subs1->{'main::RUNTIME'};
+        ok $subs1->{'main::foo'};
 
         my @fi = $profile->all_fileinfos;
         is @fi, 1, 'should be 1 fileinfo';
@@ -40,23 +39,32 @@ run_test_group( {
 
         my @a; # ($file, $fid, $first, $last); 
         @a = $profile->file_line_range_of_sub($begin);
-        is "$a[1] $a[2] $a[3]", "$fid 3 6", "details for $begin should match";
+        is "$a[1] $a[2] $a[3]", "$fid 4 7", "details for $begin should match";
         @a = $profile->file_line_range_of_sub('main::RUNTIME');
         is "$a[1] $a[2] $a[3]", "$fid 1 1", 'details for main::RUNTIME should match';
         @a = $profile->file_line_range_of_sub('main::foo');
         is "$a[1] $a[2] $a[3]", "$fid 2 2", 'details for main::foo should match';
 
-        $subs = $profile->subs_defined_in_file($fid);
+        my $subs2 = $profile->subs_defined_in_file($fid);
+
+        is_deeply [ keys %$subs2 ], [ keys %$subs1 ],
+            'keys from subname_subinfo_map and subs_defined_in_file should match';
+
+        my @begins = grep { $_->subname =~ /\bBEGIN\b/ } values %$subs2;
+        if ($pre589) { # we only see one sub and we don't see it called
+            is @begins, 1, 'number of BEGIN subs';
+            is grep({ $_->calls == 1 } @begins), 0, 'BEGIN has no calls';
+        }
+        else {
+            is @begins, 3, 'number of BEGIN subs';
+            is grep({ $_->calls == 1 } @begins), scalar @begins,
+                'all BEGINs should be called just once';
+        }
+
         my $sub;
-        is scalar keys %$subs, 3, 'should be 3 subs';
-        ok $sub = $subs->{$begin};
-        SKIP: {
-            skip "needs perl >= 5.8.9 or >= 5.10.1", 1 if $pre589;
-            is $sub->calls, 1, "$begin should be called 1 time";
-        };
-        ok $sub = $subs->{'main::RUNTIME'};
+        ok $sub = $subs2->{'main::RUNTIME'};
         is $sub->calls, 0, 'main::RUNTIME should be called 0 times';
-        ok $sub = $subs->{'main::foo'};
+        ok $sub = $subs2->{'main::foo'};
         is $sub->calls, 2, 'main::foo should be called 2 times';
 
     },
@@ -65,8 +73,10 @@ run_test_group( {
 __DATA__
 #!perl
 sub foo { 42 }
-BEGIN {
+BEGIN { 'b' } BEGIN { 'c' } # two on same line
+BEGIN { # BEGIN@3
     foo(2);
     *CORE::GLOBAL::sleep = \&foo;
 }
 sleep 1;
+
