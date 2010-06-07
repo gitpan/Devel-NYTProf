@@ -2,9 +2,10 @@ package Devel::NYTProf::FileInfo;    # fid_fileinfo
 
 use strict;
 
+use Carp;
 use List::Util qw(sum max);
 
-use Devel::NYTProf::Util qw(strip_prefix_from_paths);
+use Devel::NYTProf::Util qw(strip_prefix_from_paths trace_level);
 
 use Devel::NYTProf::Constants qw(
     NYTP_FIDf_HAS_SRC NYTP_FIDf_SAVE_SRC NYTP_FIDf_IS_FAKE NYTP_FIDf_IS_PMC
@@ -16,6 +17,7 @@ use Devel::NYTProf::Constants qw(
 
     NYTP_SCi_CALL_COUNT NYTP_SCi_INCL_RTIME NYTP_SCi_EXCL_RTIME NYTP_SCi_RECI_RTIME
     NYTP_SCi_REC_DEPTH NYTP_SCi_CALLING_SUB
+    NYTP_SCi_elements
 );
 
 # extra constants for private elements
@@ -23,8 +25,6 @@ use constant {
     NYTP_FIDi_meta            => NYTP_FIDi_elements + 1,
     NYTP_FIDi_cache           => NYTP_FIDi_elements + 2,
 };
-
-my $trace = (($ENV{NYTPROF}||'') =~ m/\b trace=(\d+) /x) && $1; # XXX a hack
 
 sub filename  { shift->[NYTP_FIDi_FILENAME()] }
 sub eval_fid  { shift->[NYTP_FIDi_EVAL_FID()] }
@@ -68,26 +68,20 @@ sub has_evals {
 }
 
 
+sub sibling_evals {
+    my ($self) = @_;
+    my $parent_fi = $self->eval_fi
+        or return; # not an eval
+    my $eval_line = $self->eval_line;
+    return grep { $_->eval_line == $eval_line } $parent_fi->has_evals;
+}
+
+
 sub _nullify {
     my $self = shift;
     @$self = (); # Zap!
 }
 
-
-sub _delete_eval {
-    my ($self, $eval_fi) = @_;
-
-    my $eval_fis = $self->[NYTP_FIDi_HAS_EVALS()]
-        or return;
-    my $count = @$eval_fis;
-    @$eval_fis = grep { $_ != $eval_fi } @$eval_fis;
-    warn "_delete_eval missed" if @$eval_fis == $count;
-
-    # XXX needs to update NYTP_FIDi_SUBS_DEFINED NYTP_FIDi_SUBS_CALLED
-    # by moving relevant data up to the parent
-
-    return;
-}
 
 
 # return subs defined as list of SubInfo objects
@@ -106,13 +100,23 @@ sub subs_defined_sorted {
 }
 
 sub _remove_sub_defined {
-    my ($self, $subinfo) = @_;
-    delete $self->[NYTP_FIDi_SUBS_DEFINED()]->{$subinfo->subname};
+    my ($self, $si) = @_;
+    my $subname = $si->subname;
+    delete $self->[NYTP_FIDi_SUBS_DEFINED()]->{$subname}
+        or carp sprintf "_remove_sub_defined: sub %s wasn't defined in %d %s",
+            $subname, $self->fid, $self->filename;
 }
 
 sub _add_new_sub_defined {
     my ($self, $subinfo) = @_;
-    $self->[NYTP_FIDi_SUBS_DEFINED()]->{$subinfo->subname} = $subinfo
+    my $subname = $subinfo->subname;
+    my $subs_defined = $self->[NYTP_FIDi_SUBS_DEFINED()] ||= {};
+    my $existing_si = $subs_defined->{$subname};
+    croak sprintf "sub %s already defined in fid %d %s",
+            $subname, $self->fid, $self->filename
+        if $existing_si;
+
+    $subs_defined->{$subname} = $subinfo;
 }
 
 
@@ -139,8 +143,8 @@ sub_call_lines() would return something like:
 
   {
       42 => {
-      'pkg1::foo' => [ 1, 0.02093 ],
-      'pkg1::bar' => [ 1, 0.00154 ],
+        'pkg1::foo' => [ 1, 0.02093 ],
+        'pkg1::bar' => [ 1, 0.00154 ],
       },
   }
 
@@ -261,59 +265,68 @@ sub is_pmc {
 
 
 sub collapse_sibling_evals {
-    my ($self, $survivor, @donors) = @_;
+    my ($self, $survivor_fi, @donors) = @_;
     my $profile = $self->profile;
 
     die "Can't collapse_sibling_evals of non-sibling evals"
-        if grep { $_->eval_fid  != $survivor->eval_fid or
-                  $_->eval_line != $survivor->eval_line
+        if grep { $_->eval_fid  != $survivor_fi->eval_fid or
+                  $_->eval_line != $survivor_fi->eval_line
                 } @donors;
 
-    my $s_ltd = $survivor->line_time_data; # XXX line only
-    my $s_scl = $survivor->sub_call_lines;
+    my $s_ltd = $survivor_fi->line_time_data; # XXX line only
+    my $s_scl = $survivor_fi->sub_call_lines;
 
     for my $donor_fi (@donors) {
-        # copy data from donor to survivor then delete donor
+        # copy data from donor to survivor_fi then delete donor
+
+        warn sprintf "collapse_sibling_evals: processing donor fid %d: %s\n",
+                $donor_fi->fid, $donor_fi->filename
+            if trace_level();
 
         # XXX nested evals not handled yet
-        warn "collapse_sibling_evals: nested evals not handled"
+        warn sprintf "collapse_sibling_evals: nested evals in %s not handled",
+                $donor_fi->filename
             if $donor_fi->has_evals;
 
-        # XXX subs defined not handled yet
-        warn "collapse_sibling_evals: subs defined not handled"
-            if $donor_fi->subs_defined;
+        # for each sub defined in the donor,
+        # move the sub definition to the survivor
+        if (my @subs_defined = $donor_fi->subs_defined) {
 
-        # '1' => { 'main::foo' => [ 1, '1.38e-05', '1.24e-05', ..., { 'main::RUNTIME' => undef } ] }
+            for my $si (@subs_defined) {
+                warn sprintf " - moving from fid %d: sub %s\n",
+                        $donor_fi->fid, $si->subname
+                    if trace_level();
+                $si->_alter_fileinfo($donor_fi, $survivor_fi);
+                warn sprintf " - moving done\n"
+                    if trace_level();
+            }
+        }
+
+        # for each sub call made by the donor,
+        # move the sub calls to the survivor
+        # 1 => { 'main::foo' => [ 1, '1.38e-05', '1.24e-05', ..., { 'main::RUNTIME' => undef } ] }
         if (my $sub_call_lines = $donor_fi->sub_call_lines) {
 
-            my %subnames_called;
+            my %subnames_called_by_donor;
 
             # merge details of subs called from $donor_fi
             while ( my ($line, $sc_hash) = each %$sub_call_lines ) {
                 my $s_sc_hash = $s_scl->{$line} ||= {};
-                while ( my ($subname, $sc_info) = each %$sc_hash ) {
+                for my $subname (keys %$sc_hash ) {
                     my $s_sc_info = $s_sc_hash->{$subname} ||= [];
-                    $subnames_called{$subname}++;
+                    my $sc_info   = delete $sc_hash->{$subname};
+                    Devel::NYTProf::SubInfo::_merge_in_caller_info($s_sc_info, $sc_info,
+                        tag => "line $line calls to $subname",
+                    );
 
-                    if (@$s_sc_info) { # need to merge
-                        $s_sc_info->[$_] += $sc_info->[$_]
-                            for 0..5; # XXX
-                        $s_sc_info->[$_] = max($s_sc_info->[$_], $sc_info->[$_])
-                            for (NYTP_SCi_REC_DEPTH);
-                        $s_sc_info->[NYTP_SCi_CALLING_SUB]->{$_} = undef
-                            for keys %{ $sc_info->[NYTP_SCi_CALLING_SUB] };
-                    }
-                    else {
-                        @$s_sc_info = @$sc_info;
-                    }
+                    $subnames_called_by_donor{$subname}++;
                 }
             }
             %$sub_call_lines = (); # zap
 
-            # update subinfo
-            $profile->subinfo_of($_)->alter_fileinfo($donor_fi, $survivor)
-                for keys %subnames_called;
-
+            # update subinfo (NYTP_SIi_CALLED_BY)
+            $profile->subinfo_of($_)->_alter_called_by_fileinfo($donor_fi, $survivor_fi)
+                for keys %subnames_called_by_donor;
         }
 
         # copy line time data
@@ -323,17 +336,77 @@ sub collapse_sibling_evals {
             my $s_tld_l = $s_ltd->[$line] ||= [];
             $s_tld_l->[$_] += $d_tld_l->[$_] for (0..@$d_tld_l-1);
             warn sprintf "%d:%d: @$s_tld_l from @$d_tld_l fid:%d\n",
-                $survivor->fid, $line, $donor_fi->fid if 0;
+                $survivor_fi->fid, $line, $donor_fi->fid if 0;
         }
 
-        push @{ $survivor->meta->{merged_fids} }, $donor_fi->fid;
-        ++$survivor->meta->{merged_fids_src_varied}
-            if $donor_fi->src_digest ne $survivor->src_digest;
+        push @{ $survivor_fi->meta->{merged_fids} }, $donor_fi->fid;
+        ++$survivor_fi->meta->{merged_fids_src_varied}
+            if $donor_fi->src_digest ne $survivor_fi->src_digest;
 
-        $self->_delete_eval($donor_fi);
+        # remove eval from NYTP_FIDi_HAS_EVALS
+        if (my $eval_fis = $self->[NYTP_FIDi_HAS_EVALS()]) {
+            my $count = @$eval_fis;
+            @$eval_fis = grep { $_ != $donor_fi } @$eval_fis;
+            warn "_delete_eval missed" if @$eval_fis == $count;
+            # XXX needs to update NYTP_FIDi_SUBS_DEFINED NYTP_FIDi_SUBS_CALLED ?
+        }
+
         $donor_fi->_nullify;
     }
-    return $survivor;
+
+    # now the fid merging is complete...
+    # look for any anon subs that are effectively duplicates
+    # (ie have the same name except for eval seqn)
+    # if more than one for any given name we merge them
+    if (my @subs_defined = $survivor_fi->subs_defined_sorted) {
+
+        # bucket anon subs by normalized name
+        my %newname;
+        for my $si (@subs_defined) {
+            next unless $si->is_anon;
+            (my $newname = $si->subname) =~ s/ \( ((?:re_)?) eval \s \d+ \) /(${1}eval 0)/xg;
+            push @{ $newname{$newname} }, $si;
+        }
+
+        while ( my ($newname, $to_merge) = each %newname ) {
+            my $survivor_si = shift @$to_merge;
+            next unless @$to_merge; # nothing to do
+
+            my $survivor_subname = $survivor_si->subname;
+            warn sprintf "collapse_sibling_evals: merging %d subs into %s: %s\n",
+                    scalar @$to_merge, $survivor_subname,
+                    join ", ", map { $_->subname } @$to_merge
+                if trace_level();
+
+            for my $delete_si (@$to_merge) {
+                my $delete_subname = $delete_si->subname;
+
+                # for every file that called this sub, find the lines that made the calls
+                # and change the name to the new sub
+                for my $caller_fid ($delete_si->caller_fids) {
+                    my $caller_fi = $profile->fileinfo_of($caller_fid);
+                    # sub_call_lines ==> { line => { sub => ... } }
+                    for my $subs_called_on_line (values %{ $caller_fi->sub_call_lines }) {
+                        my $sc_info = delete $subs_called_on_line->{$delete_subname}
+                            or next;
+                        my $s_sc_info = $subs_called_on_line->{$survivor_subname} ||= [];
+                        Devel::NYTProf::SubInfo::_merge_in_caller_info($s_sc_info, $sc_info,
+                            tag => "collapse eval $delete_subname",
+                        );
+                    }
+                }
+
+                $survivor_si->merge_in($delete_si);
+                $survivor_fi->_remove_sub_defined($delete_si);
+                $profile->_disconnect_subinfo($delete_si);
+            }
+        }
+    }
+
+    warn sprintf "collapse_sibling_evals done\n"
+        if trace_level();
+
+    return $survivor_fi;
 }
 
 
@@ -402,12 +475,12 @@ sub src_digest {
     return $self->cache->{src_digest} ||= do {
         my $srclines_array = $self->srclines_array || [];
         my $src = join "\n", @$srclines_array;
-        my @key = (
-            scalar @$srclines_array, # number of lines
-            length $src,             # total length
-            unpack("%32C*",$src),    # 32-bit checksum
-        );
-        join ",", @key;
+        # return empty string for digest if there's no src
+        ($src) ? join ",", (
+                    scalar @$srclines_array, # number of lines
+                    length $src,             # total length
+                    unpack("%32C*",$src) )   # 32-bit checksum
+                : '';
     };
 }
 
@@ -466,10 +539,12 @@ sub dump {
     if (not $opts->{skip_internal_details}) {
 
         for my $si ($self->subs_defined_sorted) {
+            my ($fl, $ll) = ($si->first_line, $si->last_line);
+            defined $_ or $_ = 'undef' for ($fl, $ll);
             printf $fh "%s%s%s%s%s%s-%s\n", 
                 $prefix, 'sub', $separator,
                 $si->subname(' and '),  $separator,
-                $si->first_line, $si->last_line;
+                $fl, $ll;
         }
 
         # { line => { subname => [...] }, ... }

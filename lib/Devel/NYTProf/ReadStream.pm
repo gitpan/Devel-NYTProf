@@ -83,7 +83,7 @@ comma before any options.  Example:
 The F<nytprof.out> file contains a sequence of tagged chunks that are
 streamed out as the profiled program runs.  This documents how the
 chunks appear when presented to the callback function of the
-for_chunks() function for version 2.0 and 2.1 of the file format.
+for_chunks() function for version 4.0 of the file format.
 
 I<Note that the chunks and their arguments are liable to change
 between versions as NYTProf evolves.>
@@ -149,9 +149,7 @@ The path to the program that ran; same as C<$0> in the program itself.
 This chunk just say that from now on all chunks have been compressed
 in the file.
 
-=item PID_START => $pid, $parent_pid (v2.0)
-
-=item PID_START => $pid, $parent_pid, $start_time (v2.1)
+=item PID_START => $pid, $parent_pid, $start_time
 
 The process with the given $pid starts running (under the profiler).
 
@@ -165,9 +163,9 @@ to calculate percentages.)
 Files are represented by integers called 'fid' (File IDs) and this chunk declares
 the mapping between these numbers and file path names.
 
-=item TIME_BLOCK => $eval_fid, $eval_line, $ticks, $fid, $line, $block_line, $sub_line
+=item TIME_BLOCK => $ticks, $fid, $line, $block_line, $sub_line
 
-=item TIME_LINE => $eval_fid, $eval_line, $ticks, $fid, $line
+=item TIME_LINE => $ticks, $fid, $line
 
 A TIME_BLOCK or TIME_LINE chunk is output each time the execution of
 the program leaves a statement.
@@ -183,7 +181,7 @@ At the end of the run the profiler will output chunks that report on
 the perl subroutines defined in all the files visited while profiling.
 See also C<%DB::sub> in L<perldebguts>.
 
-=item SUB_CALLERS => $fid, $line, $count, $incl_time, $excl_time, $ucpu_time, $scpu_time, $reci_time, $rec_depth, $name, $caller_name
+=item SUB_CALLERS => $fid, $line, $count, $incl_time, $excl_time, $reci_time, $rec_depth, $name, $caller_name
 
 At the end of the run the profiler will output chunks that report on
 where subroutines were called from.
@@ -194,9 +192,7 @@ Used to capture the source code of the program and modules profiled.
 Currently only used for C<< perl -e '...' >> and C<< perl - >> runs
 and requires use of the C<use_db_sub=1> option.
 
-=item PID_END => $pid (v2.0)
-
-=item PID_END => $pid, $end_time (v2.1)
+=item PID_END => $pid, $end_time
 
 The process with the given $pid is done running.  See the description
 of PID_START above.

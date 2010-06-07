@@ -1,5 +1,5 @@
 # vim: ts=8 sw=2 sts=0 noexpandtab:
-# $Id: HACKING 1250 2010-05-27 21:24:50Z tim.bunce@gmail.com $
+# $Id: HACKING 1279 2010-06-07 15:37:11Z tim.bunce@gmail.com $
 
 HACKING Devel::NYTProf
 ======================
@@ -414,3 +414,19 @@ cases where the call to that sub wasn't recorded (eg pre 5.8.9 or the DBI's
 xs calling optimization) it'll be the most recent sub entry that was recorded.
 
 Generate extra report pages for xsubs in packages that don't have source code.
+
+USE_SITECUSTOMIZE causes two "Unable to determine line number" warnings at start of
+every program:
+  (-e:0)	nextstate
+  Unable to determine line number in -e
+  (-e:0)	gvsv(main::!)
+  (-e:0)	nextstate
+  Unable to determine line number in -e
+  (-e:0)	const(PV("/usr/local/perl512-dev/lib/site_perl/5.12.0/sitecustomize.pl"\0))
+because it unshifts some code onto PL_preambleav (like -M/-V etc):
+"BEGIN { do {local $!; -f '%s/sitecustomize.pl'} && do '%s/sitecustomize.pl' }"
+which toke.c then concats into PL_linestr in the 'PL_preambled' block
+(where PL_perldb, PL_minus_E, PL_minus_n, PL_minus_p are handled).
+Would be nice to find a way to silence the warnings in this case.
+Even better if the profiler could know it was profiling preamble code.
+I can't see an obvious way but I'm fairly clueless re toke.c

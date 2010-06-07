@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Data.pm 1253 2010-05-30 08:30:17Z tim.bunce@gmail.com $
+# $Id: Data.pm 1278 2010-06-07 15:07:31Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -43,18 +43,20 @@ rapidly.
 use warnings;
 use strict;
 
-use Carp;
+use Carp qw(carp croak cluck);
 use Cwd qw(getcwd);
 use Scalar::Util qw(blessed);
 
 use Devel::NYTProf::Core;
 use Devel::NYTProf::FileInfo;
 use Devel::NYTProf::SubInfo;
-use Devel::NYTProf::Util qw(make_path_strip_editor strip_prefix_from_paths get_abs_paths_alternation_regex);
+use Devel::NYTProf::Util qw(
+    make_path_strip_editor strip_prefix_from_paths get_abs_paths_alternation_regex
+    trace_level
+);
 
 our $VERSION = '4.00';
 
-my $trace = (($ENV{NYTPROF}||'') =~ m/\b trace=(\d+) /x) && $1; # XXX a hack
 
 =head2 new
 
@@ -101,13 +103,13 @@ sub new {
     $_ and bless $_ => $sub_class for values %$sub_subinfo;
 
 
-    # find called subs that have no file for
+    # find subs that have calls but no fid
     my @homeless_subs = grep { $_->calls and not $_->fid } values %$sub_subinfo;
     if (@homeless_subs) { # give them a home...
         # currently just the first existing fileinfo
         # XXX ought to create a new dummy fileinfo for them
         my $new_fi = $profile->fileinfo_of(1);
-        $_->alter_fileinfo(undef, $new_fi) for @homeless_subs;
+        $_->_alter_fileinfo(undef, $new_fi) for @homeless_subs;
     }
 
 
@@ -139,6 +141,7 @@ sub collapse_evals_in {
         $profile->collapse_evals_in($fi); # recurse first
         push @{ $evals_on_line{$fi->eval_line} }, $fi;
     }
+
     while ( my ($line, $siblings) = each %evals_on_line) {
 
         next if @$siblings == 1;
@@ -147,13 +150,14 @@ sub collapse_evals_in {
         my %src_keyed;
         for my $fi (@$siblings) {
             my $key = $fi->src_digest;
-            # include extra info to segregate (especially when there's no src)
-            $key .= ',evals' if $fi->has_evals;
-            $key .= ',subs'  if $fi->subs_defined;
+            if (!$key) { # include extra info to segregate when there's no src
+                $key .= ',evals' if $fi->has_evals;
+                $key .= ',subs'  if $fi->subs_defined;
+            }
             push @{$src_keyed{$key}}, $fi;
         }
 
-        if ($trace >= 1) {
+        if (trace_level() >= 1) {
             my @subs  = map { $_->subs_defined } @$siblings;
             my @evals = map { $_->has_evals(0) } @$siblings;
             warn sprintf "%d:%d: has %d sibling evals (subs %d, evals %d, keys %d) in %s; fids: %s\n",
@@ -161,6 +165,16 @@ sub collapse_evals_in {
                     scalar keys %src_keyed,
                     $parent_fi->filename,
                     join(" ", map { $_->fid } @$siblings);
+            if (trace_level() >= 2) {
+                for my $si (@subs) {
+                    warn sprintf "%d:%d evals: define sub %s in fid %s\n",
+                            $parent_fid, $line, $si->subname, $si->fid;
+                }
+                for my $fi (@evals) {
+                    warn sprintf "%d:%d evals: execute eval %s\n",
+                            $parent_fid, $line, $fi->filename;
+                }
+            }
         }
 
         # if 'too many' distinct eval source keys then simply collapse all
@@ -169,20 +183,17 @@ sub collapse_evals_in {
             $parent_fi->collapse_sibling_evals(@$siblings);
         }
         else {
-            # finnese: consider each distinct src in turn
+            # finesse: consider each distinct src in turn
 
             while ( my ($key, $src_same_fis) = each %src_keyed ) {
                 next if @$src_same_fis == 1; # unique src key
                 my @fids = map { $_->fid } @$src_same_fis;
 
-                if (grep { $_->subs_defined } @$src_same_fis) {
-                    warn "evals($key): collapsing skipped due to subs: @fids\n" if $trace >= 3;
-                }
-                elsif (grep { $_->has_evals(0) } @$src_same_fis) {
-                    warn "evals($key): collapsing skipped due to evals: @fids\n" if $trace >= 3;
+                if (grep { $_->has_evals(0) } @$src_same_fis) {
+                    warn "evals($key): collapsing skipped due to evals in @fids\n" if trace_level() >= 3;
                 }
                 else {
-                    warn "evals($key): collapsing identical: @fids\n" if $trace >= 3;
+                    warn "evals($key): collapsing identical: @fids\n" if trace_level() >= 3;
                     my $fi = $parent_fi->collapse_sibling_evals(@$src_same_fis);
                     @$src_same_fis = ( $fi ); # update list in-place
                 }
@@ -200,6 +211,18 @@ sub attributes {
 
 sub subname_subinfo_map {
     return { %{ shift->{sub_subinfo} } }; # shallow copy
+}
+
+sub _disconnect_subinfo {
+    my ($self, $si) = @_;
+    my $subname = $si->subname;
+    my $si2 = delete $self->{sub_subinfo}{$subname};
+    # sanity check
+    carp sprintf "disconnect_subinfo: deleted entry %s %s doesn't match argument %s %s",
+            ($si2) ? ($si2, $si2->subname) : ('undef', 'undef'),
+            $si, $subname
+        if $si2 != $si or $si2->subname ne $subname;
+    # do more?
 }
 
 
@@ -234,7 +257,8 @@ sub package_subinfo_map {
 
     for my $subinfos (values %to_merge) {
         my $subinfo = shift(@$subinfos)->clone;
-        $subinfo->merge_in($_) for @$subinfos;
+        $subinfo->merge_in($_, src_keep => 1)
+            for @$subinfos;
         # replace the many with the one
         @$subinfos = ($subinfo);
     }
@@ -333,12 +357,12 @@ sub subinfo_of {
     my ($self, $subname) = @_;
 
     if (not defined $subname) {
-        carp "Can't resolve subinfo of undef value";
+        cluck "Can't resolve subinfo of undef value";
         return undef;
     }
 
     my $si = $self->{sub_subinfo}{$subname}
-        or warn carp "Can't resolve subinfo of '$subname'";
+        or cluck "Can't resolve subinfo of '$subname'";
 
     return $si;
 }
@@ -703,7 +727,7 @@ sub file_line_range_of_sub {
     return if not $fid; # sub has no known file
 
     my $fileinfo = $fid && $self->fileinfo_of($fid)
-        or die "No fid_fileinfo for sub $sub fid '$fid'\n";
+        or croak "No fid_fileinfo for sub $sub fid '$fid'";
 
     return ($fileinfo->filename, $fid, $first, $last, $fileinfo);
 }

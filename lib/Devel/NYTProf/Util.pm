@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Util.pm 1253 2010-05-30 08:30:17Z tim.bunce@gmail.com $
+# $Id: Util.pm 1275 2010-06-07 14:10:32Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf::Util;
 
@@ -38,6 +38,7 @@ use base qw'Exporter';
 use Carp;
 use Cwd qw(getcwd);
 use List::Util qw(sum);
+use Devel::NYTProf::Core;
 
 our $VERSION = '4.00';
 
@@ -51,6 +52,7 @@ our @EXPORT_OK = qw(
     get_alternation_regex
     get_abs_paths_alternation_regex
     html_safe_filename
+    trace_level
 );
 
 

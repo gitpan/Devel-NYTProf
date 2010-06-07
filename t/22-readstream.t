@@ -38,7 +38,7 @@ is_deeply(\@seqn, [0..@seqn-1], "chunk seq");
 
 #use Data::Dumper; warn Dumper \%prof;
 
-is_deeply $prof{VERSION}, [ [ 3, 0 ] ];
+is_deeply $prof{VERSION}, [ [ 4, 0 ] ];
 
 # check for expected tags
 # (but not START_DEFLATE as that'll be missing if there's no zlib)
@@ -66,5 +66,5 @@ is_deeply $prof{SUB_INFO}, [
 
 $prof{SUB_CALLERS}[0][$_] = 0 for (3,4);
 is_deeply $prof{SUB_CALLERS}, [
-    [ 1, 3, 1, 0, 0, '0', '0', '0', 0, 'main::A', 'main::RUNTIME' ]
+    [ 1, 3, 1, 0, 0, '0', 0, 'main::A', 'main::RUNTIME' ]
 ];

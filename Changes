@@ -2,7 +2,7 @@
 
 Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2010-05-30 09:30:17 +0100 (Sun, 30 May 2010) $ $Revision: 1253 $)
+(As of $Date: 2010-06-07 16:07:31 +0100 (Mon, 07 Jun 2010) $ $Revision: 1278 $)
 
 =cut
 
@@ -14,6 +14,14 @@ add "calls N subs" to treemap mouseover box
 On eval report add links to sibling eval reports
 
 =head2 Changes in Devel::NYTProf 4.00 (svn 1253) 30th May 2010
+
+TODO:
+* Upload new example report and update the link in the docs
+* report should indicate subs that have been merged
+* report totals (evals and subs) should account for things merged away
+  eg perhaps add $si->subs_defined_count() that includes count of merged subs
+* resolve undef warnings from nytprofhtml on (eg) perlcritic of perlcritic
+* document anon sub merging
 
 Major changes:
 
@@ -31,6 +39,9 @@ Major changes:
     such as xsubs in packages with no perl source, are now shown in reports.
 
   Enabled savesrc=1 by default.
+
+  The data file format has changed so v3.x files can't be read.
+  The Devel::NYTProf::ReadStream interface has also changed.
 
 Other changes:
 

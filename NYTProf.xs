@@ -13,7 +13,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 1252 2010-05-30 08:17:44Z tim.bunce@gmail.com $
+ * $Id: NYTProf.xs 1281 2010-06-07 16:41:57Z tim.bunce@gmail.com $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -110,7 +110,7 @@ Perl_gv_fetchfile_flags(pTHX_ const char *const name, const STRLEN namelen, cons
 #define ZLIB_VERSION "0"
 #endif
 
-#define NYTP_FILE_MAJOR_VERSION 3
+#define NYTP_FILE_MAJOR_VERSION 4
 #define NYTP_FILE_MINOR_VERSION 0
 
 #define NYTP_START_NO            0
@@ -1399,12 +1399,13 @@ DB_stmt(pTHX_ COP *cop, OP *op)
              * treats those as 'line 0', so we try not to warn in those cases.
              */
             char *pkg_name = CopSTASHPV(cop);
-            int is_preamble = (PL_scopestack_ix <= 6 && strEQ(pkg_name,"main"));
+            int is_preamble = (PL_scopestack_ix <= 7 && strEQ(pkg_name,"main"));
 
             /* op is null when called via finish_profile called by END */
             if (!is_preamble && op) {
                 /* warn() can't either, in the cases I've encountered */
-                logwarn("Unable to determine line number in %s\n", OutCopFILE(cop));
+                logwarn("Unable to determine line number in %s (ssix%d)\n",
+                    OutCopFILE(cop), (int)PL_scopestack_ix);
                 if (trace_level > 5)
                     do_op_dump(1, PerlIO_stderr(), (OP*)cop);
             }
@@ -3312,8 +3313,6 @@ write_sub_callers(pTHX)
                                    (unsigned int)count,
                                    sc[NYTP_SCi_INCL_RTIME],
                                    sc[NYTP_SCi_EXCL_RTIME],
-                                   0.0, /* NYTP_SCi_spare_3 */
-                                   0.0, /* NYTP_SCi_spare_4 */
                                    sc[NYTP_SCi_RECI_RTIME],
                                    (unsigned int)depth,
                                    called_subname, called_subname_len);
@@ -3491,7 +3490,7 @@ normalize_eval_seqn(pTHX_ SV *sv) {
     char *start = SvPV(sv, len);
     char *first_space;
 
-    return; /* XXX normalize_eval_seqn is currently disabled */
+    return; /* disabled, again */
 
     /* effectively does
        s/(
@@ -3646,10 +3645,10 @@ typedef struct loader_state_profiler {
     unsigned int last_file_num;
     unsigned int last_line_num;
     int statement_discount;
-    int total_stmts_discounted;
-    int total_sub_calls;
-    int total_stmts_measured;
+    UV total_stmts_discounted;
+    UV total_stmts_measured;
     NV total_stmts_duration;
+    UV total_sub_calls;
     AV *fid_line_time_av;
     AV *fid_block_time_av;
     AV *fid_sub_time_av;
@@ -3783,9 +3782,6 @@ load_new_fid_callback(Loader_state_base *cb_data, const nytp_tax_index tag, ...)
     filename_sv = va_arg(args, SV *);
 
     va_end(args);
-
-    if (eval_file_num)
-        normalize_eval_seqn(aTHX_ filename_sv);
 
     if (trace_level >= 2) {
         char buf[80];
@@ -3998,7 +3994,9 @@ load_sub_callers_callback(Loader_state_base *cb_data, const nytp_tax_index tag, 
 
     subinfo_av = lookup_subinfo_av(aTHX_ called_subname_sv, state->sub_subinfo_hv);
 
-    /* { caller_fid => { caller_line => [ count, incl_time, ... ] } } */
+    /* subinfo_av's NYTP_SIi_CALLED_BY element is a hash ref:
+     * { caller_fid => { caller_line => [ count, incl_time, ... ] } }
+     */
     sv = *av_fetch(subinfo_av, NYTP_SIi_CALLED_BY, 1);
     if (!SvROK(sv))                   /* autoviv */
         sv_setsv(sv, newRV_noinc((SV*)newHV()));
@@ -4025,6 +4023,7 @@ load_sub_callers_callback(Loader_state_base *cb_data, const nytp_tax_index tag, 
              */
             logwarn("Merging extra sub caller info for %s called at %d:%d\n",
                     SvPV_nolen(called_subname_sv), fid, line);
+
         av = (AV *)SvRV(sv);
         sv = *av_fetch(av, NYTP_SCi_CALL_COUNT, 1);
         sv_setuv(sv, (SvOK(sv)) ? SvUV(sv) + count : count);
@@ -4041,21 +4040,25 @@ load_sub_callers_callback(Loader_state_base *cb_data, const nytp_tax_index tag, 
         sv = *av_fetch(av, NYTP_SCi_REC_DEPTH,  1);
         if (!SvOK(sv) || SvUV(sv) < rec_depth) /* max() */
             sv_setuv(sv, rec_depth);
-
         /* XXX temp hack way to store calling subname */
         sv = *av_fetch(av, NYTP_SCi_CALLING_SUB, 1);
         if (!SvROK(sv))               /* autoviv */
             sv_setsv(sv, newRV_noinc((SV*)newHV()));
         (void)hv_fetch_ent((HV *)SvRV(sv), caller_subname_sv, 1, 0);
 
-        /* add sub call to NYTP_FIDi_SUBS_CALLED hash of fid making the call */
-        /* => { line => { subname => [ ... ] } } */
+        /* also reference this sub call info array from the calling fileinfo
+         * fi->[NYTP_FIDi_SUBS_CALLED] => { line => { subname => [ ... ] } }
+         */
         fi = SvRV(*av_fetch(state->fid_fileinfo_av, fid, 1));
         fi = *av_fetch((AV *)fi, NYTP_FIDi_SUBS_CALLED, 1);
         fi = *hv_fetch((HV*)SvRV(fi), text, len, 1);
         if (!SvROK(fi))               /* autoviv */
             sv_setsv(fi, newRV_noinc((SV*)newHV()));
         fi = HeVAL(hv_fetch_ent((HV *)SvRV(fi), called_subname_sv, 1, 0));
+        if (1) { /* ref a clone of the sub call info array */
+            AV *av2 = av_make(AvFILL(av)+1, AvARRAY(av));
+            av = av2;
+        }
         sv_setsv(fi, newRV_inc((SV *)av));
     }
     else {                            /* is meta-data about sub */
@@ -4192,13 +4195,13 @@ static struct perl_callback_info_t callback_info[nytp_tag_max] =
     {STR_WITH_LEN("VERSION"), "uu"},
     {STR_WITH_LEN("ATTRIBUTE"), "33"},
     {STR_WITH_LEN("COMMENT"), "3"},
-    {STR_WITH_LEN("TIME_BLOCK"), "00uuuuu"},
-    {STR_WITH_LEN("TIME_LINE"), "00uuu"},
+    {STR_WITH_LEN("TIME_BLOCK"), "uuuuu"},
+    {STR_WITH_LEN("TIME_LINE"), "uuu"},
     {STR_WITH_LEN("DISCOUNT"), ""},
     {STR_WITH_LEN("NEW_FID"), "uuuuuuS"},
     {STR_WITH_LEN("SRC_LINE"), "uuS"},
     {STR_WITH_LEN("SUB_INFO"), "uuus"},
-    {STR_WITH_LEN("SUB_CALLERS"), "uuunn..nuss"},
+    {STR_WITH_LEN("SUB_CALLERS"), "uuunnnuss"},
     {STR_WITH_LEN("PID_START"), "uun"},
     {STR_WITH_LEN("PID_END"), "un"},
     {STR_WITH_LEN("[string]"), NULL},
@@ -4243,25 +4246,11 @@ load_perl_callback(Loader_state_base *cb_data, const nytp_tax_index tag, ...)
 
     while ((type = *arglist++)) {
         switch(type) {
-        case '0':
-        {
-            /* These really should go, but need a flag day change in 
-               documented callback API.  */
-            sv_setuv(cb_args[i], 0);
-            XPUSHs(cb_args[i++]);
-            break;
-        }
         case 'u':
         {
             unsigned int u = va_arg(args, unsigned int);
 
             sv_setuv(cb_args[i], u);
-            XPUSHs(cb_args[i++]);
-            break;
-        }
-        case '.':
-        {
-            sv_setnv(cb_args[i], 0.0);
             XPUSHs(cb_args[i++]);
             break;
         }
@@ -4385,7 +4374,7 @@ load_profile_data_from_stream(loader_callback *callbacks,
             croak("NYTProf data format error while reading header");
         if (2 != sscanf(buffer, "NYTProf %d %d\n", &file_major, &file_minor))
             croak("NYTProf data format error while parsing header");
-        if (file_major != 3)
+        if (file_major != NYTP_FILE_MAJOR_VERSION)
             croak("NYTProf data format version %d.%d is not supported by NYTProf %s (which expects version %d.%d)",
                 file_major, file_minor, XS_VERSION, NYTP_FILE_MAJOR_VERSION, NYTP_FILE_MINOR_VERSION);
 
@@ -4481,10 +4470,6 @@ load_profile_data_from_stream(loader_callback *callbacks,
                 SV *subname_sv = read_str(aTHX_ in, tmp_str1_sv);
                 unsigned int first_line = read_int(in);
                 unsigned int last_line  = read_int(in);
-                int extra_items = read_int(in);
-
-                while (extra_items-- > 0)
-                    (void)read_int(in);
 
                 callbacks[nytp_sub_info](state, nytp_sub_info, fid,
                                          first_line, last_line, subname_sv);
@@ -4499,14 +4484,9 @@ load_profile_data_from_stream(loader_callback *callbacks,
                 unsigned int count = read_int(in);
                 NV incl_time       = read_nv(in);
                 NV excl_time       = read_nv(in);
-                NV spare_3         = read_nv(in);
-                NV spare_4         = read_nv(in);
                 NV reci_time       = read_nv(in);
                 unsigned int rec_depth = read_int(in);
                 SV *called_subname_sv = read_str(aTHX_ in, tmp_str1_sv);
-
-                PERL_UNUSED_VAR(spare_3);
-                PERL_UNUSED_VAR(spare_4);
 
                 callbacks[nytp_sub_callers](state, nytp_sub_callers, fid,
                                             line, count, incl_time, excl_time,
@@ -4678,9 +4658,9 @@ load_profile_to_hv(pTHX_ NYTP_file in)
         }
 
         if (show_summary_stats)
-            logwarn("Summary: statements profiled %d (%d-%d), sum of time %"NVff"s, profile spanned %"NVff"s\n",
-                state.total_stmts_measured - state.total_stmts_discounted,
-                state.total_stmts_measured, state.total_stmts_discounted,
+            logwarn("Summary: statements profiled %lu (=%lu-%lu), sum of time %"NVff"s, profile spanned %"NVff"s\n",
+                (unsigned long)(state.total_stmts_measured - state.total_stmts_discounted),
+                (unsigned long)state.total_stmts_measured, (unsigned long)state.total_stmts_discounted,
                 state.total_stmts_duration,
                 state.profiler_end_time - state.profiler_start_time);
     }
@@ -4859,6 +4839,16 @@ BOOT:
 }
 
 
+MODULE = Devel::NYTProf     PACKAGE = Devel::NYTProf::Util
+
+PROTOTYPES: DISABLE
+
+void
+trace_level()
+   PPCODE: 
+   XSRETURN_IV(trace_level);
+
+
 MODULE = Devel::NYTProf     PACKAGE = Devel::NYTProf::Test
 
 PROTOTYPES: DISABLE
@@ -4908,8 +4898,8 @@ CODE:
     PERL_UNUSED_VAR(items);
     if (opt_use_db_sub)
         DB_stmt(aTHX_ NULL, PL_op);
-    else if (1||trace_level)
-        logwarn("DB called needlessly\n");
+    else
+        logwarn("DB::DB called unexpectedly\n");
 
 void
 set_option(const char *opt, const char *value)
