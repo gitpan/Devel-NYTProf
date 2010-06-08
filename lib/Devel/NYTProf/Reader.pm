@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: Reader.pm 1276 2010-06-07 14:15:27Z tim.bunce@gmail.com $
+## $Id: Reader.pm 1290 2010-06-08 22:30:13Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf::Reader;
 
@@ -163,6 +163,7 @@ sub current_level {
 
 sub fname_for_fileinfo {
     my ($self, $fi, $level) = @_;
+    confess "No fileinfo" unless $fi;
     $level ||= $self->current_level;
 
     my $fname = html_safe_filename($fi->filename_without_inc);
@@ -357,6 +358,9 @@ sub _generate_report {
                 # code returned by a CODE ref in @INC
                 $msg = "No source code available for 'file' loaded via CODE reference in \@INC.\nSee savesrc option in documentation.",
             }
+            elsif (not $fi->is_file) {
+                $msg = "No source code available for non-file '$filestr'.\nSee savesrc option in documentation.",
+            }
             else {
 
                 # the report will not be complete, but this doesn't need to be fatal
@@ -451,9 +455,7 @@ sub _generate_report {
             $LINE++;
         }
 
-        if (my $line_sub = $self->{mk_report_separator_line}) {
-            print OUT $line_sub->($profile, $fi);
-        }
+        my $separator_sub = $self->{mk_report_separator_line};
 
         # iterate over xsubs 
         $line_sub = $self->{mk_report_xsub_line}
@@ -465,6 +467,11 @@ sub _generate_report {
 
             next if $kind eq 'perl';
             next if $subinfo->calls == 0;
+
+            if ($separator_sub) {
+                print OUT $separator_sub->($profile, $fi);
+                undef $separator_sub; # do mk_report_separator_line just once
+            }
 
             print OUT $line_sub->(
                 $subname,
@@ -484,6 +491,7 @@ sub _generate_report {
 
 sub url_for_file {
     my ($self, $file, $anchor, $level) = @_;
+    confess "No file specified" unless $file;
 
     my $fi = $self->{profile}->fileinfo_of($file);
     #return "" if $fi->is_fake;

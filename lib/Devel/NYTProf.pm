@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 1253 2010-05-30 08:30:17Z tim.bunce@gmail.com $
+## $Id: NYTProf.pm 1286 2010-06-07 22:14:07Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf;
 
@@ -619,7 +619,7 @@ Nested string evals can give rise to file names like
 
 	(eval 1047)[(eval 93)[/foo/bar.pm:42]:17]
 
-=head3 Collapsing
+=head3 Merging Evals
 
 Some applications execute a great many string eval statements. If NYTProf generated
 a report page for each one it would not only slow report generation but also
@@ -627,24 +627,36 @@ make the overall report less useful by scattering performance data too widely.
 On the other hand, being able to see the actual source code executed by an
 eval, along with the timing details, is often I<very> useful.
 
-To try to balance these conflicting needs, NYTProf currently I<collapses
+To try to balance these conflicting needs, NYTProf currently I<merges
 uninteresting string eval siblings>.
 
 What does that mean? Well, for each source code line that executed any string
-evals NYTProf first gathers the corresponding eval 'files' (the siblings) into groups.
-Lines containing a string eval statement that only executed once aren't affected.
-The groups are keyed by source code (if available) and whether any subroutines
-were defined or any nested string evals were executed.
+evals, NYTProf first gathers the corresponding eval 'files' for that line
+(known as the 'siblings') into groups keyed by distinct source code.
 
-Then, for each of those groups of siblings, NYTProf will 'collapse' a group
-that shares the same source code and doesn't define any subs or execute any
-string evals.  Collapsing means to pick one sibling as the survivor and merge
-and delete all the data from the others into it.
+Then, for each of those groups of siblings, NYTProf will 'merge' a group
+that shares the same source code and doesn't execute any string evals itself.
+Merging means to pick one sibling as the survivor and merge and delete all
+the data from the others into it.
 
 If there are a large number of sibling groups then the data for all of them are
-collapsed into one regardless.
+merged into one regardless.
 
-The report annotations will indicate when evals have been collapsed together.
+The report annotations will indicate when evals have been merged together.
+
+=head3 Merging Anonymous Subroutines
+
+Anonymous subroutines defined within string evals have names like this:
+
+	main::__ANON__[(eval 75)[/foo/bar.pm:42]:12]
+
+That anonymous subroutine was defined on line 12 of the source code executed by
+the string eval on line 42 of F</foo/bar.pm>. That was the 75th string eval
+executed by the program.
+
+Anonymous subroutines I<defined on the same line of sibling evals that get
+merged> are also merged. That is, the profile information is merged into
+one and the others are discarded.
 
 =head3 Timing
 
@@ -866,22 +878,19 @@ This section lists other clock sources that NYTProf may use.
 =head3 gettimeofday
 
 This is the traditional high resolution time of day interface for most
-unix-like systems. It's used on platforms like Mac OS X which don't
-(yet) support C<clock_gettime()>.
+unix-like systems.  With this clock NYTProf outputs timings as a count of 1
+microsecond ticks.
 
-With this clock NYTProf outputs timings as a count of 1 microsecond ticks.
+=head3 mach_absolute_time
 
-=for comment re high resolution timing for OS X:
-http://developer.apple.com/qa/qa2004/qa1398.html
-http://www.macresearch.org/tutorial_performance_and_time
-http://cocoasamurai.blogspot.com/2006/12/tip-when-you-must-be-precise-be-mach.html
-http://boredzo.org/blog/archives/2006-11-26/how-to-use-mach-clocks
+On Mac OS X the mach_absolute_time() function is used. With this clock NYTProf
+outputs timings as a count of 100 nanosecond ticks.
 
 =head3 Time::HiRes
 
-On systems which don't support C<clock_gettime()> or C<gettimeofday()>
-NYTProf falls back to using the L<Time::HiRes> module.
-With this clock NYTProf outputs timings as a count of 1 microsecond ticks.
+On systems which don't support other clocks, NYTProf falls back to using the
+L<Time::HiRes> module.  With this clock NYTProf outputs timings as a count of 1
+microsecond ticks.
 
 =head2 Clock References
 
@@ -995,7 +1004,7 @@ L<http://blog.timbunce.org/2008/07/16/nytprof-v2-the-background-story/>.
 
 Mailing list and discussion at L<http://groups.google.com/group/develnytprof-dev>
 
-Blog posts L<http://blog.timbunce.org/tag/nytprof/> and L<http://technorati.com/search/nytprof>
+Blog posts L<http://blog.timbunce.org/tag/nytprof/>
 
 Public SVN Repository and hacking instructions at L<http://code.google.com/p/perl-devel-nytprof/>
 
