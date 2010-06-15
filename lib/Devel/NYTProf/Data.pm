@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Data.pm 1278 2010-06-07 15:07:31Z tim.bunce@gmail.com $
+# $Id: Data.pm 1297 2010-06-10 10:24:38Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -55,7 +55,7 @@ use Devel::NYTProf::Util qw(
     trace_level
 );
 
-our $VERSION = '4.00';
+our $VERSION = '4.01';
 
 
 =head2 new

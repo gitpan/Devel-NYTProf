@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ##########################################################
-# $Id: nytprofcsv 1253 2010-05-30 08:30:17Z tim.bunce@gmail.com $
+# $Id: nytprofcsv 1297 2010-06-10 10:24:38Z tim.bunce@gmail.com $
 ##########################################################
 
 use warnings;
@@ -18,7 +18,7 @@ use Getopt::Long;
 
 use Devel::NYTProf::Reader;
 
-our $VERSION = '4.00';
+our $VERSION = '4.01';
 
 use constant NUMERIC_PRECISION => 5;
 
@@ -195,7 +195,7 @@ Print the help message
  0,0,0,#--------------------------------------------------------------------
  0,0,0,# My New Source File!
  0,0,0,#--------------------------------------------------------------------
- 0,0,0,# $Id: nytprofcsv 1253 2010-05-30 08:30:17Z tim.bunce@gmail.com $
+ 0,0,0,# $Id: nytprofcsv 1297 2010-06-10 10:24:38Z tim.bunce@gmail.com $
  0,0,0,#--------------------------------------------------------------------
  0,0,0,
  0,0,0,package NYT::Feeds::Util;
