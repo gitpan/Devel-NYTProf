@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: Reader.pm 1307 2010-06-16 23:13:04Z tim.bunce@gmail.com $
+## $Id: Reader.pm 1309 2010-06-17 14:50:32Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf::Reader;
 
@@ -202,8 +202,7 @@ sub _generate_report {
         if ($opts{show_progress}) {
             local $| = 1;
             ++$progress;
-            print ("\b" x 20);
-            printf " %d%% ...", $progress/@fis*100;
+            printf "\r %d%% ... ", $progress/@fis*100;
         }
 
         my $meta = $fi->meta;
