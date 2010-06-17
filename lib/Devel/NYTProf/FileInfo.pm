@@ -175,9 +175,7 @@ sub evals_by_line {
     # { line => { fid_of_eval_at_line => $fi, ... } }
 
     my %evals_by_line;
-    my $fid = $self->fid;
-    for my $fi ($self->profile->all_fileinfos) {
-        next unless (($fi->eval_fid || 0) == $fid);
+    for my $fi ($self->has_evals) {
         $evals_by_line{ $fi->eval_line }->{ $fi->fid } = $fi;
     }
 
@@ -283,7 +281,7 @@ sub collapse_sibling_evals {
 
         warn sprintf "collapse_sibling_evals: processing donor fid %d: %s\n",
                 $donor_fi->fid, $donor_fi->filename
-            if trace_level();
+            if trace_level() >= 3;
 
         # XXX nested evals not handled yet
         warn sprintf "collapse_sibling_evals: nested evals in %s not handled",
@@ -297,10 +295,10 @@ sub collapse_sibling_evals {
             for my $si (@subs_defined) {
                 warn sprintf " - moving from fid %d: sub %s\n",
                         $donor_fi->fid, $si->subname
-                    if trace_level();
+                    if trace_level() >= 4;
                 $si->_alter_fileinfo($donor_fi, $survivor_fi);
                 warn sprintf " - moving done\n"
-                    if trace_level();
+                    if trace_level() >= 4;
             }
         }
 
@@ -378,7 +376,7 @@ sub collapse_sibling_evals {
             warn sprintf "collapse_sibling_evals: merging %d subs into %s: %s\n",
                     scalar @$to_merge, $survivor_subname,
                     join ", ", map { $_->subname } @$to_merge
-                if trace_level();
+                if trace_level() >= 3;
 
             for my $delete_si (@$to_merge) {
                 my $delete_subname = $delete_si->subname;
@@ -405,8 +403,8 @@ sub collapse_sibling_evals {
         }
     }
 
-    warn sprintf "collapse_sibling_evals done\n"
-        if trace_level();
+    warn sprintf "collapse_sibling_evals done for ".$survivor_fi->filename."\n"
+        if trace_level() >= 2;
 
     return $survivor_fi;
 }

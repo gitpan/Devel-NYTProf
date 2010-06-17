@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Util.pm 1275 2010-06-07 14:10:32Z tim.bunce@gmail.com $
+# $Id: Util.pm 1306 2010-06-16 23:07:50Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf::Util;
 
@@ -96,12 +96,18 @@ sub make_path_strip_editor {
     my @inc = @$inc_ref
         or return;
 
-    my $inc_regex = get_abs_paths_alternation_regex(\@inc);
+    our %make_path_strip_editor_cache;
+    my $key = join "\t", $anchor, $replacement, @inc;
 
-    # anchor at start, capture anchor
-    $inc_regex = qr{($anchor)$inc_regex};
+    return $make_path_strip_editor_cache{$key} ||= do {
 
-    return sub { $_[0] =~ s{$inc_regex}{$1$replacement} };
+        my $inc_regex = get_abs_paths_alternation_regex(\@inc);
+
+        # anchor at start, capture anchor
+        $inc_regex = qr{($anchor)$inc_regex};
+
+        sub { $_[0] =~ s{$inc_regex}{$1$replacement} };
+    };
 }
 
 

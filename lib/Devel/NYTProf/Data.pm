@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Data.pm 1297 2010-06-10 10:24:38Z tim.bunce@gmail.com $
+# $Id: Data.pm 1305 2010-06-16 23:02:00Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -55,7 +55,7 @@ use Devel::NYTProf::Util qw(
     trace_level
 );
 
-our $VERSION = '4.01';
+our $VERSION = '4.02';
 
 
 =head2 new
@@ -87,6 +87,8 @@ sub new {
     );
 
     return undef if $args->{callback};
+
+    print "Processing $file data\n" unless $args->{quiet};
 
     bless $profile => $class;
 
@@ -157,7 +159,7 @@ sub collapse_evals_in {
             push @{$src_keyed{$key}}, $fi;
         }
 
-        if (trace_level() >= 1) {
+        if (trace_level() >= 2) {
             my @subs  = map { $_->subs_defined } @$siblings;
             my @evals = map { $_->has_evals(0) } @$siblings;
             warn sprintf "%d:%d: has %d sibling evals (subs %d, evals %d, keys %d) in %s; fids: %s\n",

@@ -2,7 +2,7 @@
 
 Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2010-06-10 11:24:38 +0100 (Thu, 10 Jun 2010) $ $Revision: 1297 $)
+(As of $Date: 2010-06-17 00:13:04 +0100 (Thu, 17 Jun 2010) $ $Revision: 1307 $)
 
 =cut
 
@@ -11,6 +11,13 @@ TODO soonish
 subroutine profiler docs need update
 add u key to treemap to trigger moving 'up' a level
 add "calls N subs" to treemap mouseover box
+
+=head2 Changes in Devel::NYTProf 4.02 (svn 1309) 17th June 2010
+
+  Fixed nytprofhtml performance problem for profiles with
+    many files/evals.
+
+  Added progress reporting to nytprofhtml.
 
 =head2 Changes in Devel::NYTProf 4.01 (svn 1296) 10th June 2010
 
