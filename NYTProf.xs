@@ -13,7 +13,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 1290 2010-06-08 22:30:13Z tim.bunce@gmail.com $
+ * $Id: NYTProf.xs 1323 2010-07-07 17:05:28Z tim.bunce@gmail.com $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -329,6 +329,7 @@ static unsigned int last_executed_fid;
 static        char *last_executed_fileptr;
 static unsigned int last_block_line;
 static unsigned int last_sub_line;
+static bool         last_sawampersand;
 static unsigned int is_profiling;       /* disable_profile() & enable_profile() */
 static Pid_t last_pid;
 static NV cumulative_overhead_ticks = 0.0;
@@ -374,6 +375,15 @@ static OP *pp_leave_profiler(pTHX);
 static HV *sub_callers_hv;
 static HV *pkg_fids_hv;     /* currently just package names */
 
+#define CHECK_SAWAMPERSAND(fid,line) STMT_START { \
+    if (PL_sawampersand != last_sawampersand) { \
+        if (trace_level >= 1) \
+            logwarn("Slow regex match variable seen (first noted at %u:%u)\n", fid, line); \
+        NYTP_write_sawampersand(out, fid, line); \
+        last_sawampersand = PL_sawampersand; \
+    } \
+} STMT_END
+
 /* macros for outputing profile data */
 #ifndef HAS_GETPPID
 #define getppid() 0
@@ -392,6 +402,11 @@ logwarn(const char *pat, ...)
     if (!logfh)
         logfh = stderr;
     vfprintf(logfh, pat, args);
+    /* Flush to ensure the log message gets pushed out to the kernel.
+     * This flush will be expensive but is needed to ensure the log has recent info
+     * if there's a core dump. Could add an option to disable flushing if needed.
+     */
+    fflush(logfh);
     va_end(args);
 }
 
@@ -1370,6 +1385,8 @@ DB_stmt(pTHX_ COP *cop, OP *op)
         logwarn("profile time overflow of %ld seconds discarded!\n", overflow);
 
     reinit_if_forked(aTHX);
+
+    CHECK_SAWAMPERSAND(last_executed_fid, last_executed_line);
 
     if (last_executed_fid) {
         if (profile_blocks)
@@ -2416,8 +2433,10 @@ pp_subcall_profiler(pTHX_ int is_slowop)
         return run_original_op(op_type);
     }
 
-    if (!profile_stmts)
+    if (!profile_stmts) {
         reinit_if_forked(aTHX);
+        CHECK_SAWAMPERSAND(last_executed_fid, last_executed_line);
+    }
 
     if (trace_level >= 99) {
         logwarn("profiling a call [op %ld, %s, seix %d]\n",
@@ -2950,6 +2969,12 @@ init_profiler(pTHX)
     if (!PL_checkav) PL_checkav = newAV();
     if (!PL_initav)  PL_initav  = newAV();
     if (!PL_endav)   PL_endav   = newAV();
+    /* pre-extend PL_endav to reduce the chance of DB::_END realloc'ing
+     * it while END blocks are executed (which could upset some embedded
+     * applications that don't handle PL_endav carefully, like mod_perl)
+     */
+    av_extend(PL_endav, av_len(PL_endav)+30);
+
     if (profile_start == NYTP_START_BEGIN) {
         enable_profile(aTHX_ NULL);
     } else {
@@ -3202,7 +3227,7 @@ write_sub_line_ranges(pTHX)
     }
 
     if (trace_level >= 1)
-        logwarn("~ writing sub line ranges of %ld subs\n", HvKEYS(hv));
+        logwarn("~ writing sub line ranges of %ld subs\n", (long)HvKEYS(hv));
 
     /* Iterate over PL_DBsub writing out fid and source line range of subs.
      * If filename is missing (i.e., because it's an xsub so has no source file)
@@ -3259,7 +3284,7 @@ write_sub_callers(pTHX)
     if (!sub_callers_hv)
         return;
     if (trace_level >= 1)
-        logwarn("~ writing sub callers for %ld subs\n", HvKEYS(sub_callers_hv));
+        logwarn("~ writing sub callers for %ld subs\n", (long)HvKEYS(sub_callers_hv));
 
     hv_iterinit(sub_callers_hv);
     while (NULL != (fid_line_rvhv = hv_iternextsv(sub_callers_hv, &called_subname, &called_subname_len))) {
@@ -4947,6 +4972,7 @@ _INIT()
         av_unshift(PL_endav, 1);  /* we want to be first */
         av_store(PL_endav, 0, SvREFCNT_inc(enable_profile_sv));
     }
+    av_extend(PL_endav, av_len(PL_endav)+20); /* see PL_endav in init_profiler() */
     if (trace_level >= 1)
         logwarn("~ INIT done\n");
 

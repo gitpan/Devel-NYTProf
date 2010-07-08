@@ -7,7 +7,7 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ##########################################################
-# $Id: nytprofhtml 1316 2010-06-19 18:56:26Z tim.bunce@gmail.com $
+# $Id: nytprofhtml 1328 2010-07-08 11:43:08Z tim.bunce@gmail.com $
 ###########################################################
 use warnings;
 use strict;
@@ -43,7 +43,7 @@ use Devel::NYTProf::Constants qw(NYTP_SCi_CALLING_SUB);
 my $json_any = eval { require JSON::Any; JSON::Any->import; JSON::Any->new }
     or warn "Can't load JSON::Any module - HTML visualizations skipped.\n";
 
-our $VERSION = '4.03';
+our $VERSION = '4.04';
 
 if ($VERSION != $Devel::NYTProf::Core::VERSION) {
     die "$0 version '$VERSION' doesn't match version '$Devel::NYTProf::Core::VERSION' of $INC{'Devel/NYTProf/Core.pm'}\n";
@@ -184,11 +184,36 @@ $reporter->set_param(
 
 $reporter->set_param(
     'taintmsg',
-    qq{<div class="warn_title">WARNING!</div>\n
+    qq{<br /><div class="warn_title">WARNING!</div>\n
 <div class="warn">The source file used to generate this report was modified
 after the profiler data was generated.
 The data might be out of sync with the modified source code so you should regenerate it.
-Meanwhile, the data on this page might not make much sense!</div><br />\n}
+Meanwhile, the data on this page might not make much sense!</div>\n}
+);
+
+$reporter->set_param(
+    'sawampersand',
+    sub {
+        my ($profile, $fi) = @_;
+        my $line = $profile->{attribute}{sawampersand_line};
+        return qq{<br /><div class="warn_title">NOTE!</div>\n
+<div class="warn"><p>While profiling this file Perl noted the use of one or more special
+variables that impact the performance of <i>all</i> regular expressions in the program.</p>
+
+<p>Use of the "<tt>\$`</tt>", "<tt>\$&</tt>", and "<tt>\$'</tt>" variables should be replaced with faster alternatives.
+See the WARNING at the end of the <a href="http://perldoc.perl.org/perlre.html#Capture-buffers">
+Capture Buffers section of the perlre documentation</a>.</p>
+
+<p>The use is detected by perl at compile time but by NYTProf during execution.
+NYTProf first noted it when executing <a href="#$line">line $line</a>.
+That was probably the first statement executed by the program after perl
+compiled the code containing the variables.
+If the variables can't be found by studying the source code, try using the
+<a href="http://search.cpan.org/perldoc?Devel::FindAmpersand">Devel::FindAmpersand</a>
+module.</p>
+
+</div>\n}
+    }
 );
 
 $reporter->set_param(
@@ -571,7 +596,7 @@ sub report_src_line {
             $html .= sprintf qq{, avg %s/call}, fmt_time(($incl_time+$reci_time) / $count),
                 if $count > 1;
             if ($rec_depth) {
-                $html .= sprintf qq{, recursion: max depth %d, time %s},
+                $html .= sprintf qq{, recursion: max depth %d, sum of overlapping time %s},
                     $rec_depth, fmt_time($reci_time);
             }
             $html;
@@ -1271,6 +1296,8 @@ sub output_file_table {
     my $allTimes = $profile->{attribute}{total_stmts_duration};
     my $allCalls = $profile->{attribute}{total_stmts_measured}
                  - $profile->{attribute}{total_stmts_discounted};
+    # file in which sawampersand was noted during profiling
+    my $sawampersand_fi = $profile->fileinfo_of($profile->{attribute}{sawampersand_fid}, 1);
 
     my (@t_stmt_exec, @t_stmt_time);
     my @fis = $profile->noneval_fileinfos;
@@ -1280,16 +1307,17 @@ sub output_file_table {
     
     foreach my $fi (@fis) {
         my $meta = $fi->meta;
+        my $fid = $fi->fid;
         my @extra;
+        my $css_class = 'index';
 
         # The stats in this table include rolled up sums of nested evals.
 
-        my @has_evals = $fi->has_evals(1);
         my ($eval_stmts, $eval_time) = (0,0);
-        if (@has_evals) {
+        if (my @has_evals = $fi->has_evals(1)) {
             my $n_evals = scalar @has_evals;
             my $msg = sprintf "including %d string eval%s", $n_evals, ($n_evals>1) ? "s" : "";
-            if (my @nested = grep { $_->eval_fid != $fi->fid } @has_evals) {
+            if (my @nested = grep { $_->eval_fid != $fid } @has_evals) {
                 $msg .= sprintf ": %d direct plus %d nested",
                     $n_evals-@nested, scalar @nested;
             }
@@ -1297,8 +1325,16 @@ sub output_file_table {
             $eval_stmts = sum(map { $_->sum_of_stmts_count } @has_evals);
             $eval_time  = sum(map { $_->sum_of_stmts_time  } @has_evals);
         }
+        # is this file one where we sawampersand (or contains an eval that is)?
+        if ($sawampersand_fi && $fi == ($sawampersand_fi->outer || $sawampersand_fi)) {
+            my $in_eval = ($fi == $sawampersand_fi)
+                ? 'here'
+                : sprintf q{<a %s>in eval here</a>}, $reporter->href_for_file($sawampersand_fi, undef, 'line');
+            push @extra, sprintf qq{variables that impact regex performance for whole application seen $in_eval},
+            $css_class = "warn $css_class";
+        }
 
-        print $fh qq{<tr class="index">};
+        print $fh qq{<tr class="$css_class">};
 
         my $stmts = $meta->{'calls'} + $eval_stmts;
         print $fh determine_severity($stmts,     undef, 0,
@@ -1321,7 +1357,7 @@ sub output_file_table {
 
         print $fh sprintf q{<td><a name="f%s" title="%s">%s</a> %s</td>},
             $fi->fid, $fi->abs_filename, $fi->filename_without_inc,
-            (@extra) ? sprintf("(%s)", join ", ", @extra) : "";
+            (@extra) ? sprintf("(%s)", join "; ", @extra) : "";
         print $fh "</tr>\n";
     }
     print $fh "</tbody>\n";

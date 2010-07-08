@@ -1,4 +1,5 @@
 use strict 0.1;   # use UNIVERSAL::VERSION
+use English;      # demo detection of $& et al
 use Benchmark;
 use File::Find;
 
@@ -28,6 +29,7 @@ sub inc {
     # With all line profilers except NYTProf, the time for that expression gets
     # assigned to the previous statement, i.e., the last statement executed in foo()!
     foo() && 'aaaaaaaaaaa' =~ /((a{0,5}){0,5})*[c]/;
+
     1;
 }
 
