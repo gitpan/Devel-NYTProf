@@ -2,24 +2,18 @@
 
 Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2010-07-08 12:43:08 +0100 (Thu, 08 Jul 2010) $ $Revision: 1328 $)
+(As of $Date: 2010-07-09 14:06:43 +0100 (Fri, 09 Jul 2010) $ $Revision: 1332 $)
 
 =cut
 
-TODO soonish
+=head2 Changes in Devel::NYTProf 4.04 (svn 1332) 9th July 2010
 
-subroutine profiler docs need update
-add u key to treemap to trigger moving 'up' a level
-add "calls N subs" to treemap mouseover box
-
-=head2 Changes in Devel::NYTProf 4.04
-
-  Profile records presence of the slow regex match vars ($& $' $`).
-  The cumulative inclusive time measured for subs that are involved in
-    recursion is now reported as 'recursion: ... sum of overlapping time'.
+  Profile now reports presence of the slow regex match vars ($& $' $`).
+  The (cumulative inclusive) recursion time measured for subs that are involved
+    in recursion is now reported as 'recursion: ... sum of overlapping time'.
   Trace log messages are now flushed immediately.
   Reduced risk of crashes in embedded applications that don't handle PL_endav
-    carefully, like mod_perl.
+    carefully, like current versions of mod_perl.
 
 =head2 Changes in Devel::NYTProf 4.03 (svn 1316) 19th June 2010
 
@@ -161,7 +155,7 @@ Documentation Changes:
     perl opcodes (e.g., system calls and regexs). They're treated like xsubs.
     slowops=0 disables profiling of 'slowops'
     slowops=1 puts timings into one package ("CORE::", eg CORE::sleep)
-    slowops=2 (the defaut) puts timings into into the package that made the
+    slowops=2 (the default) puts timings into into the package that made the
     call, e.g., "Foo::CORE:sleep" (note the single colon).
 
   Added sigexit=1 option to enable a useable profile when the process
@@ -221,7 +215,7 @@ Changes to nytprofhtml:
     http://code.google.com/p/perl-devel-nytprof/issues/detail?id=15
   Fixed to use correct scripts during test and so avoid permissions
     issues, thanks to David Golden.
-  Fixed suprious "Unable to determine line number" warnings
+  Fixed spurious "Unable to determine line number" warnings
     when using options like -p, -n, -Mfoo.
 
   Changed enable_profile() to discard the time spent since

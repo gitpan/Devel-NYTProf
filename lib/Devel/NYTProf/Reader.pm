@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: Reader.pm 1327 2010-07-08 11:14:31Z tim.bunce@gmail.com $
+## $Id: Reader.pm 1329 2010-07-08 14:10:06Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf::Reader;
 
