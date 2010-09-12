@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               Devel-NYTProf
-version:            4.04
+version:            4.05
 abstract:           Powerful fast feature-rich perl source code profiler
 author:
     - Adam Kaplan <akaplan@cpan.org>, Tim Bunce <timb@cpan.org>

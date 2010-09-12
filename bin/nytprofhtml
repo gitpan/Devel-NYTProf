@@ -7,7 +7,7 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ##########################################################
-# $Id: nytprofhtml 1329 2010-07-08 14:10:06Z tim.bunce@gmail.com $
+# $Id: nytprofhtml 1343 2010-09-12 11:13:23Z tim.bunce@gmail.com $
 ###########################################################
 use warnings;
 use strict;
@@ -43,7 +43,7 @@ use Devel::NYTProf::Constants qw(NYTP_SCi_CALLING_SUB);
 my $json_any = eval { require JSON::Any; JSON::Any->import; JSON::Any->new }
     or warn "Can't load JSON::Any module - HTML visualizations skipped.\n";
 
-our $VERSION = '4.04';
+our $VERSION = '4.05';
 
 if ($VERSION != $Devel::NYTProf::Core::VERSION) {
     die "$0 version '$VERSION' doesn't match version '$Devel::NYTProf::Core::VERSION' of $INC{'Devel/NYTProf/Core.pm'}\n";
@@ -116,6 +116,8 @@ if (defined($opt_lib)) {
     require lib;
     lib->import($opt_lib);
 }
+
+$SIG{USR2} = \&Carp::cluck;
 
 my $reporter = new Devel::NYTProf::Reader($opt_file);
 
@@ -200,7 +202,7 @@ $reporter->set_param(
 <div class="warn"><p>While profiling this file Perl noted the use of one or more special
 variables that impact the performance of <i>all</i> regular expressions in the program.</p>
 
-<p>Use of the "<tt>\$`</tt>", "<tt>\$&</tt>", and "<tt>\$'</tt>" variables should be replaced with faster alternatives.
+<p>Use of the "<tt>\$`</tt>", "<tt>\$&</tt>", and "<tt>\$'</tt>" variables should be replaced with faster alternatives.<br />
 See the WARNING at the end of the <a href="http://perldoc.perl.org/perlre.html#Capture-buffers">
 Capture Buffers section of the perlre documentation</a>.</p>
 
@@ -210,7 +212,8 @@ That was probably the first statement executed by the program after perl
 compiled the code containing the variables.
 If the variables can't be found by studying the source code, try using the
 <a href="http://search.cpan.org/perldoc?Devel::FindAmpersand">Devel::FindAmpersand</a>
-module.</p>
+or <a href="http://search.cpan.org/perldoc?B::Lint">B::Lint</a>
+modules.</p>
 
 </div>\n}
     }
