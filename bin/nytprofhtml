@@ -7,7 +7,7 @@
 ## http://search.cpan.org/~akaplan/Devel-NYTProf
 ##
 ##########################################################
-# $Id: nytprofhtml 1343 2010-09-12 11:13:23Z tim.bunce@gmail.com $
+# $Id: nytprofhtml 1345 2010-09-12 12:01:13Z tim.bunce@gmail.com $
 ###########################################################
 use warnings;
 use strict;
