@@ -2,16 +2,19 @@
 
 Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2010-09-13 22:11:28 +0100 (Mon, 13 Sep 2010) $ $Revision: 1352 $)
+(As of $Date: 2010-09-15 10:53:22 +0100 (Wed, 15 Sep 2010) $ $Revision: 1359 $)
 
 =cut
 
-=head2 Changes in Devel::NYTProf 4.05 (svn 1352) 13th Sept 2010
+=head2 Changes in Devel::NYTProf 4.05 (svn 1359) 15th Sept 2010
 
   Fixed tests to work with a new optimization in perl 5.13.4.
   Fixed handling of negative values for subroutine line ranges
     (that may be added to %DB::sub by buggy software). 
-  Protect against bad line numbers hanging report generation.
+  Fixed handling of negative times from unstable clocks
+    that caused spikes in statement times. (Currently negative
+    times cause warnings. In future they'll be handled.)
+  Fixed risk of bad line numbers hanging report generation.
 
 =head2 Changes in Devel::NYTProf 4.04 (svn 1332) 9th July 2010
 

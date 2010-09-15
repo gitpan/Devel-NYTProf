@@ -13,7 +13,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 1345 2010-09-12 12:01:13Z tim.bunce@gmail.com $
+ * $Id: NYTProf.xs 1357 2010-09-15 09:42:26Z tim.bunce@gmail.com $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -331,7 +331,7 @@ static unsigned int last_block_line;
 static unsigned int last_sub_line;
 static bool         last_sawampersand;
 static unsigned int is_profiling;       /* disable_profile() & enable_profile() */
-static Pid_t last_pid;
+static Pid_t last_pid = 0;
 static NV cumulative_overhead_ticks = 0.0;
 static NV cumulative_subr_secs = 0.0;
 static UV cumulative_subr_seqn = 0;
@@ -347,7 +347,6 @@ static AV *slowop_name_cache;
 
 /* prototypes */
 static void output_header(pTHX);
-static unsigned int read_int(NYTP_file ifile);
 static SV *read_str(pTHX_ NYTP_file ifile, SV *sv);
 static unsigned int get_file_id(pTHX_ char*, STRLEN, int created_via);
 static void DB_stmt(pTHX_ COP *cop, OP *op);
@@ -496,7 +495,7 @@ read_str(pTHX_ NYTP_file ifile, SV *sv) {
         croak("File format error at offset %ld%s, expected string tag but found %d ('%c')",
               NYTP_tell(ifile)-1, NYTP_type_of_offset(ifile), tag, tag);
 
-    len = read_int(ifile);
+    len = read_u32(ifile);
     if (sv) {
         SvGROW(sv, len+1);  /* forces SVt_PV */
     }
@@ -1381,20 +1380,19 @@ DB_stmt(pTHX_ COP *cop, OP *op)
         get_time_of_day(end_time);
         get_ticks_between(start_time, end_time, elapsed, overflow);
     }
-    if (overflow)                                 /* XXX later output overflow to file */
-        logwarn("profile time overflow of %ld seconds discarded!\n", overflow);
 
     reinit_if_forked(aTHX);
 
+    /* XXX move down into the (file != last_executed_fileptr) block ? */
     CHECK_SAWAMPERSAND(last_executed_fid, last_executed_line);
 
     if (last_executed_fid) {
         if (profile_blocks)
-            NYTP_write_time_block(out, elapsed, last_executed_fid,
+            NYTP_write_time_block(out, elapsed, overflow, last_executed_fid,
                                   last_executed_line, last_block_line,
                                   last_sub_line);
         else 
-            NYTP_write_time_line(out, elapsed, last_executed_fid,
+            NYTP_write_time_line(out, elapsed, overflow, last_executed_fid,
                                  last_executed_line);
 
         if (trace_level >= 5)
@@ -2822,7 +2820,40 @@ finish_profile(pTHX)
 }
 
 
+static void
+_init_profiler_clock(pTHX)
+{
+#ifdef HAS_CLOCK_GETTIME
+    if (profile_clock == -1) { /* auto select */
+#  ifdef CLOCK_MONOTONIC
+        profile_clock = CLOCK_MONOTONIC;
+#  else
+        profile_clock = CLOCK_REALTIME;
+#  endif
+    }
+    /* downgrade to CLOCK_REALTIME if desired clock not available */
+    if (clock_gettime(profile_clock, &start_time) != 0) {
+        if (trace_level)
+            logwarn("~ clock_gettime clock %d not available (%s) using CLOCK_REALTIME instead\n",
+                profile_clock, strerror(errno));
+        profile_clock = CLOCK_REALTIME;
+        /* check CLOCK_REALTIME as well, just in case */
+        if (clock_gettime(profile_clock, &start_time) != 0)
+            croak("clock_gettime CLOCK_REALTIME not available (%s), aborting",
+                strerror(errno));
+    }
+#else
+    if (profile_clock != -1) {  /* user tried to select different clock */
+        logwarn("clock %d not available (clock_gettime not supported on this system)\n", profile_clock);
+        profile_clock = -1;
+    }
+#endif
+    ticks_per_sec = (profile_usecputime) ? PL_clocktick : CLOCKS_PER_TICK;
+}
+
+
 /* Initial setup - should only be called once */
+
 static int
 init_profiler(pTHX)
 {
@@ -2843,7 +2874,6 @@ init_profiler(pTHX)
 
     /* Save the process id early. We monitor it to detect forks */
     last_pid = getpid();
-    ticks_per_sec = (profile_usecputime) ? PL_clocktick : CLOCKS_PER_TICK;
     DB_CHECK_cv = (SV*)GvCV(gv_fetchpv("DB::_CHECK",        FALSE, SVt_PVCV));
     DB_INIT_cv = (SV*)GvCV(gv_fetchpv("DB::_INIT",          FALSE, SVt_PVCV));
     DB_END_cv  = (SV*)GvCV(gv_fetchpv("DB::_END",           FALSE, SVt_PVCV));
@@ -2871,31 +2901,7 @@ init_profiler(pTHX)
     if (opt_perldb) /* force a PL_perldb value - for testing only, not documented */
         PL_perldb = opt_perldb;
 
-#ifdef HAS_CLOCK_GETTIME
-    if (profile_clock == -1) { /* auto select */
-#  ifdef CLOCK_MONOTONIC
-        profile_clock = CLOCK_MONOTONIC;
-#  else
-        profile_clock = CLOCK_REALTIME;
-#  endif
-    }
-    /* downgrade to CLOCK_REALTIME if desired clock not available */
-    if (clock_gettime(profile_clock, &start_time) != 0) {
-        if (trace_level)
-            logwarn("~ clock_gettime clock %d not available (%s) using CLOCK_REALTIME instead\n",
-                profile_clock, strerror(errno));
-        profile_clock = CLOCK_REALTIME;
-        /* check CLOCK_REALTIME as well, just in case */
-        if (clock_gettime(profile_clock, &start_time) != 0)
-            croak("clock_gettime CLOCK_REALTIME not available (%s), aborting",
-                strerror(errno));
-    }
-#else
-    if (profile_clock != -1) {  /* user tried to select different clock */
-        logwarn("clock %d not available (clock_gettime not supported on this system)\n", profile_clock);
-        profile_clock = -1;
-    }
-#endif
+    _init_profiler_clock(aTHX);
 
     if (trace_level)
         logwarn("~ init_profiler for pid %d, clock %d, start %d, perldb 0x%lx, exitf 0x%lx\n",
@@ -3465,67 +3471,6 @@ write_src_of_files(pTHX)
     if (trace_level >= 2)
         logwarn("~ wrote %ld source lines for %d files (%d skipped without savesrc option, %d others had no source available)\n",
             t_lines, t_save_src, t_has_src-t_save_src, t_no_src);
-}
-
-
-/**
- * Read an integer by decompressing the next 1 to 4 bytes of binary into a 32-
- * bit integer. See output_int() for the compression details.
- */
-static unsigned int
-read_int(NYTP_file ifile)
-{
-    unsigned char d;
-    unsigned int newint;
-
-    NYTP_read(ifile, &d, sizeof(d), "integer prefix");
-
-    if (d < 0x80) {                               /* 7 bits */
-        newint = d;
-    }
-    else {
-        unsigned char buffer[4];
-        unsigned char *p = buffer;
-        unsigned int length;
-
-        if (d < 0xC0) {                          /* 14 bits */
-            newint = d & 0x7F;
-            length = 1;
-        }
-        else if (d < 0xE0) {                          /* 21 bits */
-            newint = d & 0x1F;
-            length = 2;
-        }
-        else if (d < 0xFF) {                          /* 28 bits */
-            newint = d & 0xF;
-            length = 3;
-        }
-        else if (d == 0xFF) {                         /* 32 bits */
-            newint = 0;
-            length = 4;
-        }
-        NYTP_read(ifile, buffer, length, "integer");
-        while (length--) {
-            newint <<= 8;
-            newint |= *p++;
-        }
-    }
-    return newint;
-}
-
-
-/**
- * Read an NV by simple byte copy to memory
- */
-static NV
-read_nv(NYTP_file ifile)
-{
-    NV nv;
-    /* no error checking on the assumption that a later token read will
-     * detect the error/eof condition
-     */
-    NYTP_read(ifile, (unsigned char *)&nv, sizeof(NV), "float");
-    return nv;
 }
 
 
@@ -4460,16 +4405,16 @@ load_profile_data_from_stream(loader_callback *callbacks,
             case NYTP_TAG_TIME_LINE:                       /*FALLTHRU*/
             case NYTP_TAG_TIME_BLOCK:
             {
-                unsigned int ticks    = read_int(in);
-                unsigned int file_num = read_int(in);
-                unsigned int line_num = read_int(in);
+                unsigned int ticks    = read_u32(in);
+                unsigned int file_num = read_u32(in);
+                unsigned int line_num = read_u32(in);
                 unsigned int block_line_num = 0;
                 unsigned int sub_line_num = 0;
                 nytp_tax_index tag = nytp_time_line;
 
                 if (c == NYTP_TAG_TIME_BLOCK) {
-                    block_line_num = read_int(in);
-                    sub_line_num = read_int(in);
+                    block_line_num = read_u32(in);
+                    sub_line_num = read_u32(in);
                     if (profile_blocks)
                         tag = nytp_time_block;
                 }
@@ -4484,12 +4429,12 @@ load_profile_data_from_stream(loader_callback *callbacks,
             case NYTP_TAG_NEW_FID:                             /* file */
             {
                 SV *filename_sv;
-                unsigned int file_num      = read_int(in);
-                unsigned int eval_file_num = read_int(in);
-                unsigned int eval_line_num = read_int(in);
-                unsigned int fid_flags     = read_int(in);
-                unsigned int file_size     = read_int(in);
-                unsigned int file_mtime    = read_int(in);
+                unsigned int file_num      = read_u32(in);
+                unsigned int eval_file_num = read_u32(in);
+                unsigned int eval_line_num = read_u32(in);
+                unsigned int fid_flags     = read_u32(in);
+                unsigned int file_size     = read_u32(in);
+                unsigned int file_mtime    = read_u32(in);
 
                 filename_sv = read_str(aTHX_ in, NULL);
 
@@ -4502,8 +4447,8 @@ load_profile_data_from_stream(loader_callback *callbacks,
 
             case NYTP_TAG_SRC_LINE:
             {
-                unsigned int file_num = read_int(in);
-                unsigned int line_num = read_int(in);
+                unsigned int file_num = read_u32(in);
+                unsigned int line_num = read_u32(in);
                 SV *src = read_str(aTHX_ in, NULL);
 
                 callbacks[nytp_src_line](state, nytp_src_line, file_num,
@@ -4513,10 +4458,10 @@ load_profile_data_from_stream(loader_callback *callbacks,
 
             case NYTP_TAG_SUB_INFO:
             {
-                unsigned int fid        = read_int(in);
+                unsigned int fid        = read_u32(in);
                 SV *subname_sv = read_str(aTHX_ in, tmp_str1_sv);
-                unsigned int first_line = read_int(in);
-                unsigned int last_line  = read_int(in);
+                unsigned int first_line = read_u32(in);
+                unsigned int last_line  = read_u32(in);
 
                 callbacks[nytp_sub_info](state, nytp_sub_info, fid,
                                          first_line, last_line, subname_sv);
@@ -4525,14 +4470,14 @@ load_profile_data_from_stream(loader_callback *callbacks,
 
             case NYTP_TAG_SUB_CALLERS:
             {
-                unsigned int fid   = read_int(in);
-                unsigned int line  = read_int(in);
+                unsigned int fid   = read_u32(in);
+                unsigned int line  = read_u32(in);
                 SV *caller_subname_sv = read_str(aTHX_ in, tmp_str2_sv);
-                unsigned int count = read_int(in);
+                unsigned int count = read_u32(in);
                 NV incl_time       = read_nv(in);
                 NV excl_time       = read_nv(in);
                 NV reci_time       = read_nv(in);
-                unsigned int rec_depth = read_int(in);
+                unsigned int rec_depth = read_u32(in);
                 SV *called_subname_sv = read_str(aTHX_ in, tmp_str1_sv);
 
                 callbacks[nytp_sub_callers](state, nytp_sub_callers, fid,
@@ -4545,8 +4490,8 @@ load_profile_data_from_stream(loader_callback *callbacks,
 
             case NYTP_TAG_PID_START:
             {
-                unsigned int pid  = read_int(in);
-                unsigned int ppid = read_int(in);
+                unsigned int pid  = read_u32(in);
+                unsigned int ppid = read_u32(in);
                 NV start_time = read_nv(in);
 
                 callbacks[nytp_pid_start](state, nytp_pid_start, pid, ppid,
@@ -4556,7 +4501,7 @@ load_profile_data_from_stream(loader_callback *callbacks,
 
             case NYTP_TAG_PID_END:
             {
-                unsigned int pid = read_int(in);
+                unsigned int pid = read_u32(in);
                 NV end_time = read_nv(in);
 
                 callbacks[nytp_pid_end](state, nytp_pid_end, pid, end_time);
@@ -4928,10 +4873,37 @@ example_xsub_eval(...)
      */
     eval_pv("Devel::NYTProf::Test::example_xsub()", 1);
 
+
 void
 set_errno(int e)
     CODE:
     SETERRNO(e, 0);
+
+
+void
+ticks_for_usleep(long u_seconds)
+    PPCODE:
+    long elapsed = -1, overflow = -1;
+#ifdef HAS_SELECT
+    time_of_day_t s_time;
+    time_of_day_t e_time;
+    struct timeval timebuf;
+    timebuf.tv_sec  = (long)(u_seconds / 1000000);
+    timebuf.tv_usec = u_seconds - (timebuf.tv_sec * 1000000);
+    if (!last_pid)
+        _init_profiler_clock(aTHX);
+    get_time_of_day(s_time);
+    PerlSock_select(0, 0, 0, 0, &timebuf);
+    get_time_of_day(e_time);
+    get_ticks_between(s_time, e_time, elapsed, overflow);
+#else
+    PERL_UNUSED_VAR(u_seconds);
+#endif
+    EXTEND(SP, 4);
+    PUSHs(sv_2mortal(newSVnv(elapsed)));
+    PUSHs(sv_2mortal(newSVnv(overflow)));
+    PUSHs(sv_2mortal(newSVnv(CLOCKS_PER_TICK)));
+    PUSHs(sv_2mortal(newSViv(profile_clock)));
 
 
 MODULE = Devel::NYTProf     PACKAGE = DB
