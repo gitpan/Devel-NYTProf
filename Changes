@@ -2,7 +2,7 @@
 
 Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2010-09-15 10:53:22 +0100 (Wed, 15 Sep 2010) $ $Revision: 1359 $)
+(As of $Date: 2010-09-16 17:51:26 +0100 (Thu, 16 Sep 2010) $ $Revision: 1361 $)
 
 =cut
 
@@ -12,8 +12,7 @@ Changes - List of significant changes to Devel::NYTProf
   Fixed handling of negative values for subroutine line ranges
     (that may be added to %DB::sub by buggy software). 
   Fixed handling of negative times from unstable clocks
-    that caused spikes in statement times. (Currently negative
-    times cause warnings. In future they'll be handled.)
+    that caused spikes in statement times.
   Fixed risk of bad line numbers hanging report generation.
 
 =head2 Changes in Devel::NYTProf 4.04 (svn 1332) 9th July 2010
