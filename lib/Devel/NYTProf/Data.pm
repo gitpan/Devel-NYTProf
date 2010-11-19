@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Data.pm 1325 2010-07-08 10:48:58Z tim.bunce@gmail.com $
+# $Id: Data.pm 1400 2010-11-19 16:25:55Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf::Data;
 
@@ -104,6 +104,11 @@ sub new {
     (my $sub_class = $class) =~ s/\w+$/SubInfo/;
     $_ and bless $_ => $sub_class for values %$sub_subinfo;
 
+    # create profiler_active attribute by subtracting from profiler_duration
+    # currently we only subtract cumulative_overhead_ticks
+    my $attribute = $profile->{attribute};
+    my $overhead_time = $attribute->{cumulative_overhead_ticks} / $attribute->{ticks_per_sec};
+    $attribute->{profiler_active} = $attribute->{profiler_duration} - $overhead_time;
 
     # find subs that have calls but no fid
     my @homeless_subs = grep { $_->calls and not $_->fid } values %$sub_subinfo;
@@ -117,8 +122,10 @@ sub new {
 
     # Where a given eval() has been invoked more than once
     # rollup the corresponding fids if they're "uninteresting".
-    for my $fi ($profile->noneval_fileinfos) {
-        $profile->collapse_evals_in($fi);
+    if (not $args->{skip_collapse_evals}) {
+        for my $fi ($profile->noneval_fileinfos) {
+            $profile->collapse_evals_in($fi);
+        }
     }
 
     $profile->_clear_caches;
@@ -581,13 +588,14 @@ sub normalize_variables {
     for my $attr (qw(
         basetime xs_version perl_version clock_id ticks_per_sec nv_size
         profiler_duration profiler_end_time profiler_start_time
+        cumulative_overhead_ticks profiler_active
         total_stmts_duration total_stmts_measured total_stmts_discounted
         total_sub_calls sawampersand_line
     )) {
         $attributes->{$attr} = 0 if exists $attributes->{$attr};
     }
 
-    for my $attr (qw(PL_perldb)) {
+    for my $attr (qw(PL_perldb cumulative_overhead_ticks)) {
         delete $attributes->{$attr};
     }
 

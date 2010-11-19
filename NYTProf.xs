@@ -13,7 +13,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 1361 2010-09-16 16:51:26Z tim.bunce@gmail.com $
+ * $Id: NYTProf.xs 1399 2010-11-19 15:23:37Z tim.bunce@gmail.com $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -340,6 +340,8 @@ static SV *DB_CHECK_cv;
 static SV *DB_INIT_cv;
 static SV *DB_END_cv;
 static SV *DB_fin_cv;
+static char *class_mop_evaltag     = " defined at ";
+static int   class_mop_evaltag_len = 12;
 
 static unsigned int ticks_per_sec = 0;            /* 0 forces error if not set */
 
@@ -888,6 +890,22 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
         }
     }
 
+    /* detect Class::MOP #line evals */
+    /* See _add_line_directive() in Class::MOP::Method::Generated */
+    if (!found->eval_fid) {
+        char *tag = ninstr(file_name, file_name+file_name_len, class_mop_evaltag, class_mop_evaltag+class_mop_evaltag_len);
+        if (tag) {
+            char *definer = tag + class_mop_evaltag_len;
+            int len       = file_name_len - (definer - file_name);
+            found->eval_fid      = get_file_id(aTHX_ definer, len, created_via);
+            found->eval_line_num = 1; /* XXX pity Class::MOP doesn't include the line here */
+            if (trace_level >= 1)
+                logwarn("Class::MOP eval for '%.*s' (fid %u:%u) from '%.*s'\n",
+                    len, definer, found->eval_fid, found->eval_line_num,
+                    (int)file_name_len, file_name);
+        } 
+    }
+
     /* is the file is an autosplit, e.g., has a file_name like
      * "../../lib/POSIX.pm (autosplit into ../../lib/auto/POSIX/errno.al)"
      */
@@ -930,8 +948,7 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
     found->key_abs = NULL;
     if (!found->eval_fid &&
         !(file_name[0] == '-'
-         && (file_name_len==1
-             || (file_name[1] == 'e' && file_name_len==2))) &&
+         && (file_name_len==1 || (file_name[1]=='e' && file_name_len==2))) &&
 #ifdef WIN32
         /* XXX should we check for UNC names too? */
         (file_name_len < 3 || !isALPHA(file_name[0]) || file_name[1] != ':' ||
@@ -939,8 +956,7 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
 #else
         *file_name != '/'
 #endif
-        )
-    {
+    ) {
         char file_name_abs[MAXPATHLEN * 2];
         /* Note that the current directory may have changed
             * between loading the file and profiling it.
@@ -1395,7 +1411,7 @@ DB_stmt(pTHX_ COP *cop, OP *op)
             NYTP_write_time_line(out, elapsed, overflow, last_executed_fid,
                                  last_executed_line);
 
-        if (trace_level >= 5)
+        if (trace_level >= 5) /* previous fid:line and how much time we spent there */
             logwarn("\t@%d:%-4d %2ld ticks (%u, %u)\n",
                 last_executed_fid, last_executed_line,
                 elapsed, last_block_line, last_sub_line);
@@ -1443,8 +1459,8 @@ DB_stmt(pTHX_ COP *cop, OP *op)
         last_executed_fid = get_file_id(aTHX_ file, strlen(file), NYTP_FIDf_VIA_STMT);
     }
 
-    if (trace_level >= 7)
-        logwarn("     @%d:%-4d %s\n", last_executed_fid, last_executed_line,
+    if (trace_level >= 7)   /* show the fid:line we're about to execute */
+        logwarn("\t@%d:%-4d... %s\n", last_executed_fid, last_executed_line,
             (profile_blocks) ? "looking for block and sub lines" : "");
 
     if (profile_blocks) {
@@ -1476,11 +1492,10 @@ DB_stmt(pTHX_ COP *cop, OP *op)
 
 
 static void
-DB_leave(pTHX_ OP *op)
+DB_leave(pTHX_ OP *op, OP *prev_op)
 {
-    int saved_errno = errno;
-    unsigned int prev_last_executed_fid  = last_executed_fid;
-    unsigned int prev_last_executed_line = last_executed_line;
+    int saved_errno, is_multicall;
+    unsigned int prev_last_executed_fid, prev_last_executed_line;
 
     /* Called _after_ ops that indicate we've completed a statement
      * and are returning into the middle of some outer statement.
@@ -1495,6 +1510,20 @@ DB_leave(pTHX_ OP *op)
 #ifdef MULTIPLICITY
     if (orig_my_perl && my_perl != orig_my_perl)
         return;
+#endif
+
+    saved_errno = errno;
+    prev_last_executed_fid  = last_executed_fid;
+    prev_last_executed_line = last_executed_line;
+
+#ifdef CxMULTICALL
+    /* pp_return, pp_leavesub and pp_leavesublv
+     * return a NULL op when returning from a MULTICALL.
+     * See Lightweight Callbacks in perlcall.
+     */
+    is_multicall = (!op && CxMULTICALL(&cxstack[cxstack_ix]));
+#else
+    is_multicall = 0;
 #endif
 
     /* measure and output end time of previous statement
@@ -1517,11 +1546,11 @@ DB_leave(pTHX_ OP *op)
     }
 
     if (trace_level >= 5) {
-        logwarn("\tleft %u:%u back to %s at %u:%u (b%u s%u) - discounting next statement%s\n",
+        logwarn("\tleft %u:%u via %s back to %s at %u:%u (b%u s%u) - discounting next statement%s\n",
             prev_last_executed_fid, prev_last_executed_line,
-            OP_NAME_safe(op),
+            OP_NAME_safe(prev_op), OP_NAME_safe(op),
             last_executed_fid, last_executed_line, last_block_line, last_sub_line,
-            (op) ? "" : ", LEAVING PERL"
+            (op || is_multicall) ? "" : ", LEAVING PERL"
         );
     }
 
@@ -1634,7 +1663,8 @@ open_output_file(pTHX_ char *filename)
         if (fopen_errno==EEXIST && !(profile_opts & NYTP_OPTf_ADDPID))
             hint = " (enable addpid option to protect against concurrent writes)";
         disable_profile(aTHX);
-        croak("Failed to open output '%s': %s%s", filename, strerror(fopen_errno), hint);
+        croak("NYTProf failed to open '%s' for writing, error %d: %s%s",
+            filename, fopen_errno, strerror(fopen_errno), hint);
     }
     if (trace_level >= 1)
         logwarn("~ opened %s\n", filename);
@@ -1646,9 +1676,13 @@ open_output_file(pTHX_ char *filename)
 static void
 close_output_file(pTHX) {
     int result;
+    NV  timeofday;
 
     if (!out)
         return;
+
+    timeofday = gettimeofday_nv(); /* before write_*() calls */
+    NYTP_write_attribute_nv(out, STR_WITH_LEN("cumulative_overhead_ticks"), cumulative_overhead_ticks);
 
     write_src_of_files(aTHX);
     write_sub_line_ranges(aTHX);
@@ -1656,7 +1690,7 @@ close_output_file(pTHX) {
     /* mark end of profile data for last_pid pid
      * which is the pid that this file relates to
      */
-    NYTP_write_process_end(out, last_pid, gettimeofday_nv());
+    NYTP_write_process_end(out, last_pid, timeofday);
 
     if ((result = NYTP_close(out, 0)))
         logwarn("Error closing profile data file: %s\n", strerror(result));
@@ -1755,6 +1789,7 @@ struct subr_entry_st {
     const char   *called_subpkg_pv;
     SV           *called_subnam_sv;
     /* ensure all items are initialized in first phase of pp_subcall_profiler */
+    int           hide_subr_call_time;  /* eg for CORE:accept */
 };
 
 /* save stack index to the current subroutine entry structure */
@@ -1911,6 +1946,17 @@ incr_sub_inclusive_time(pTHX_ subr_entry_t *subr_entry)
         /* subtract statement measurement overheads */
         incl_subr_sec -= (overhead_ticks / CLOCKS_PER_TICK);
     }
+
+    if (subr_entry->hide_subr_call_time) {
+        /* account for the time spent in the sub as if it was statement
+         * profiler overhead. That has the effect of neatly subtracting
+         * the time from all the sub calls up the call stack.
+         */
+        cumulative_overhead_ticks += incl_subr_sec * CLOCKS_PER_TICK;
+        incl_subr_sec = 0;
+        called_sub_secs = 0;
+    }
+
     /* exclusive = inclusive - time spent in subroutines called by this subroutine */
     excl_subr_sec = incl_subr_sec - called_sub_secs;
 
@@ -2172,7 +2218,7 @@ subr_entry_setup(pTHX_ COP *prev_cop, subr_entry_t *clone_subr_entry, OPCODE op_
 
     if (subr_entry_ix <= prev_subr_entry_ix) {
         /* one cause of this is running NYTProf with threads */
-        logwarn("NYTProf panic: stack is confused, giving up!\n");
+        logwarn("NYTProf panic: stack is confused, giving up! (Try running with subs=0)\n");
         /* limit the damage */
         disable_profile(aTHX);
         return prev_subr_entry_ix;
@@ -2250,6 +2296,8 @@ subr_entry_setup(pTHX_ COP *prev_cop, subr_entry_t *clone_subr_entry, OPCODE op_
         }
         subr_entry->called_cv_depth = 1; /* an approximation for slowops */
         subr_entry->called_is_xs = "sop";
+        if (OP_ACCEPT == op_type)
+            subr_entry->hide_subr_call_time = 1;
     }
 
     /* These refer to the last perl statement executed, so aren't
@@ -2691,8 +2739,9 @@ pp_stmt_profiler(pTHX)                            /* handles OP_DBSTATE, OP_SETS
 static OP *
 pp_leave_profiler(pTHX)                           /* handles OP_LEAVESUB, OP_LEAVEEVAL, etc */
 {
+    OP *prev_op = PL_op;
     OP *op = run_original_op(PL_op->op_type);
-    DB_leave(aTHX_ op);
+    DB_leave(aTHX_ op, prev_op);
     return op;
 }
 
@@ -2707,7 +2756,7 @@ pp_fork_profiler(pTHX)                            /* handles OP_FORK */
 static OP *
 pp_exit_profiler(pTHX)                            /* handles OP_EXIT, OP_EXEC, etc */
 {
-    DB_leave(aTHX_ NULL);                         /* call DB_leave *before* run_original_op() */
+    DB_leave(aTHX_ NULL, PL_op);                  /* call DB_leave *before* run_original_op() */
     if (PL_op->op_type == OP_EXEC)
         finish_profile(aTHX);                     /* this is the last chance we'll get */
     return run_original_op(PL_op->op_type);
@@ -3058,31 +3107,42 @@ int count, unsigned int fid)
 }
 
 
-/* Given a fully-qualified sub_name lookup the package name portion in
- * the pkg_fids_hv hash.  Return Nullsv if there's no package name or no
- * correponding entry else returns the SV.
- *
- * pkg_fids_hv:
- * pp_subcall_profiler() creates undef entries for a package
- *      name the first time a sub in the package is called.
- * write_sub_line_ranges() updates the SV with the filename associated
- *      with the package, or at least its best guess.
- *
+/* Given a fully-qualified name, return the length of the package name.
  * As most callers get len via the hash API, they will have an I32, where
  * "negative" length signifies UTF-8. As we're only dealing with looking for
  * ASCII here, it doesn't matter to use which encoding sub_name is in, but it
  * reduces total code by doing the abs(len) in here.
  */
-static SV *
-sub_pkg_filename_sv(pTHX_ char *sub_name, I32 len)
+static STRLEN
+pkg_name_len(pTHX_ char *sub_name, I32 len)
 {
-    SV **svp;
+    /* pTHX_ needed for old rninstr in old perl versions */
     const char *delim = "::";
     /* find end of package name */
     char *colon = rninstr(sub_name, sub_name+(len > 0 ? len : -len), delim, delim+2);
     if (!colon || colon == sub_name)
+        return 0;   /* no :: delimiter */
+    return (colon - sub_name);
+}
+
+/* Given a fully-qualified sub_name lookup the package name portion in
+ * the pkg_fids_hv hash.  Return Nullsv if there's no package name or no
+ * correponding entry, else returns the SV.
+ *
+ * About pkg_fids_hv:
+ * pp_subcall_profiler() creates undef entries for a package
+ *      name the first time a sub in the package is called.
+ * write_sub_line_ranges() updates the SV with the filename associated
+ *      with the package, or at least its best guess.
+ */
+static SV *
+sub_pkg_filename_sv(pTHX_ char *sub_name, I32 len)
+{
+    SV **svp;
+    STRLEN pkg_len = pkg_name_len(aTHX_ sub_name, len);
+    if (!pkg_len)
         return Nullsv;   /* no :: delimiter */
-    svp = hv_fetch(pkg_fids_hv, sub_name, (I32)(colon-sub_name), 0);
+    svp = hv_fetch(pkg_fids_hv, sub_name, (I32)pkg_len, 0);
     if (!svp)
         return Nullsv;   /* not a package we've profiled sub calls into */
     return *svp;
@@ -3170,7 +3230,7 @@ write_sub_line_ranges(pTHX)
         if (file_lines_len > 4
             && filename[file_lines_len - 2] == '-' && filename[file_lines_len - 1] == '0'
             && filename[file_lines_len - 4] != ':' && filename[file_lines_len - 3] != '0')
-            continue;   /* ignore filenames from %DB::sub that end in ":0-0" */
+            continue;   /* ignore filenames from %DB::sub that match /:[^0]-0$/ */
 
         first = strrchr(filename, ':');
         filename_len = (first) ? first - filename : 0;
@@ -3195,7 +3255,8 @@ write_sub_line_ranges(pTHX)
             && !filename_is_eval(filename, filename_len)
             ) {
                 if (trace_level >= 3)
-                    logwarn("Sub %.*s package prompted from %.*s to %.*s\n",
+                    logwarn("Package '%.*s' (of sub %.*s) association promoted from '%.*s' to '%.*s'\n",
+                        (int)pkg_name_len(aTHX_ sub_name, sub_name_len), sub_name,
                         (int)sub_name_len, sub_name,
                         (int)cached_len, cached_filename,
                         (int)filename_len, filename);
@@ -3208,9 +3269,12 @@ write_sub_line_ranges(pTHX)
             && !filename_is_eval(filename, filename_len)
             ) {
                 /* eg utf8::SWASHNEW is already associated with .../utf8.pm not .../utf8_heavy.pl */
-                logwarn("Package of sub %.*s is already associated with %s not %.*s\n",
+                logwarn("Package '%.*s' (of sub %.*s) not associated with '%.*s' because already associated with '%s'\n",
+                    (int)pkg_name_len(aTHX_ sub_name, sub_name_len), sub_name,
                     (int)sub_name_len, sub_name,
-                    SvPV_nolen(pkg_filename_sv), (int)filename_len, filename);
+                    (int)filename_len, filename,
+                    SvPV_nolen(pkg_filename_sv)
+                );
             }
             continue;
         }
@@ -3431,7 +3495,7 @@ write_src_of_files(pTHX)
             ++t_no_src;
             if (src_av && av_len(src_av) > -1) /* sanity check */
                 hint = " (NYTP_FIDf_HAS_SRC not set but src available!)";
-            if (trace_level >= 4 || *hint)
+            if (trace_level >= 3 || *hint)
                 logwarn("fid %d has no src saved for %.*s%s\n",
                     e->id, e->key_len, e->key, hint);
             continue;
@@ -3450,7 +3514,7 @@ write_src_of_files(pTHX)
         ++t_save_src;
 
         lines = av_len(src_av); /* -1 is empty, 1 is 1 line etc, 0 shouldn't happen */
-        if (trace_level >= 4)
+        if (trace_level >= 3)
             logwarn("fid %d has %ld src lines for %.*s\n",
                 e->id, (long)lines, e->key_len, e->key);
         for (line = 1; line <= lines; ++line) { /* lines start at 1 */

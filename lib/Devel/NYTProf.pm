@@ -7,11 +7,11 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 1362 2010-09-16 18:03:07Z tim.bunce@gmail.com $
+## $Id: NYTProf.pm 1402 2010-11-19 16:45:40Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf;
 
-our $VERSION = '4.05';
+our $VERSION = '4.06';
 
 package    # hide the package from the PAUSE indexer
     DB;
@@ -58,10 +58,14 @@ Devel::NYTProf - Powerful fast feature-rich perl source code profiler
   perl -d:NYTProf some_perl.pl
 
   # convert database into a set of html files, e.g., ./nytprof/index.html
-  nytprofhtml
+  # and open a web browser on the nytprof/index.html file
+  nytprofhtml --open
 
   # or into comma separated files, e.g., ./nytprof/*.csv
   nytprofcsv
+
+A screencast about profiling perl code, including a detailed look at how to use
+NYTProf and how to optimize your code, is available at L<http://timbunce.blip.tv/file/3913278/>
 
 =head1 DESCRIPTION
 
@@ -159,8 +163,7 @@ associated with the line of the source file that the previous statement starts o
 
 By default the statement profiler also determines the first line of the current
 block and the first line of the current statement, and accumulates times
-associated with those. NYTProf is the only Perl profiler to perform block level
-profiling.
+associated with those.
 
 Another innovation unique to NYTProf is automatic compensation for a problem
 inherent in simplistic statement-to-statement timing. Consider a statement that
@@ -220,6 +223,21 @@ C<&destination>, so that's how it will appear in the report.
 The C<goto> will be shown with a very short time because it's effectively just
 a C<return>. The C<&destination> sub will show a call I<not> from the location
 of the C<goto> but from the location of the call to the sub that performed the C<goto>.
+
+=head3 accept()
+
+The perl built-in accept() function waits listening for a connection on a
+socket, and so is a key part of pure-perl network service applications.
+
+The time spent waiting for a remotely initiated connection can be relatively
+high but is not relevant to the performance of the application. So the accept()
+function is treated as a special case. The subroutine profiler discounts the
+time spent in the accept() function. It does this in a way that also discounts
+that time from all the callers up the call stack. The effect on the reports is
+that all accept() calls appear to be instant.
+
+The I<statement> profiler still shows the time actually spent in the statement
+that executed the accept() call.
 
 =head2 Application Profiling
 
@@ -374,9 +392,6 @@ and returning into the middle of statement, or re-evaluating a loop condition.
 This feature also ensures that in embedded environments, such as mod_perl,
 the last statement executed doesn't accumulate the time spent 'outside perl'.
 
-NYTProf is the only line-level profiler to measure these times correctly.
-The profiler is fast enough that you shouldn't need to disable this feature.
-
 =head2 findcaller=1
 
 Force NYTProf to recalculate the name of the caller of the each sub instead of
@@ -441,19 +456,21 @@ likely to change in future.
 =head2 usecputime=1
 
 Measure user CPU + system CPU time instead of the real elapsed 'wall clock'
-time (which is the default).
+time (which is the default). But there are better ways to do this, read on.
 
 Measuring CPU time has the advantage of making the measurements independent of
-time spent blocked waiting for the cpu or network i/o etc. But it also has the
-severe disadvantage of having typically I<far> less accurate timings.
+time spent blocked waiting for the cpu or network i/o etc. But the method used
+by Cusecputime=1> also has the severe disadvantage of having typically I<far>
+less accurate timings.
 
-Most systems use a 0.01 second granularity. With modern processors having multi-
-gigahertz clocks, 0.01 seconds is like a lifetime. The cpu time clock 'ticks'
+Most systems have a 0.01 second granularity in the results from the C<times()>
+sytem call.  With modern processors having multi- gigahertz clocks, 0.01
+seconds is like a lifetime. The 'ticks' of this CPU time clock
 happen so rarely relative to the activity of a most applications that you'd
 have to run the code for many hours to have any hope of reasonably useful results.
 
-A better alternative would be to use the C<clock=N> option to select a
-high-resolution cpu time clock, if available on your system, because that'll
+A much better alternative is to use the L</clock=N> option to select a
+high-resolution CPU time clock, if available on your system, because that'll
 give you higher resolution and work for the subroutine profiler as well.
 
 =head2 file=...
@@ -599,6 +616,55 @@ internals of perl mean that, in some cases, the information that's gathered is
 accurate but surprising. In some cases it can appear to be misleading.
 (Of course, in some cases it may actually be plain wrong. Caveat lector.)
 
+=head2 If Statement and Subroutine Timings Don't Match
+
+NYTProf has two profilers: a statement profiler that's invoked when perl moves
+from one perl statement to another, and a subroutine profiler that's invoked
+when perl calls or returns from a subroutine.
+
+The individual statement timings for a subroutine usually add up to slightly
+less than the exclusive time for the subroutine. That's because the handling of
+the subroutine call and return overheads is included in the exclusive time for
+the subroutine. The difference may only be a new microseconds but that may
+become noticeable for subroutines that are called hundreds of thousands of times.
+
+The statement profiler keeps track how much time was spent on overheads, like
+writing statement profile data to disk. The subroutine profiler subtracts the
+overheads that have accumulated between entering and leaving the subroutine in
+order to give a more accurate profile.  The statement profiler is generally
+very fast because most writes get buffered for zip compression so the profiler
+overhead per statement tends to be very small, often a single 'tick'.
+The result is that the accumulated overhead is quite noisy. This becomes more
+significant for subroutines that are called frequently and are also fast.
+This may be another, smaller, contribution to the discrepancy between statement
+time and exclusive times.
+
+=head2 If Headline Subroutine Timings Don't Match the Called Subs
+
+Overall subroutine times are reported with a headline like C<spent 10s (2+8) within ...>.
+In this example, 10 seconds were spent inside the subroutine (the "inclusive
+time") and, of that, 8 seconds were spent in subroutines called by this one.
+That leaves 2 seconds as the time spent in the subroutine code itself (the
+"exclusive time", sometimes also called the "self time").
+
+The report shows the source code of the subroutine. Lines that make calls to
+other subroutines are annotated with details of the time spent in those calls.
+
+Sometimes the sum of the times for calls made by the lines of code in the
+subroutine is less than the inclusive-exclusive time reported in the headline
+(10-2 = 8 seconds in the example above).
+
+What's happening here is that calls to other subroutines are being made but
+NYTProf isn't able to determine the calling location correctly so the calls
+don't appear in the report in the correct place.
+
+Using an old version of perl is one cause (see below). Another is calling
+subroutines that exit via C<goto &sub;> - most frequently encountered in
+AUTOLOAD subs and code using the L<Memoize> module.
+
+In general the overall subroutine timing is accurate and should be trusted more
+than the sum of statement or nested sub call timings.
+
 =head2 Perl 5.10.1+ (or else 5.8.9+) is Recommended
 
 These versions of perl yield much more detailed information about calls to
@@ -709,9 +775,8 @@ is reduced detail and/or accuracy in reports.
 
 If you don't need statement-level profiling then you can disable it via L</stmts=0>.
 If you do want it but don't mind loosing block-level timings then set L</blocks=0>.
-If you want need still more speed then set L</leave=0> to disable the
-adjustments made for statements that 'leave' the current control flow (doing
-this I<will> make timings for some kinds of statements less accurate).
+To further boost statement-level profiling performance try L</leave=0> but note that
+I<will> apportion timings for some kinds of statements less accurate).
 
 If you don't need subroutine profiling then you can disable it via L</subs=0>.
 If you do need it but don't need timings for perl opcodes then set L</slowops=0>.
@@ -764,6 +829,12 @@ If you'd be interested in helping to fix that then please get in
 touch with us. Meanwhile, profiling is disabled when a thread is created, and
 NYTProf tries to ignore any activity from perl interpreters other than the
 first one that loaded it.
+
+=head2 Coro
+
+The C<Devel::NYTProf> subroutine profiler gets confused by the stack gymnastics
+performed by the L<Coro> module and aborts. When profiling applications that
+use Coro you should disable the subroutine profiler using the L</subs=0> option.
 
 =head2 For perl < 5.8.8 it may change what caller() returns
 

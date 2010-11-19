@@ -7,11 +7,11 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: Reader.pm 1344 2010-09-12 12:01:01Z tim.bunce@gmail.com $
+## $Id: Reader.pm 1402 2010-11-19 16:45:40Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf::Reader;
 
-our $VERSION = '4.05';
+our $VERSION = '4.06';
 
 use warnings;
 use strict;
@@ -25,7 +25,6 @@ use Devel::NYTProf::Data;
 use Devel::NYTProf::Util qw(
     fmt_float
     fmt_time
-    strip_prefix_from_paths
     html_safe_filename
     calculate_median_absolute_deviation
     trace_level
@@ -46,7 +45,7 @@ $FLOAT_FORMAT =~ s/"//g;
 sub new {
     my $class = shift;
     my $file  = shift;
-    my $opts  = shift;
+    my $opts  = shift || {};
 
     my $self = {
         file => $file || 'nytprof.out',
@@ -81,7 +80,10 @@ sub new {
     };
 
     bless($self, $class);
-    $self->{profile} = Devel::NYTProf::Data->new({filename => $self->{file}});
+    $self->{profile} = Devel::NYTProf::Data->new({
+        %$opts,
+        filename => $self->{file},
+    });
 
     return $self;
 }
@@ -172,8 +174,20 @@ sub fname_for_fileinfo {
     confess "No fileinfo" unless $fi;
     $level ||= $self->current_level;
 
-    my $fname = html_safe_filename($fi->filename_without_inc);
-    $fname .= "-".$fi->fid;
+    my $fname = $fi->filename_without_inc;
+
+    # We want to have descriptive and unambiguous filename
+    # but we don't want to risk failure due to filenames being longer
+    # than MAXPATH (including the length of whatever dir we're writing
+    # the report files into). So we truncate to the last component if
+    # the filenames seems 'dangerously long'. XXX be smarter about this.
+    # This is safe from ambiguity because we add the fid to the filename below.
+    my $max_len = $ENV{NYTPROF_FNAME_TRIM} || 50;
+    $fname =~ s!/.*/!/.../! if length($fname) > $max_len; # remove dir path
+    $fname = "TOOLONG"      if length($fname) > $max_len; # just in case
+
+    $fname = html_safe_filename($fname);
+    $fname .= "-".$fi->fid; # to ensure uniqueness and for info
     $fname .= "-$level" if $level;
 
     return $fname;
@@ -416,6 +430,16 @@ sub _generate_report {
             $LINE = 0; # start numbering from 0 to flag fake contents
         }
 
+        # ensure we don't have any undef source lines
+        # (to avoid warnings from the code below)
+        my $src_undefs;
+        defined $_ or $_ = '' && ++$src_undefs for @$src_lines;
+        # XXX shouldn't be need but don't have a test case so grumble
+        # about it in the hope of getting a test case
+        warn sprintf "Saw %d missing (undef) lines in the %d lines of source code for %s\n",
+                $src_undefs, scalar @$src_lines, $filestr
+            if $src_undefs;
+
         # Since we use @$src_lines to drive the report generation, pad the array to
         # ensure it has enough lines to include all the available profile info.
         # Then the report is still useful even if we have no source code.
@@ -463,7 +487,7 @@ sub _generate_report {
                 # XXX we should be smarter about this - patches welcome!
                 # We should at least ignore the common AutoSplit case
                 # which we detect and workaround elsewhere.
-                warn "Ignoring '$line' directive at line $LINE - profile data for $filestr will be out of sync with source!\n"
+                warn "Ignoring '$line' directive at line $LINE - profile data for $filestr will be out of sync with source\n"
                     unless our $line_directive_warn->{$filestr}++; # once per file
             }
 
