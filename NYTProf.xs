@@ -13,7 +13,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 1399 2010-11-19 15:23:37Z tim.bunce@gmail.com $
+ * $Id: NYTProf.xs 1405 2010-11-30 22:15:31Z tim.bunce@gmail.com $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -1516,12 +1516,12 @@ DB_leave(pTHX_ OP *op, OP *prev_op)
     prev_last_executed_fid  = last_executed_fid;
     prev_last_executed_line = last_executed_line;
 
-#ifdef CxMULTICALL
+#ifdef CxMULTICALL && 0 /* disabled for now */
     /* pp_return, pp_leavesub and pp_leavesublv
      * return a NULL op when returning from a MULTICALL.
      * See Lightweight Callbacks in perlcall.
      */
-    is_multicall = (!op && CxMULTICALL(&cxstack[cxstack_ix]));
+    is_multicall = (!op && cxstack_ix >= 0 && CxMULTICALL(&cxstack[cxstack_ix]));
 #else
     is_multicall = 0;
 #endif
