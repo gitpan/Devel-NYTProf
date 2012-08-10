@@ -13,7 +13,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 1405 2010-11-30 22:15:31Z tim.bunce@gmail.com $
+ * $Id: NYTProf.xs 1425 2012-08-10 11:32:58Z tim.bunce@gmail.com $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -1516,7 +1516,7 @@ DB_leave(pTHX_ OP *op, OP *prev_op)
     prev_last_executed_fid  = last_executed_fid;
     prev_last_executed_line = last_executed_line;
 
-#ifdef CxMULTICALL && 0 /* disabled for now */
+#if defined(CxMULTICALL) && 0 /* disabled for now */
     /* pp_return, pp_leavesub and pp_leavesublv
      * return a NULL op when returning from a MULTICALL.
      * See Lightweight Callbacks in perlcall.
@@ -1635,7 +1635,7 @@ open_output_file(pTHX_ char *filename)
     char filename_buf[MAXPATHLEN];
     /* 'x' is a GNU C lib extension for O_EXCL which gives us a little
      * extra protection, but it isn't POSIX compliant */
-    const char *mode = "wbx";
+    const char *mode = (strnEQ(filename, "/dev/", 4) ? "wb" : "wbx");
     /* most systems that don't support it will silently ignore it
      * but for some we need to remove it to avoid an error */
 #ifdef WIN32
@@ -1825,7 +1825,7 @@ append_linenum_to_begin(pTHX_ subr_entry_t *subr_entry) {
     DBsv = hv_delete(GvHV(PL_DBsub), SvPVX(fullnamesv), (I32)total_len, 1);
 
     if (DBsv && parse_DBsub_value(aTHX_ DBsv, NULL, &line, NULL, SvPVX(fullnamesv))) {
-        SvREFCNT_inc(DBsv); /* was made mortal by hv_delete */
+        (void)SvREFCNT_inc(DBsv); /* was made mortal by hv_delete */
         sv_catpvf(fullnamesv,                   "@%u", (unsigned int)line);
         if (hv_fetch(GvHV(PL_DBsub), SvPV_nolen(fullnamesv), (I32)SvCUR(fullnamesv), 0)) {
             static unsigned int dup_begin_seqn;
@@ -2296,6 +2296,10 @@ subr_entry_setup(pTHX_ COP *prev_cop, subr_entry_t *clone_subr_entry, OPCODE op_
         }
         subr_entry->called_cv_depth = 1; /* an approximation for slowops */
         subr_entry->called_is_xs = "sop";
+        /* XXX make configurable eg for wait(), and maybe even subs like FCGI::Accept
+         * so perhaps use $hide_sub_calls->{$package}{$subname} to make it general.
+         * Then the logic would have to move out of this block.
+         */
         if (OP_ACCEPT == op_type)
             subr_entry->hide_subr_call_time = 1;
     }
@@ -2547,9 +2551,9 @@ pp_subcall_profiler(pTHX_ int is_slowop)
 
         /* XXX if the goto op or goto'd xsub croaks then this'll leak */
         /* we can't mortalize here because we're about to leave scope */
-        SvREFCNT_inc(goto_subr_entry.caller_subnam_sv);
-        SvREFCNT_inc(goto_subr_entry.called_subnam_sv);
-        SvREFCNT_inc(sub_sv);
+        (void)SvREFCNT_inc(goto_subr_entry.caller_subnam_sv);
+        (void)SvREFCNT_inc(goto_subr_entry.called_subnam_sv);
+        (void)SvREFCNT_inc(sub_sv);
 
         /* grab the CvSTART of the called sub since it's available */
         called_cv = (CV*)SvRV(sub_sv);
@@ -2639,8 +2643,10 @@ pp_subcall_profiler(pTHX_ int is_slowop)
                 logwarn("NYTProf is confused about CV %p called as %s at %s line %d (please report as a bug)\n",
                     (void*)called_cv, SvPV_nolen(sub_sv), OutCopFILE(prev_cop), (int)CopLINE(prev_cop));
                 /* looks like Class::MOP doesn't give the CV GV stash a name */
-                if (trace_level >= 2)
+                if (trace_level >= 2) {
                     sv_dump((SV*)called_cv); /* coredumps in Perl_do_gvgv_dump, looks line GvXPVGV is false, presumably on a Class::MOP wierdo sub */
+                    sv_dump((SV*)gv);
+                }
             }
         }
 
@@ -3467,7 +3473,7 @@ write_sub_callers(pTHX)
         }
     }
     if (negative_time_calls) {
-        logwarn("Warning: %d subroutine calls had negative time! The clock being used (%d) is probably unstable, so the results will be as well.\n",
+        logwarn("Warning: %d subroutine calls had negative time! See TROUBLESHOOTING in the documentation. (Clock %d)\n",
             negative_time_calls, profile_clock);
     }
 }

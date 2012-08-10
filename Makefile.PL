@@ -7,7 +7,7 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-# $Id: Makefile.PL 1090 2010-03-01 17:18:51Z tim.bunce $
+# $Id: Makefile.PL 1424 2012-08-10 11:28:21Z tim.bunce@gmail.com $
 ###########################################################
 
 use 5.008001;
@@ -30,6 +30,7 @@ if ($ENV{PERL_CORE}) {
 } else {
     @man = ( MAN1PODS  => {
         'bin/nytprofhtml' => '$(INST_MAN1DIR)/nytprofhtml.1',
+        'bin/nytprofmerge'=> '$(INST_MAN1DIR)/nytprofmerge.1',
         'bin/nytprofcsv'  => '$(INST_MAN1DIR)/nytprofcsv.1',
         'bin/nytprofcg'   => '$(INST_MAN1DIR)/nytprofcg.1',
     } );
@@ -208,7 +209,7 @@ package MY;
 sub post_constants {
     q{
 
-prove:: pure_all
+ptest prove:: pure_all
 	time nice prove -b -j 9 --shuffle
 
 # not require because it confuses the call-graph
