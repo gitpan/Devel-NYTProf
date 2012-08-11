@@ -29,4 +29,4 @@ resources:
   license: http://dev.perl.org/licenses/
   repository: http://perl-devel-nytprof.googlecode.com/svn
   x_MailingList: http://groups.google.com/group/develnytprof-dev
-version: 4.07
+version: 4.08

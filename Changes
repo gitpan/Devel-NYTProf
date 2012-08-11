@@ -2,11 +2,15 @@
 
 Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2012-08-10 12:27:46 +0100 (Fri, 10 Aug 2012) $ $Revision: 1423 $)
+(As of $Date: 2012-08-11 11:53:27 +0100 (Sat, 11 Aug 2012) $ $Revision: 1427 $)
 
 =cut
 
-=head2 Changes in Devel::NYTProf 4.07
+=head2 Changes in Devel::NYTProf 4.08 (svn 1427) 11th Aug 2012
+
+  Fixed version numbers in nytprofhtml and nytprofmerge.
+
+=head2 Changes in Devel::NYTProf 4.07 (svn 1419) 10th Aug 2012
 
   Fixed html generation to be valid, RT#70207 (H.Merijn Brand).
   nytprofmerge no longer dies on some errors, RT#75918.
