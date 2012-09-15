@@ -4,7 +4,7 @@
       "Adam Kaplan <akaplan@cpan.org>, Tim Bunce <timb@cpan.org>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "ExtUtils::MakeMaker version 6.62, CPAN::Meta::Converter version 2.120921",
+   "generated_by" : "ExtUtils::MakeMaker version 6.6302, CPAN::Meta::Converter version 2.120630",
    "license" : [
       "perl_5"
    ],
@@ -54,5 +54,5 @@
       },
       "x_MailingList" : "http://groups.google.com/group/develnytprof-dev"
    },
-   "version" : "4.08"
+   "version" : "4.09"
 }

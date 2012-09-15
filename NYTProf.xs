@@ -13,7 +13,7 @@
  * Steve Peters, steve at fisharerojo.org
  *
  * ************************************************************************
- * $Id: NYTProf.xs 1425 2012-08-10 11:32:58Z tim.bunce@gmail.com $
+ * $Id: NYTProf.xs 1430 2012-09-11 15:29:43Z tim.bunce@gmail.com $
  * ************************************************************************
  */
 #ifndef WIN32
@@ -329,7 +329,7 @@ static unsigned int last_executed_fid;
 static        char *last_executed_fileptr;
 static unsigned int last_block_line;
 static unsigned int last_sub_line;
-static bool         last_sawampersand;
+static U8           last_sawampersand;
 static unsigned int is_profiling;       /* disable_profile() & enable_profile() */
 static Pid_t last_pid = 0;
 static NV cumulative_overhead_ticks = 0.0;
@@ -377,11 +377,11 @@ static HV *sub_callers_hv;
 static HV *pkg_fids_hv;     /* currently just package names */
 
 #define CHECK_SAWAMPERSAND(fid,line) STMT_START { \
-    if (PL_sawampersand != last_sawampersand) { \
+    if ((U8)PL_sawampersand != last_sawampersand) { \
         if (trace_level >= 1) \
             logwarn("Slow regex match variable seen (first noted at %u:%u)\n", fid, line); \
         NYTP_write_sawampersand(out, fid, line); \
-        last_sawampersand = PL_sawampersand; \
+        last_sawampersand = (U8)PL_sawampersand; \
     } \
 } STMT_END
 

@@ -1,5 +1,5 @@
 # vim: ts=8 sw=2 sts=0 noexpandtab:
-# $Id: HACKING 1396 2010-11-19 11:57:16Z tim.bunce@gmail.com $
+# $Id: HACKING 1429 2012-09-11 15:11:46Z tim.bunce@gmail.com $
 
 HACKING Devel::NYTProf
 ======================
@@ -363,4 +363,5 @@ profile. Possibly straight-forward to implement. The trick is to add the time
 spent in the sub to the statement profiler overhead time, thus getting it
 subtracted from the higher level sub time. Maybe.
 
-
+Generate Flame Graphs from the subroutine profiler data:
+http://dtrace.org/blogs/brendan/2011/12/16/flame-graphs/
