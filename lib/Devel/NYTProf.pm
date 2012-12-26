@@ -7,11 +7,11 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 1427 2012-08-11 10:53:27Z tim.bunce@gmail.com $
+## $Id: NYTProf.pm 1441 2012-12-26 18:42:41Z tim.bunce@gmail.com $
 ###########################################################
 package Devel::NYTProf;
 
-our $VERSION = '4.09'; # also change in Devel::NYTProf::Core
+our $VERSION = '4.11'; # also change in Devel::NYTProf::Core
 
 package    # hide the package from the PAUSE indexer
     DB;
@@ -460,6 +460,9 @@ likely to change in future.
 
 =head2 usecputime=1
 
+This option is deprecated and will be removed in a future version.
+See the L</clock=N> option.
+
 Measure user CPU + system CPU time instead of the real elapsed 'wall clock'
 time (which is the default). But there are better ways to do this, read on.
 
@@ -469,7 +472,7 @@ by Cusecputime=1> also has the severe disadvantage of having typically I<far>
 less accurate timings.
 
 Most systems have a 0.01 second granularity in the results from the C<times()>
-sytem call.  With modern processors having multi- gigahertz clocks, 0.01
+system call.  With modern processors having multi- gigahertz clocks, 0.01
 seconds is like a lifetime. The 'ticks' of this CPU time clock
 happen so rarely relative to the activity of a most applications that you'd
 have to run the code for many hours to have any hope of reasonably useful results.
@@ -1158,7 +1161,7 @@ the eval, and that causes the warning when the file is read.
 There are two likely causes for this: clock instability, or accumulated timing
 errors.
 
-Clock instability, if present on your system, is most likely to be noticable on
+Clock instability, if present on your system, is most likely to be noticeable on
 very small/fast subroutines that are called very few times.
 
 Accumulated timing errors can arise because the subroutine profiler uses
@@ -1242,7 +1245,7 @@ Statement-level profilers:
 Devel::NYTProf is a (now distant) fork of Devel::FastProf, which was itself an
 evolution of Devel::SmallProf.
 
-Adam Kaplan took Devel::FastProf and added html report generation (based on
+Adam Kaplan forked Devel::FastProf and added html report generation (based on
 Devel::Cover) and a test suite - a tricky thing to do for a profiler.
 Meanwhile Tim Bunce had been extending Devel::FastProf to add novel
 per-sub and per-block timing, plus subroutine caller tracking.
@@ -1251,7 +1254,7 @@ When Devel::NYTProf was released Tim switched to working on Devel::NYTProf
 because the html report would be a good way to show the extra profile data, and
 the test suite made development much easier and safer.
 
-Then he went a little crazy and added a slew of new features, in addition to
+Then Tim went a little crazy and added a slew of new features, in addition to
 per-sub and per-block timing and subroutine caller tracking. These included the
 'opcode interception' method of profiling, ultra-fast and robust inclusive
 subroutine timing, doubling performance, plus major changes to html reporting
@@ -1263,7 +1266,14 @@ keep NYTProf working with the latest development perl versions. Nicholas Clark
 added zip compression, many optimizations, and C<nytprofmerge>.
 Jan Dubois contributed Windows support.
 
-Adam's work is sponsored by The New York Times Co. L<http://open.nytimes.com>.
-Tim's work was partly sponsored by Shopzilla L<http://www.shopzilla.com> during 2008.
+Adam's work was sponsored by The New York Times Co. L<http://open.nytimes.com>.
+Tim's work was partly sponsored by Shopzilla L<http://www.shopzilla.com> during 2008
+but hasn't been sponsored since then.
+
+For the record, Tim has never worked for the New York Times nor has he received any
+kind of sponsorship or support from them in relation to NYTProf. The name of
+this module is simply result of the history outlined above, which can be
+summarised as: Adam forked an existing module when he added his enhancements
+and Tim didn't.
 
 =cut

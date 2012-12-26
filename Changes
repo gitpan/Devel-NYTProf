@@ -2,9 +2,26 @@
 
 Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date: 2012-09-15 11:21:09 +0100 (Sat, 15 Sep 2012) $ $Revision: 1431 $)
+(As of $Date: 2012-12-26 18:43:23 +0000 (Wed, 26 Dec 2012) $ $Revision: 1442 $)
 
 =cut
+
+TODO: study http://www.postgresql.org/docs/9.2/static/pgtesttiming.html
+and reference in our docs.
+
+=head2 Changes in Devel::NYTProf 4.11 (svn 1442) 26th Dec 2012
+
+  Fixed to work with perl v5.17+, specifically string eval
+    changes and hash randomization.
+  Fixed so tests ignore sitecustomize.pl, RT#79784
+    thanks to JACOB@cpan.org.
+  Fixed to sort tables with microsecond values in non-utf8
+    encodings, RT#77843
+
+  Deprecated the usecputime=1 option and documented that it
+    will be removed in a future version.
+
+  Corrected spelling thanks to Alessandro Ghedini @debian RT#80370
 
 =head2 Changes in Devel::NYTProf 4.09 (svn 1431) 15th Sep 2012
 

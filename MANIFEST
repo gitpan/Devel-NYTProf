@@ -198,5 +198,4 @@ xt/test45-overload.p
 xt/test71-while.p
 xt/test82-stress.t
 xt/test90-stress.p
-META.yml                                 Module YAML meta-data (added by MakeMaker)
-META.json                                Module JSON meta-data (added by MakeMaker)
+META.yml                                 Module meta-data (added by MakeMaker)
