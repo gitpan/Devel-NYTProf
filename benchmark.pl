@@ -8,7 +8,7 @@
 ## http://search.cpan.org/perldoc?Devel::NYTProf
 ##
 ###########################################################
-## $Id: benchmark.pl 322 2008-07-15 04:33:35Z tim.bunce $
+## $Id$
 ###########################################################
 use warnings;
 use strict;

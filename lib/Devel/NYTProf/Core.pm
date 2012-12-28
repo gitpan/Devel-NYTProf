@@ -7,19 +7,19 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Core.pm 1441 2012-12-26 18:42:41Z tim.bunce@gmail.com $
+# $Id$
 ###########################################################
 package Devel::NYTProf::Core;
 
 
 use XSLoader;
 
-our $VERSION = '4.11';    # increment with XS changes too
+our $VERSION = '4.12';    # increment with XS changes too
 
 XSLoader::load('Devel::NYTProf', $VERSION);
 
 # Fudging for https://rt.cpan.org/Ticket/Display.html?id=82256
-$Devel::NYTProf::StrEvalTestPad = ($] <= 5.017003) ? ";\n" : "";
+$Devel::NYTProf::StrEvalTestPad = ($] <= 5.017004) ? ";\n" : "";
 
 if (my $NYTPROF = $ENV{NYTPROF}) {
     for my $optval ( $NYTPROF =~ /((?:[^\\:]+|\\.)+)/g) {

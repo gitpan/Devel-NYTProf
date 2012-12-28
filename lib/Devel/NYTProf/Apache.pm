@@ -7,7 +7,7 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Apache.pm 1413 2012-03-22 15:07:46Z tim.bunce@gmail.com $
+# $Id$
 ###########################################################
 package Devel::NYTProf::Apache;
 

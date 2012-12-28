@@ -7,11 +7,11 @@
 ## http://search.cpan.org/dist/Devel-NYTProf/
 ##
 ###########################################################
-## $Id: NYTProf.pm 1441 2012-12-26 18:42:41Z tim.bunce@gmail.com $
+## $Id$
 ###########################################################
 package Devel::NYTProf;
 
-our $VERSION = '4.11'; # also change in Devel::NYTProf::Core
+our $VERSION = '4.12'; # also change in Devel::NYTProf::Core
 
 package    # hide the package from the PAUSE indexer
     DB;

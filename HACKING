@@ -1,5 +1,5 @@
 # vim: ts=8 sw=2 sts=0 noexpandtab:
-# $Id: HACKING 1429 2012-09-11 15:11:46Z tim.bunce@gmail.com $
+# $Id$
 
 HACKING Devel::NYTProf
 ======================
