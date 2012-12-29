@@ -148,7 +148,7 @@ Perl_gv_fetchfile_flags(pTHX_ const char *const name, const STRLEN namelen, cons
 #define NYTP_FIDi_SUBS_CALLED   11
 #define NYTP_FIDi_elements      12   /* highest index, plus 1 */
 
-/* indices to elements of the sub call info array */
+/* indices to elements of the sub info array (report-side only) */
 #define NYTP_SIi_FID             0   /* fid of file sub was defined in */
 #define NYTP_SIi_FIRST_LINE      1   /* line number of first line of sub */    
 #define NYTP_SIi_LAST_LINE       2   /* line number of last line of sub */    
@@ -163,11 +163,18 @@ Perl_gv_fetchfile_flags(pTHX_ const char *const name, const STRLEN namelen, cons
 #define NYTP_SIi_elements       11   /* highest index, plus 1 */
 
 /* indices to elements of the sub call info array */
+/* XXX currently ticks are accumulated into NYTP_SCi_*_TICKS during profiling
+ * and then NYTP_SCi_*_RTIME are calculated and output. This avoids float noise
+ * during profiling but we should really output ticks so the reporting side
+ * can also be more accurate when merging subs, for example.
+ * That'll probably need a file format bump and thus also a major version bump.
+ * Will need coresponding changes to NYTP_SIi_* as well.
+ */
 #define NYTP_SCi_CALL_COUNT      0   /* count of calls to sub */    
-#define NYTP_SCi_INCL_RTIME      1    /* inclusive real time in sub */    
-#define NYTP_SCi_EXCL_RTIME      2   /* exclusive real time in sub */    
-#define NYTP_SCi_spare_3         3   /* */
-#define NYTP_SCi_spare_4         4   /* */
+#define NYTP_SCi_INCL_RTIME      1   /* inclusive real time in sub (set from NYTP_SCi_INCL_TICKS) */
+#define NYTP_SCi_EXCL_RTIME      2   /* exclusive real time in sub (set from NYTP_SCi_EXCL_TICKS) */
+#define NYTP_SCi_INCL_TICKS      3   /* inclusive ticks in sub */
+#define NYTP_SCi_EXCL_TICKS      4   /* exclusive ticks in sub */
 #define NYTP_SCi_RECI_RTIME      5   /* recursive incl real time in sub */
 #define NYTP_SCi_REC_DEPTH       6   /* max recursion call depth */
 #define NYTP_SCi_CALLING_SUB     7   /* name of calling sub */
@@ -262,7 +269,6 @@ static struct NYTP_int_options_t options[] = {
 };
 
 /* time tracking */
-static struct tms start_ctime, end_ctime;
 
 #ifdef HAS_CLOCK_GETTIME
 /* http://www.freebsd.org/cgi/man.cgi?query=clock_gettime
@@ -273,11 +279,11 @@ static struct tms start_ctime, end_ctime;
  */
 typedef struct timespec time_of_day_t;
 #  define CLOCK_GETTIME(ts) clock_gettime(profile_clock, ts)
-#  define CLOCKS_PER_TICK 10000000                /* 10 million - 100ns */
+#  define TICKS_PER_SEC 10000000                /* 10 million - 100ns */
 #  define get_time_of_day(into) CLOCK_GETTIME(&into)
 #  define get_ticks_between(s, e, ticks, overflow) STMT_START { \
     overflow = 0; \
-    ticks = ((e.tv_sec - s.tv_sec) * CLOCKS_PER_TICK + (e.tv_nsec / 100) - (s.tv_nsec / 100)); \
+    ticks = ((e.tv_sec - s.tv_sec) * TICKS_PER_SEC + (e.tv_nsec / 100) - (s.tv_nsec / 100)); \
 } STMT_END
 
 #else                                             /* !HAS_CLOCK_GETTIME */
@@ -290,7 +296,7 @@ typedef struct timespec time_of_day_t;
 mach_timebase_info_data_t  our_timebase;
 typedef uint64_t time_of_day_t;
 
-#  define CLOCKS_PER_TICK 10000000                /* 10 million - 100ns */
+#  define TICKS_PER_SEC 10000000                /* 10 million - 100ns */
 #  define get_time_of_day(into) into = mach_absolute_time()
 #  define get_ticks_between(s, e, ticks, overflow) STMT_START { \
     overflow = 0; \
@@ -302,20 +308,20 @@ typedef uint64_t time_of_day_t;
 
 #ifdef HAS_GETTIMEOFDAY
 typedef struct timeval time_of_day_t;
-#  define CLOCKS_PER_TICK 1000000                 /* 1 million */
+#  define TICKS_PER_SEC 1000000                 /* 1 million */
 #  define get_time_of_day(into) gettimeofday(&into, NULL)
 #  define get_ticks_between(s, e, ticks, overflow) STMT_START { \
     overflow = 0; \
-    ticks = ((e.tv_sec - s.tv_sec) * CLOCKS_PER_TICK + e.tv_usec - s.tv_usec); \
+    ticks = ((e.tv_sec - s.tv_sec) * TICKS_PER_SEC + e.tv_usec - s.tv_usec); \
 } STMT_END
 #else
 static int (*u2time)(pTHX_ UV *) = 0;
 typedef UV time_of_day_t[2];
-#  define CLOCKS_PER_TICK 1000000                 /* 1 million */
+#  define TICKS_PER_SEC 1000000                 /* 1 million */
 #  define get_time_of_day(into) (*u2time)(aTHX_ into)
 #  define get_ticks_between(s, e, ticks, overflow)  STMT_START { \
     overflow = 0; \
-    ticks = ((e[0] - s[0]) * CLOCKS_PER_TICK + e[1] - s[1]); \
+    ticks = ((e[0] - s[0]) * TICKS_PER_SEC + e[1] - s[1]); \
 } STMT_END
 #endif
 #endif
@@ -333,7 +339,7 @@ static U8           last_sawampersand;
 static unsigned int is_profiling;       /* disable_profile() & enable_profile() */
 static Pid_t last_pid = 0;
 static NV cumulative_overhead_ticks = 0.0;
-static NV cumulative_subr_secs = 0.0;
+static NV cumulative_subr_ticks = 0.0;
 static UV cumulative_subr_seqn = 0;
 static int main_runtime_used = 0;
 static SV *DB_CHECK_cv;
@@ -1386,16 +1392,8 @@ DB_stmt(pTHX_ COP *cop, OP *op)
 
     saved_errno = errno;
 
-    if (profile_usecputime) {
-        times(&end_ctime);
-        overflow = 0;                             /* XXX */
-        elapsed = end_ctime.tms_utime - start_ctime.tms_utime
-                + end_ctime.tms_stime - start_ctime.tms_stime;
-    }
-    else {
-        get_time_of_day(end_time);
-        get_ticks_between(start_time, end_time, elapsed, overflow);
-    }
+    get_time_of_day(end_time);
+    get_ticks_between(start_time, end_time, elapsed, overflow);
 
     reinit_if_forked(aTHX);
 
@@ -1474,17 +1472,11 @@ DB_stmt(pTHX_ COP *cop, OP *op)
         if (!last_sub_line)   last_sub_line   = last_executed_line;
     }
 
-    if (profile_usecputime) {
-        times(&start_ctime);
-        /* insufficient accuracy for cumulative_overhead_ticks */
-    }
-    else {
-        get_time_of_day(start_time);
+    get_time_of_day(start_time);
 
-        /* measure time we've spent measuring so we can discount it */
-        get_ticks_between(end_time, start_time, elapsed, overflow);
-        cumulative_overhead_ticks += elapsed;
-    }
+    /* measure time we've spent measuring so we can discount it */
+    get_ticks_between(end_time, start_time, elapsed, overflow);
+    cumulative_overhead_ticks += elapsed;
 
     SETERRNO(saved_errno, 0);
     return;
@@ -1759,6 +1751,8 @@ new_sub_call_info_av(pTHX)
     av_store(av, NYTP_SCi_CALL_COUNT, newSVuv(1));
     av_store(av, NYTP_SCi_INCL_RTIME, newSVnv(0.0));
     av_store(av, NYTP_SCi_EXCL_RTIME, newSVnv(0.0));
+    av_store(av, NYTP_SCi_INCL_TICKS, newSVnv(0.0));
+    av_store(av, NYTP_SCi_EXCL_TICKS, newSVnv(0.0));
     /* others allocated when needed */
     return av;
 }
@@ -1776,7 +1770,7 @@ struct subr_entry_st {
     time_of_day_t initial_call_timeofday;
     struct tms    initial_call_cputimes;
     NV            initial_overhead_ticks;
-    NV            initial_subr_secs;
+    NV            initial_subr_ticks;
 
     unsigned int  caller_fid;
     int           caller_line;
@@ -1897,9 +1891,9 @@ incr_sub_inclusive_time(pTHX_ subr_entry_t *subr_entry)
     char *called_subname_pv_end = called_subname_pv;
     char subr_call_key[500]; /* XXX */
     int subr_call_key_len;
-    NV  overhead_ticks, called_sub_secs;
+    NV  overhead_ticks, called_sub_ticks;
     SV *incl_time_sv, *excl_time_sv;
-    NV  incl_subr_sec, excl_subr_sec;
+    NV  incl_subr_ticks, excl_subr_ticks;
     SV *sv_tmp;
     AV *subr_call_av;
 
@@ -1922,43 +1916,31 @@ incr_sub_inclusive_time(pTHX_ subr_entry_t *subr_entry)
     /* statement overheads we've accumulated since we entered the sub */
     overhead_ticks = cumulative_overhead_ticks - subr_entry->initial_overhead_ticks;
     /* seconds spent in subroutines called by this subroutine */
-    called_sub_secs = (cumulative_subr_secs - subr_entry->initial_subr_secs);
+    called_sub_ticks = cumulative_subr_ticks - subr_entry->initial_subr_ticks;
 
-    if (profile_usecputime) {
-        struct tms call_end_ctime;
-        long ticks;
+    time_of_day_t sub_end_time;
+    long ticks, overflow;
 
-        times(&call_end_ctime);
-        ticks = (call_end_ctime.tms_utime - subr_entry->initial_call_cputimes.tms_utime)
-              + (call_end_ctime.tms_stime - subr_entry->initial_call_cputimes.tms_stime);
-        /* ignore overhead_ticks when using cputime because the resolution is so poor */
-        incl_subr_sec = (ticks / (NV)PL_clocktick);
-    }
-    else {
-        time_of_day_t sub_end_time;
-        long ticks, overflow;
+    /* calculate ticks since we entered the sub */
+    get_time_of_day(sub_end_time);
+    get_ticks_between(subr_entry->initial_call_timeofday, sub_end_time, ticks, overflow);
 
-        /* calculate ticks since we entered the sub */
-        get_time_of_day(sub_end_time);
-        get_ticks_between(subr_entry->initial_call_timeofday, sub_end_time, ticks, overflow);
-
-        incl_subr_sec = overflow + (ticks / (NV)CLOCKS_PER_TICK);
-        /* subtract statement measurement overheads */
-        incl_subr_sec -= (overhead_ticks / CLOCKS_PER_TICK);
-    }
+    incl_subr_ticks = (overflow*ticks_per_sec) + ticks;
+    /* subtract statement measurement overheads */
+    incl_subr_ticks -= overhead_ticks;
 
     if (subr_entry->hide_subr_call_time) {
         /* account for the time spent in the sub as if it was statement
          * profiler overhead. That has the effect of neatly subtracting
          * the time from all the sub calls up the call stack.
          */
-        cumulative_overhead_ticks += incl_subr_sec * CLOCKS_PER_TICK;
-        incl_subr_sec = 0;
-        called_sub_secs = 0;
+        cumulative_overhead_ticks += incl_subr_ticks;
+        incl_subr_ticks = 0;
+        called_sub_ticks = 0;
     }
 
     /* exclusive = inclusive - time spent in subroutines called by this subroutine */
-    excl_subr_sec = incl_subr_sec - called_sub_secs;
+    excl_subr_ticks = incl_subr_ticks - called_sub_ticks;
 
     subr_call_key_len = sprintf(subr_call_key, "%s::%s[%u:%d]",
         subr_entry->caller_subpkg_pv,
@@ -2049,8 +2031,11 @@ incr_sub_inclusive_time(pTHX_ subr_entry_t *subr_entry)
         logwarn("%2d <-     %s %"NVff"s excl = %"NVff"s incl - %"NVff"s (%"NVff"-%"NVff"), oh %"NVff"-%"NVff"=%"NVff"t, d%d @%d:%d #%lu %p\n",
             subr_entry->subr_prof_depth,
             called_subname_pv,
-            excl_subr_sec, incl_subr_sec, called_sub_secs,
-            cumulative_subr_secs, subr_entry->initial_subr_secs,
+            excl_subr_ticks/ticks_per_sec,
+            incl_subr_ticks/ticks_per_sec,
+            called_sub_ticks/ticks_per_sec,
+            cumulative_subr_ticks/ticks_per_sec,
+            subr_entry->initial_subr_ticks/ticks_per_sec,
             cumulative_overhead_ticks, subr_entry->initial_overhead_ticks, overhead_ticks,
             (int)subr_entry->called_cv_depth,
             subr_entry->caller_fid, subr_entry->caller_line,
@@ -2058,25 +2043,24 @@ incr_sub_inclusive_time(pTHX_ subr_entry_t *subr_entry)
 
     /* only count inclusive time for the outer-most calls */
     if (subr_entry->called_cv_depth <= 1) {
-        incl_time_sv = *av_fetch(subr_call_av, NYTP_SCi_INCL_RTIME, 1);
-        sv_setnv(incl_time_sv, SvNV(incl_time_sv)+incl_subr_sec);
+        incl_time_sv = *av_fetch(subr_call_av, NYTP_SCi_INCL_TICKS, 1);
+        sv_setnv(incl_time_sv, SvNV(incl_time_sv)+incl_subr_ticks);
     }
-    else {
-        /* recursing into an already entered sub */
+    else { /* recursing into an already entered sub */
         /* measure max depth and accumulate incl time separately */
         SV *reci_time_sv = *av_fetch(subr_call_av, NYTP_SCi_RECI_RTIME, 1);
         SV *max_depth_sv = *av_fetch(subr_call_av, NYTP_SCi_REC_DEPTH, 1);
-        sv_setnv(reci_time_sv, (SvOK(reci_time_sv)) ? SvNV(reci_time_sv)+incl_subr_sec : incl_subr_sec);
+        sv_setnv(reci_time_sv, (SvOK(reci_time_sv)) ? SvNV(reci_time_sv)+(incl_subr_ticks/ticks_per_sec) : (incl_subr_ticks/ticks_per_sec));
         /* we track recursion depth here, which is called_cv_depth-1 */
         if (!SvOK(max_depth_sv) || subr_entry->called_cv_depth-1 > SvIV(max_depth_sv))
             sv_setiv(max_depth_sv, subr_entry->called_cv_depth-1);
     }
-    excl_time_sv = *av_fetch(subr_call_av, NYTP_SCi_EXCL_RTIME, 1);
-    sv_setnv(excl_time_sv, SvNV(excl_time_sv)+excl_subr_sec);
+    excl_time_sv = *av_fetch(subr_call_av, NYTP_SCi_EXCL_TICKS, 1);
+    sv_setnv(excl_time_sv, SvNV(excl_time_sv)+excl_subr_ticks);
 
     subr_entry_destroy(aTHX_ subr_entry);
 
-    cumulative_subr_secs += excl_subr_sec;
+    cumulative_subr_ticks += excl_subr_ticks;
     SETERRNO(saved_errno, 0);
 }
 
@@ -2232,12 +2216,9 @@ subr_entry_setup(pTHX_ COP *prev_cop, subr_entry_t *clone_subr_entry, OPCODE op_
     subr_entry->subr_prof_depth = (caller_subr_entry)
         ? caller_subr_entry->subr_prof_depth+1 : 1;
 
-    if (profile_usecputime)
-        times(&subr_entry->initial_call_cputimes);
-    else
-        get_time_of_day(subr_entry->initial_call_timeofday);
+    get_time_of_day(subr_entry->initial_call_timeofday);
     subr_entry->initial_overhead_ticks = cumulative_overhead_ticks;
-    subr_entry->initial_subr_secs      = cumulative_subr_secs;
+    subr_entry->initial_subr_ticks     = cumulative_subr_ticks;
     subr_entry->subr_call_seqn         = (unsigned long)(++cumulative_subr_seqn);
 
     /* try to work out what sub's being called in advance
@@ -2709,7 +2690,7 @@ pp_subcall_profiler(pTHX_ int is_slowop)
             subr_entry->caller_fid, subr_entry->caller_line,
             subr_entry->called_cv_depth,
             subr_entry->initial_overhead_ticks,
-            subr_entry->initial_subr_secs,
+            subr_entry->initial_subr_ticks / ticks_per_sec,
             subr_entry->subr_call_seqn
         );
     }
@@ -2782,6 +2763,11 @@ enable_profile(pTHX_ char *file)
     }
 #endif
 
+    if (profile_usecputime) {
+        warn("The NYTProf usecputime option has been removed (try using clock=N if possible)");
+        return 0;
+    }
+
     if (trace_level)
         logwarn("~ enable_profile (previously %s) to %s\n",
             prev_is_profiling ? "enabled" : "disabled",
@@ -2805,12 +2791,7 @@ enable_profile(pTHX_ char *file)
         sv_setiv(PL_DBsingle, 1);
 
     /* discard time spent since profiler was disabled */
-    if (profile_usecputime) {
-        times(&start_ctime);
-    }
-    else {
-        get_time_of_day(start_time);
-    }
+    get_time_of_day(start_time);
 
     return prev_is_profiling;
 }
@@ -2869,7 +2850,7 @@ finish_profile(pTHX)
     hv_clear(sub_callers_hv);
     /* reset other state */
     cumulative_overhead_ticks = 0;
-    cumulative_subr_secs = 0;
+    cumulative_subr_ticks = 0;
 
     SETERRNO(saved_errno, 0);
 }
@@ -2903,7 +2884,7 @@ _init_profiler_clock(pTHX)
         profile_clock = -1;
     }
 #endif
-    ticks_per_sec = (profile_usecputime) ? PL_clocktick : CLOCKS_PER_TICK;
+    ticks_per_sec = TICKS_PER_SEC;
 }
 
 
@@ -3049,12 +3030,7 @@ init_profiler(pTHX)
     }
 
     /* seed first run time */
-    if (profile_usecputime) {
-        times(&start_ctime);
-    }
-    else {
-        get_time_of_day(start_time);
-    }
+    get_time_of_day(start_time);
 
     if (trace_level >= 1)
         logwarn("~ init_profiler done\n");
@@ -3434,8 +3410,8 @@ write_sub_callers(pTHX)
 
             count = uv_from_av(aTHX_ av, NYTP_SCi_CALL_COUNT, 0);
             sc[NYTP_SCi_CALL_COUNT] = count * 1.0;
-            sc[NYTP_SCi_INCL_RTIME] = nv_from_av(aTHX_ av, NYTP_SCi_INCL_RTIME, 0.0);
-            sc[NYTP_SCi_EXCL_RTIME] = nv_from_av(aTHX_ av, NYTP_SCi_EXCL_RTIME, 0.0);
+            sc[NYTP_SCi_INCL_RTIME] = nv_from_av(aTHX_ av, NYTP_SCi_INCL_TICKS, 0.0) / ticks_per_sec;
+            sc[NYTP_SCi_EXCL_RTIME] = nv_from_av(aTHX_ av, NYTP_SCi_EXCL_TICKS, 0.0) / ticks_per_sec;
             sc[NYTP_SCi_RECI_RTIME] = nv_from_av(aTHX_ av, NYTP_SCi_RECI_RTIME, 0.0);
             depth = uv_from_av(aTHX_ av, NYTP_SCi_REC_DEPTH , 0);
             sc[NYTP_SCi_REC_DEPTH]  = depth * 1.0;
@@ -4092,9 +4068,9 @@ load_sub_callers_callback(Loader_state_base *cb_data, const nytp_tax_index tag, 
         sv_setnv(sv, (SvOK(sv)) ? SvNV(sv) + incl_time : incl_time);
         sv = *av_fetch(av, NYTP_SCi_EXCL_RTIME, 1);
         sv_setnv(sv, (SvOK(sv)) ? SvNV(sv) + excl_time : excl_time);
-        sv = *av_fetch(av, NYTP_SCi_spare_3, 1);
+        sv = *av_fetch(av, NYTP_SCi_INCL_TICKS, 1);
         sv_setnv(sv, 0.0);
-        sv = *av_fetch(av, NYTP_SCi_spare_4, 1);
+        sv = *av_fetch(av, NYTP_SCi_EXCL_TICKS, 1);
         sv_setnv(sv, 0.0);
         sv = *av_fetch(av, NYTP_SCi_RECI_RTIME, 1);
         sv_setnv(sv, (SvOK(sv)) ? SvNV(sv) + reci_time : reci_time);
@@ -4876,6 +4852,8 @@ static struct int_constants_t int_constants[] = {
     {"NYTP_SCi_CALL_COUNT",   NYTP_SCi_CALL_COUNT},
     {"NYTP_SCi_INCL_RTIME",   NYTP_SCi_INCL_RTIME},
     {"NYTP_SCi_EXCL_RTIME",   NYTP_SCi_EXCL_RTIME},
+    {"NYTP_SCi_INCL_TICKS",   NYTP_SCi_INCL_TICKS},
+    {"NYTP_SCi_EXCL_TICKS",   NYTP_SCi_EXCL_TICKS},
     {"NYTP_SCi_RECI_RTIME",   NYTP_SCi_RECI_RTIME},
     {"NYTP_SCi_REC_DEPTH",    NYTP_SCi_REC_DEPTH},
     {"NYTP_SCi_CALLING_SUB",  NYTP_SCi_CALLING_SUB},
@@ -4980,7 +4958,7 @@ ticks_for_usleep(long u_seconds)
     EXTEND(SP, 4);
     PUSHs(sv_2mortal(newSVnv(elapsed)));
     PUSHs(sv_2mortal(newSVnv(overflow)));
-    PUSHs(sv_2mortal(newSVnv(CLOCKS_PER_TICK)));
+    PUSHs(sv_2mortal(newSVnv(ticks_per_sec)));
     PUSHs(sv_2mortal(newSViv(profile_clock)));
 
 

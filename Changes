@@ -2,12 +2,20 @@
 
 Changes - List of significant changes to Devel::NYTProf
 
-(As of $Date$ $Revision$)
-
 =cut
 
 TODO: study http://www.postgresql.org/docs/9.2/static/pgtesttiming.html
 and reference in our docs.
+
+=head2 Changes in Devel::NYTProf 4.23 - 29th Dec 2012
+
+  Significant improvement in the accuracy of the subroutine profiler,
+    especially for frequent calls to very short duration subs/ops.
+
+  Fixed some doc typos thanks to Jesse Sheidlower.
+  Improved nytprofmerge behaviour with inconsistent attributes.
+  Removed the usecputime=1 option. Use clock=N instead if possible.
+  Moved main repo to git (and https://github.com/timbunce/devel-nytprof)
 
 =head2 Changes in Devel::NYTProf 4.12 - 28th Dec 2012
 

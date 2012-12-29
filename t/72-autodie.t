@@ -4,12 +4,14 @@ use Test::More;
 use lib qw(t/lib);
 use NYTProfTest;
 
-eval "use Moose 2.0; 1"
-    or plan skip_all => "Moose 2.0 required";
+eval "use autodie; 1"
+    or plan skip_all => "autodie required";
 
-print "Moose $Moose::VERSION $INC{'Moose.pm'}\n";
+print "autodie $autodie::VERSION $INC{'autodie.pm'}\n";
 
-plan skip_all => "Test is incomplete (has no results defined yet)";# unless -d '.svn';
+plan skip_all => "Currently a developer-only test" unless -d '.svn';
+
+warn "This test script needs more work\n";
 
 use Devel::NYTProf::Run qw(profile_this);
 
@@ -40,11 +42,5 @@ run_test_group( {
 __DATA__
 #!perl
 package P;
-use Moose;
-has attrib_std  => ( is => 'rw',  default => 42 );
-has attrib_lazy => ( is => 'rw', lazy => 1, default => sub { 43 } );
-END {
-    my $p = P->new;
-    print $p->attrib_std."\n";
-    print $p->attrib_lazy."\n";
-}
+use autodie;
+eval { rmdir "nonsuch file name" };
