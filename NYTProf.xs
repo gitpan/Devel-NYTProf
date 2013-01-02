@@ -281,9 +281,9 @@ typedef struct timespec time_of_day_t;
 #  define CLOCK_GETTIME(ts) clock_gettime(profile_clock, ts)
 #  define TICKS_PER_SEC 10000000                /* 10 million - 100ns */
 #  define get_time_of_day(into) CLOCK_GETTIME(&into)
-#  define get_ticks_between(s, e, ticks, overflow) STMT_START { \
+#  define get_ticks_between(typ, s, e, ticks, overflow) STMT_START { \
     overflow = 0; \
-    ticks = ((e.tv_sec - s.tv_sec) * TICKS_PER_SEC + (e.tv_nsec / 100) - (s.tv_nsec / 100)); \
+    ticks = ((e.tv_sec - s.tv_sec) * TICKS_PER_SEC + (e.tv_nsec / (typ)100) - (s.tv_nsec / (typ)100)); \
 } STMT_END
 
 #else                                             /* !HAS_CLOCK_GETTIME */
@@ -292,16 +292,14 @@ typedef struct timespec time_of_day_t;
 
 #include <mach/mach.h>
 #include <mach/mach_time.h>
-
 mach_timebase_info_data_t  our_timebase;
 typedef uint64_t time_of_day_t;
-
 #  define TICKS_PER_SEC 10000000                /* 10 million - 100ns */
 #  define get_time_of_day(into) into = mach_absolute_time()
-#  define get_ticks_between(s, e, ticks, overflow) STMT_START { \
+#  define get_ticks_between(typ, s, e, ticks, overflow) STMT_START { \
     overflow = 0; \
     if( our_timebase.denom == 0 ) mach_timebase_info(&our_timebase); \
-    ticks = (e-s) * our_timebase.numer / our_timebase.denom / 100; \
+    ticks = (e-s) * our_timebase.numer / our_timebase.denom / (typ)100; \
 } STMT_END
 
 #else                                             /* !HAS_MACH_TIME */
@@ -310,11 +308,13 @@ typedef uint64_t time_of_day_t;
 typedef struct timeval time_of_day_t;
 #  define TICKS_PER_SEC 1000000                 /* 1 million */
 #  define get_time_of_day(into) gettimeofday(&into, NULL)
-#  define get_ticks_between(s, e, ticks, overflow) STMT_START { \
+#  define get_ticks_between(typ, s, e, ticks, overflow) STMT_START { \
     overflow = 0; \
     ticks = ((e.tv_sec - s.tv_sec) * TICKS_PER_SEC + e.tv_usec - s.tv_usec); \
 } STMT_END
+
 #else
+
 static int (*u2time)(pTHX_ UV *) = 0;
 typedef UV time_of_day_t[2];
 #  define TICKS_PER_SEC 1000000                 /* 1 million */
@@ -323,6 +323,7 @@ typedef UV time_of_day_t[2];
     overflow = 0; \
     ticks = ((e[0] - s[0]) * TICKS_PER_SEC + e[1] - s[1]); \
 } STMT_END
+
 #endif
 #endif
 #endif
@@ -335,7 +336,6 @@ static unsigned int last_executed_fid;
 static        char *last_executed_fileptr;
 static unsigned int last_block_line;
 static unsigned int last_sub_line;
-static U8           last_sawampersand;
 static unsigned int is_profiling;       /* disable_profile() & enable_profile() */
 static Pid_t last_pid = 0;
 static NV cumulative_overhead_ticks = 0.0;
@@ -382,14 +382,24 @@ static OP *pp_leave_profiler(pTHX);
 static HV *sub_callers_hv;
 static HV *pkg_fids_hv;     /* currently just package names */
 
+/* PL_sawampersand is disabled in 5.17.7+ 1a904fc */
+#if (PERL_VERSION < 17) || ((PERL_VERSION == 17) && (PERL_SUBVERSION < 7)) || defined(PERL_SAWAMPERSAND)
+static U8 last_sawampersand;
 #define CHECK_SAWAMPERSAND(fid,line) STMT_START { \
     if ((U8)PL_sawampersand != last_sawampersand) { \
         if (trace_level >= 1) \
-            logwarn("Slow regex match variable seen (first noted at %u:%u)\n", fid, line); \
-        NYTP_write_sawampersand(out, fid, line); \
+            logwarn("Slow regex match variable seen (0x%x->0x%x at %u:%u)\n", PL_sawampersand, last_sawampersand, fid, line); \
+        /* XXX this is a hack used by test14 to avoid different behaviour \
+         * pre/post perl 5.17.7 since it's not relevant to the test, which is really \
+         * about AutoSplit */ \
+        if (!getenv("DISABLE_NYTPROF_SAWAMPERSAND")) \
+            NYTP_write_sawampersand(out, fid, line); \
         last_sawampersand = (U8)PL_sawampersand; \
     } \
 } STMT_END
+#else
+#define CHECK_SAWAMPERSAND(fid,line) (void)0
+#endif
 
 /* macros for outputing profile data */
 #ifndef HAS_GETPPID
@@ -817,7 +827,8 @@ find_autosplit_parent(pTHX_ char* file_name)
 }
 
 
-static Hash_entry * /* currently unused */
+#if 0 /* currently unused */
+static Hash_entry *
 lookup_file_entry(pTHX_ char* file_name, STRLEN file_name_len) {
     Hash_entry entry, *found;
 
@@ -828,6 +839,7 @@ lookup_file_entry(pTHX_ char* file_name, STRLEN file_name_len) {
 
     return NULL;
 }
+#endif
 
 
 /**
@@ -1393,7 +1405,7 @@ DB_stmt(pTHX_ COP *cop, OP *op)
     saved_errno = errno;
 
     get_time_of_day(end_time);
-    get_ticks_between(start_time, end_time, elapsed, overflow);
+    get_ticks_between(long, start_time, end_time, elapsed, overflow);
 
     reinit_if_forked(aTHX);
 
@@ -1475,7 +1487,7 @@ DB_stmt(pTHX_ COP *cop, OP *op)
     get_time_of_day(start_time);
 
     /* measure time we've spent measuring so we can discount it */
-    get_ticks_between(end_time, start_time, elapsed, overflow);
+    get_ticks_between(long, end_time, start_time, elapsed, overflow);
     cumulative_overhead_ticks += elapsed;
 
     SETERRNO(saved_errno, 0);
@@ -1923,7 +1935,7 @@ incr_sub_inclusive_time(pTHX_ subr_entry_t *subr_entry)
 
     /* calculate ticks since we entered the sub */
     get_time_of_day(sub_end_time);
-    get_ticks_between(subr_entry->initial_call_timeofday, sub_end_time, ticks, overflow);
+    get_ticks_between(NV, subr_entry->initial_call_timeofday, sub_end_time, ticks, overflow);
 
     incl_subr_ticks = (overflow*ticks_per_sec) + ticks;
     /* subtract statement measurement overheads */
@@ -3627,6 +3639,7 @@ store_attrib_sv(pTHX_ HV *attr_hv, const char *text, I32 text_len, SV *value_sv)
         logwarn(": %.*s = '%s'\n", (int) text_len, text, SvPV_nolen(value_sv));
 }
 
+#if 0 /* not used at the moment */
 static int
 eval_outer_fid(pTHX_
     AV *fid_fileinfo_av,
@@ -3656,6 +3669,7 @@ eval_outer_fid(pTHX_
         eval_outer_fid(aTHX_ fid_fileinfo_av, outer_fid, recurse, eval_file_num_ptr, eval_line_num_ptr);
     return 1;
 }
+#endif
 
 typedef struct loader_state_base {
     unsigned long input_chunk_seqn;
@@ -4939,7 +4953,8 @@ set_errno(int e)
 void
 ticks_for_usleep(long u_seconds)
     PPCODE:
-    long elapsed = -1, overflow = -1;
+    NV elapsed = -1;
+    NV overflow = -1;
 #ifdef HAS_SELECT
     time_of_day_t s_time;
     time_of_day_t e_time;
@@ -4951,7 +4966,7 @@ ticks_for_usleep(long u_seconds)
     get_time_of_day(s_time);
     PerlSock_select(0, 0, 0, 0, &timebuf);
     get_time_of_day(e_time);
-    get_ticks_between(s_time, e_time, elapsed, overflow);
+    get_ticks_between(NV, s_time, e_time, elapsed, overflow);
 #else
     PERL_UNUSED_VAR(u_seconds);
 #endif
