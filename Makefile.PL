@@ -32,6 +32,7 @@ if ($ENV{PERL_CORE}) {
         'bin/nytprofhtml' => '$(INST_MAN1DIR)/nytprofhtml.1',
         'bin/nytprofmerge'=> '$(INST_MAN1DIR)/nytprofmerge.1',
         'bin/nytprofcsv'  => '$(INST_MAN1DIR)/nytprofcsv.1',
+        'bin/nytprofcalls'=> '$(INST_MAN1DIR)/nytprofcalls.1',
         'bin/nytprofcg'   => '$(INST_MAN1DIR)/nytprofcg.1',
     } );
 }
@@ -109,6 +110,9 @@ $mm_opts{CCFLAGS}  = "-pg"  if $opt_pg;
 
 if( $ExtUtils::MakeMaker::VERSION >= 6.45 ) {
     $mm_opts{META_MERGE} = {
+	no_index => {
+	    package => [ 'SVG' ], # in bin/flamegraph.pl
+	},
         resources => {
             license     => 'http://dev.perl.org/licenses/',
             homepage    => 'https://code.google.com/p/perl-devel-nytprof/',
@@ -151,13 +155,14 @@ WriteMakefile(
     PREREQ_PM => {
         'List::Util'   => 0,
         'Test::More'   => '0.84',
+        'Test::Differences' => '0.60',
         'XSLoader'     => 0,
         'Getopt::Long' => 0,
         'JSON::Any'    => 0,
     },
     LIBS      => [join ' ', @libs],
     OBJECT    => q/$(O_FILES)/,
-    EXE_FILES => ['bin/nytprofhtml', 'bin/nytprofcsv', 'bin/nytprofcg', 'bin/nytprofmerge'],
+    EXE_FILES => ['bin/nytprofhtml', 'bin/flamegraph.pl', 'bin/nytprofcsv', 'bin/nytprofcalls', 'bin/nytprofcg', 'bin/nytprofmerge'],
     @man,
     INC   => $INCLUDE,
     clean => {

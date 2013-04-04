@@ -17,6 +17,9 @@
       "directory" : [
          "t",
          "inc"
+      ],
+      "package" : [
+         "SVG"
       ]
    },
    "prereqs" : {
@@ -35,6 +38,7 @@
             "Getopt::Long" : 0,
             "JSON::Any" : 0,
             "List::Util" : 0,
+            "Test::Differences" : "0.60",
             "Test::More" : "0.84",
             "XSLoader" : 0
          }
@@ -48,5 +52,5 @@
       ],
       "x_MailingList" : "http://groups.google.com/group/develnytprof-dev"
    },
-   "version" : "4.25"
+   "version" : "5.00"
 }

@@ -846,15 +846,15 @@ NYTP_write_comment(NYTP_file ofile, const char *format, ...) {
     return retval + 2;
 }
 
-size_t
-NYTP_write_attribute_string(NYTP_file ofile,
+static size_t
+NYTP_write_plain_kv(NYTP_file ofile, const char prefix,
                             const char *key, size_t key_len,
                             const char *value, size_t value_len)
 {
     size_t total;
     size_t retval;
 
-    total = retval = NYTP_write(ofile, ":", 1);
+    total = retval = NYTP_write(ofile, &prefix, 1);
     if (retval != 1)
         return retval;
 
@@ -875,6 +875,14 @@ NYTP_write_attribute_string(NYTP_file ofile,
         return retval;
 
     return total;
+}
+
+size_t
+NYTP_write_attribute_string(NYTP_file ofile,
+                            const char *key, size_t key_len,
+                            const char *value, size_t value_len)
+{
+    return NYTP_write_plain_kv(ofile, ':', key, key_len, value, value_len);
 }
 
 #ifndef CHAR_BIT
@@ -913,6 +921,28 @@ NYTP_write_attribute_nv(NYTP_file ofile, const char *key,
 
     return NYTP_write_attribute_string(ofile, key, key_len, buffer, len);
 }
+
+/* options */
+
+size_t
+NYTP_write_option_pv(NYTP_file ofile,
+                    const char *key,
+                    const char *value, size_t value_len)
+{
+    return NYTP_write_plain_kv(ofile, '!', key, strlen(key), value, value_len);
+}
+
+size_t
+NYTP_write_option_iv(NYTP_file ofile, const char *key, IV value)
+{
+    /* 3: 1 for rounding errors, 1 for the sign, 1 for the '\0'  */
+    char buffer[(int)(sizeof (IV) * CHAR_BIT * LOG_2_OVER_LOG_10 + 3)];
+    const size_t len = my_snprintf(buffer, sizeof(buffer), "%ld", value);
+
+    return NYTP_write_option_pv(ofile, key, buffer, len);
+}
+
+/* other */
 
 #ifdef HAS_ZLIB
 
@@ -1092,6 +1122,53 @@ NYTP_write_time_line(NYTP_file ofile, I32 elapsed, U32 overflow,
 {
     return write_time_common(ofile, NYTP_TAG_TIME_LINE, elapsed, overflow, fid, line);
 }
+
+
+size_t
+NYTP_write_call_entry(NYTP_file ofile, U32 caller_fid, U32 caller_line)
+{
+    size_t total;
+    size_t retval;
+
+    total = retval = output_tag_u32(ofile, NYTP_TAG_SUB_ENTRY, caller_fid);
+    if (retval < 1)
+        return retval;
+
+    total += retval = output_u32(ofile, caller_line);
+    if (retval < 1)
+        return retval;
+
+    return total;
+}
+
+size_t
+NYTP_write_call_return(NYTP_file ofile, U32 prof_depth, const char *called_subname_pv,
+    NV incl_subr_ticks, NV excl_subr_ticks)
+{
+    size_t total;
+    size_t retval;
+
+    total = retval = output_tag_u32(ofile, NYTP_TAG_SUB_RETURN, prof_depth);
+    if (retval < 1)
+        return retval;
+
+    total += retval = output_nv(ofile, incl_subr_ticks);
+    if (retval < 1)
+        return retval;
+
+    total += retval = output_nv(ofile, excl_subr_ticks);
+    if (retval < 1)
+        return retval;
+
+    if (!called_subname_pv)
+        called_subname_pv = "(null)";
+    total += retval = output_str(ofile, called_subname_pv, strlen(called_subname_pv));
+    if (retval < 1)
+        return retval;
+
+    return total;
+}
+
 
 size_t
 NYTP_write_sub_info(NYTP_file ofile, U32 fid,
@@ -1289,6 +1366,21 @@ SV *value
         RETVAL
 
 size_t
+NYTP_write_option(handle, key, value)
+NYTP_file handle
+SV *key
+SV *value
+    PREINIT:
+        STRLEN key_len;
+        const char *const key_p = SvPVbyte(key, key_len);
+        STRLEN value_len;
+        const char *const value_p = SvPVbyte(value, value_len);
+    CODE:
+        RETVAL = NYTP_write_option_pv(handle, key_p, value_p, value_len);
+    OUTPUT:
+        RETVAL
+
+size_t
 NYTP_write_process_start(handle, pid, ppid, time_of_day)
 NYTP_file handle
 U32 pid
@@ -1338,6 +1430,20 @@ U32 elapsed
 U32 overflow
 U32 fid
 U32 line
+
+size_t
+NYTP_write_call_entry(handle, caller_fid, caller_line)
+NYTP_file handle
+U32 caller_fid
+U32 caller_line
+
+size_t
+NYTP_write_call_return(handle, prof_depth, called_subname_pv, incl_subr_ticks, excl_subr_ticks)
+NYTP_file handle
+U32 prof_depth
+const char *called_subname_pv
+NV incl_subr_ticks
+NV excl_subr_ticks
 
 size_t
 NYTP_write_sub_info(handle, fid, name, first_line, last_line)

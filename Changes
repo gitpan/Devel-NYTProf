@@ -1,22 +1,35 @@
 =head1 NAME
 
-Changes - List of significant changes to Devel::NYTProf
+Changes - History of significant changes in Devel::NYTProf
 
 =cut
 
-TODO: study http://www.postgresql.org/docs/9.2/static/pgtesttiming.html
-and reference in our docs.
+=head2 Changes in Devel::NYTProf 5.00 - XXX
 
-http://stackoverflow.com/questions/4132270/how-to-ignore-some-subroutine-calls-in-nytprof-reporting/14085984#14085984
+  Added subroutine entry and return event stream,
+    controlled via the calls=N option. Default calls=1.
+
+  Added nytprofcalls command to process the call event stream to
+    generate a call tree (experimental).
+
+  Added Flame Graph visualization SVG using the generated call tree.
+
+  Changed blocks=N option to be 0 (disabled) by default.
+
+  Fixed test for perl 5.17+ hash randomization.
+  Fixed nytprofhtml for Windows thanks to Jan Dubois. PR#2
+  Fixed assorted nits thanks to Steve Peters. PR#1
+  Deprecated nytprofcsv - speak up if you use it!
+  No longer warn about $&, $` and $' being slow if $] >= 5.017008.
 
 =head2 Changes in Devel::NYTProf 4.25 - 6th Feb 2013
 
-    Fix u2time clock (ie Time::HiRes, used by Windows)
+  Fix u2time clock (ie Time::HiRes, used by Windows)
 
 =head2 Changes in Devel::NYTProf 4.24 - 3rd Feb 2013
 
-    Clarify sigexit option docs.
-    Loosen test timing constraints (for slow cpantester VMs).
+  Clarify sigexit option docs.
+  Loosen test timing constraints (for slow cpantester VMs).
 
 =head2 Changes in Devel::NYTProf 4.23 - 31st Dec 2012
 

@@ -110,7 +110,7 @@ Perl_gv_fetchfile_flags(pTHX_ const char *const name, const STRLEN namelen, cons
 #define ZLIB_VERSION "0"
 #endif
 
-#define NYTP_FILE_MAJOR_VERSION 4
+#define NYTP_FILE_MAJOR_VERSION 5
 #define NYTP_FILE_MINOR_VERSION 0
 
 #define NYTP_START_NO            0
@@ -180,40 +180,53 @@ Perl_gv_fetchfile_flags(pTHX_ const char *const name, const STRLEN namelen, cons
 #define NYTP_SCi_CALLING_SUB     7   /* name of calling sub */
 #define NYTP_SCi_elements        8   /* highest index, plus 1 */
 
-#define MAX_HASH_SIZE 512
-
-static unsigned int next_fid = 1;         /* 0 is reserved */
 
 /* we're not thread-safe (or even multiplicity safe) yet, so detect and bail */
 #ifdef MULTIPLICITY
 static PerlInterpreter *orig_my_perl;
 #endif
 
-typedef struct hash_entry
-{
+
+#define MAX_HASH_SIZE 512
+
+typedef struct hash_entry Hash_entry;
+
+struct hash_entry {
     unsigned int id;
-    void* next_entry;
     char* key;
-    unsigned int key_len;
+    int key_len;
+    Hash_entry* next_entry;
+    Hash_entry* next_inserted;  /* linked list in insertion order */
+};
+
+typedef struct hash_table {
+    Hash_entry** table;
+    char *name;
+    unsigned int size;
+    unsigned int entry_struct_size;
+    Hash_entry* first_inserted;
+    Hash_entry* prior_inserted; /* = last_inserted before the last insertion */
+    Hash_entry* last_inserted;
+    unsigned int next_id;       /* starts at 1, 0 is reserved */
+} Hash_table;
+
+typedef struct {
+    Hash_entry he;
     unsigned int eval_fid;
     unsigned int eval_line_num;
     unsigned int file_size;
     unsigned int file_mtime;
     unsigned int fid_flags;
     char *key_abs;
-    void* next_inserted;                          /* linked list in insertion order */
     /* update autosplit logic in get_file_id if fields are added or changed */
-} Hash_entry;
+} fid_hash_entry;
 
-typedef struct hash_table
-{
-    Hash_entry** table;
-    unsigned int size;
-    Hash_entry* first_inserted;
-    Hash_entry* last_inserted;
-} Hash_table;
+static Hash_table fidhash = { NULL, "fid", MAX_HASH_SIZE, sizeof(fid_hash_entry), NULL, NULL, NULL, 1 };
 
-static Hash_table hashtable = { NULL, MAX_HASH_SIZE, NULL, NULL };
+typedef struct {
+    Hash_entry he;
+} str_hash_entry;
+static Hash_table strhash = { NULL, "str", MAX_HASH_SIZE, sizeof(str_hash_entry), NULL, NULL, NULL, 1 };
 /* END Hash table definitions */
 
 
@@ -225,48 +238,63 @@ static char PROF_output_file[MAXPATHLEN+1] = "nytprof.out";
 static unsigned int profile_opts = NYTP_OPTf_OPTIMIZE | NYTP_OPTf_SAVESRC;
 static int profile_start = NYTP_START_BEGIN;      /* when to start profiling */
 
-struct NYTP_int_options_t {
-  const char *option_name;
-  int option_value;
+struct NYTP_options_t {
+    const char *option_name;
+    IV    option_iv;
+    char *option_pv;    /* strdup'd */
 };
 
 /* XXX boolean options should be moved into profile_opts */
-static struct NYTP_int_options_t options[] = {
-#define profile_usecputime options[0].option_value
-    { "usecputime", 0 },
-#define profile_subs options[1].option_value
-    { "subs", 1 },                                /* subroutine times */
-#define profile_blocks options[2].option_value
-    { "blocks", 1 },                              /* block and sub *exclusive* times */
-#define profile_leave options[3].option_value
-    { "leave", 1 },                               /* correct block end timing */
-#define embed_fid_line options[4].option_value
-    { "expand", 0 },
-#define trace_level options[5].option_value
-    { "trace", 0 },
-#define opt_use_db_sub options[6].option_value
-    { "use_db_sub", 0 },
-#define compression_level options[7].option_value
-    { "compress", default_compression_level },
-#define profile_clock options[8].option_value
-    { "clock", -1 },
-#define profile_stmts options[9].option_value
-    { "stmts", 1 },                              /* statement exclusive times */
-#define profile_slowops options[10].option_value
-    { "slowops", 2 },                            /* slow opcodes, typically system calls */
-#define profile_findcaller options[11].option_value
-    { "findcaller", 0 },                         /* find sub caller instead of trusting outer */
-#define profile_forkdepth options[12].option_value
-    { "forkdepth", -1 },                         /* how many generations of kids to profile */
-#define opt_perldb options[13].option_value
-    { "perldb", 0 },                             /* force certain PL_perldb value */
-#define opt_nameevals options[14].option_value
-    { "nameevals", 1 },                          /* change $^P 0x100 bit */
-#define opt_nameanonsubs options[15].option_value
-    { "nameanonsubs", 1 },                       /* change $^P 0x200 bit */
-#define opt_evals options[16].option_value
-    { "evals", 0 }                               /* handling of string evals - TBD XXX */
+static struct NYTP_options_t options[] = {
+#define profile_usecputime options[0].option_iv
+    { "usecputime", 0, NULL },
+#define profile_subs options[1].option_iv
+    { "subs", 1, NULL },                                /* subroutine times */
+#define profile_blocks options[2].option_iv
+    { "blocks", 0, NULL },                              /* block and sub *exclusive* times */
+#define profile_leave options[3].option_iv
+    { "leave", 1, NULL },                               /* correct block end timing */
+#define embed_fid_line options[4].option_iv
+    { "expand", 0, NULL },
+#define trace_level options[5].option_iv
+    { "trace", 0, NULL },
+#define opt_use_db_sub options[6].option_iv
+    { "use_db_sub", 0, NULL },
+#define compression_level options[7].option_iv
+    { "compress", default_compression_level, NULL },
+#define profile_clock options[8].option_iv
+    { "clock", -1, NULL },
+#define profile_stmts options[9].option_iv
+    { "stmts", 1, NULL },                              /* statement exclusive times */
+#define profile_slowops options[10].option_iv
+    { "slowops", 2, NULL },                            /* slow opcodes, typically system calls */
+#define profile_findcaller options[11].option_iv
+    { "findcaller", 0, NULL },                         /* find sub caller instead of trusting outer */
+#define profile_forkdepth options[12].option_iv
+    { "forkdepth", -1, NULL },                         /* how many generations of kids to profile */
+#define opt_perldb options[13].option_iv
+    { "perldb", 0, NULL },                             /* force certain PL_perldb value */
+#define opt_nameevals options[14].option_iv
+    { "nameevals", 1, NULL },                          /* change $^P 0x100 bit */
+#define opt_nameanonsubs options[15].option_iv
+    { "nameanonsubs", 1, NULL },                       /* change $^P 0x200 bit */
+#define opt_calls options[16].option_iv
+    { "calls", 1, NULL },                              /* output call/return event stream */
+#define opt_evals options[17].option_iv
+    { "evals", 0, NULL }                               /* handling of string evals - TBD XXX */
 };
+/* XXX TODO: add these to options:
+    if (strEQ(option, "file")) {
+        strncpy(PROF_output_file, value, MAXPATHLEN);
+    else if (strEQ(option, "log")) {
+    else if (strEQ(option, "start")) {
+    else if (strEQ(option, "addpid")) {
+    else if (strEQ(option, "optimize") || strEQ(option, "optimise")) {
+    else if (strEQ(option, "savesrc")) {
+    else if (strEQ(option, "endatexit")) {
+and write the options to the stream when profiling starts.
+*/
+
 
 /* time tracking */
 
@@ -346,7 +374,7 @@ static SV *DB_CHECK_cv;
 static SV *DB_INIT_cv;
 static SV *DB_END_cv;
 static SV *DB_fin_cv;
-static char *class_mop_evaltag     = " defined at ";
+static const char *class_mop_evaltag     = " defined at ";
 static int   class_mop_evaltag_len = 12;
 
 static unsigned int ticks_per_sec = 0;            /* 0 forces error if not set */
@@ -478,15 +506,27 @@ output_header(pTHX)
 
     /* XXX add options, $0, etc, but beware of embedded newlines */
     /* XXX would be good to adopt a proper charset & escaping for these */
-    /* $^T */
-    NYTP_write_attribute_unsigned(out, STR_WITH_LEN("basetime"), (unsigned long)PL_basetime);
-    NYTP_write_attribute_string(out, STR_WITH_LEN("xs_version"), STR_WITH_LEN(XS_VERSION));
+    NYTP_write_attribute_unsigned(out, STR_WITH_LEN("basetime"), (unsigned long)PL_basetime); /* $^T */
+    NYTP_write_attribute_string(out, STR_WITH_LEN("application"), argv0, len);
+    /* perl constants: */
     NYTP_write_attribute_string(out, STR_WITH_LEN("perl_version"), version, sizeof(version) - 1);
+    NYTP_write_attribute_unsigned(out, STR_WITH_LEN("nv_size"), sizeof(NV));
+    /* sanity checks: */
+    NYTP_write_attribute_string(out, STR_WITH_LEN("xs_version"), STR_WITH_LEN(XS_VERSION));
+    NYTP_write_attribute_unsigned(out, STR_WITH_LEN("PL_perldb"), PL_perldb);
+    /* these are really options: */
     NYTP_write_attribute_signed(out, STR_WITH_LEN("clock_id"), profile_clock);
     NYTP_write_attribute_unsigned(out, STR_WITH_LEN("ticks_per_sec"), ticks_per_sec);
-    NYTP_write_attribute_unsigned(out, STR_WITH_LEN("nv_size"), sizeof(NV));
-    NYTP_write_attribute_unsigned(out, STR_WITH_LEN("PL_perldb"), PL_perldb);
-    NYTP_write_attribute_string(out, STR_WITH_LEN("application"), argv0, len);
+
+    if (1) {
+        struct NYTP_options_t *opt_p = options;
+        const struct NYTP_options_t *const opt_end
+            = options + sizeof(options) / sizeof (struct NYTP_options_t);
+        do {
+            NYTP_write_option_iv(out, opt_p->option_name, opt_p->option_iv);
+        } while (++opt_p < opt_end);
+    }
+
 
 #ifdef HAS_ZLIB
     if (compression_level) {
@@ -532,7 +572,7 @@ read_str(pTHX_ NYTP_file ifile, SV *sv) {
 
     if (trace_level >= 19) {
         STRLEN len2 = len;
-        char *newline = "";
+        const char *newline = "";
         if (buf[len2-1] == '\n') {
             --len2;
             newline = "\\n";
@@ -606,36 +646,36 @@ filename_is_eval(const char *filename, STRLEN filename_len)
  * hash_entry in table, insert IGNORED: returns pointer to the actual hash entry
  */
 static char
-hash_op (Hash_entry entry, Hash_entry** retval, bool insert)
+hash_op(Hash_table *hashtable, char *key, int key_len, Hash_entry** retval, bool insert)
 {
-    unsigned long h = hash(entry.key, entry.key_len) % hashtable.size;
+    unsigned long h = hash(key, key_len) % hashtable->size;
 
-    Hash_entry* found = hashtable.table[h];
+    Hash_entry* found = hashtable->table[h];
     while(NULL != found) {
 
-        if (found->key_len == entry.key_len
-        && memEQ(found->key, entry.key, entry.key_len)
+        if (found->key_len == key_len
+        && memEQ(found->key, key, key_len)
         ) {
             *retval = found;
             return 0;
         }
 
-        if (NULL == (Hash_entry*)found->next_entry) {
+        if (NULL == found->next_entry) {
             if (insert) {
 
                 Hash_entry* e;
-                Newz(0, e, 1, Hash_entry);
-                e->id = next_fid++;
+                Newc(0, e, hashtable->entry_struct_size, char, Hash_entry);
+                memzero(e, hashtable->entry_struct_size);
+                e->id = hashtable->next_id++;
                 e->next_entry = NULL;
-                e->key_len = entry.key_len;
-                e->key = (char*)safemalloc(sizeof(char) * e->key_len + 1);
-                e->key[e->key_len] = '\0';
-                memcpy(e->key, entry.key, e->key_len);
+                e->key_len = key_len;
+                e->key = (char*)safemalloc(sizeof(char) * key_len + 1);
+                e->key[key_len] = '\0';
+                memcpy(e->key, key, key_len);
                 found->next_entry = e;
-                *retval = (Hash_entry*)found->next_entry;
-                if (hashtable.last_inserted)
-                    hashtable.last_inserted->next_inserted = e;
-                hashtable.last_inserted = e;
+                *retval = found->next_entry;
+                hashtable->prior_inserted = hashtable->last_inserted;
+                hashtable->last_inserted = e;
                 return 1;
             }
             else {
@@ -643,26 +683,26 @@ hash_op (Hash_entry entry, Hash_entry** retval, bool insert)
                 return -1;
             }
         }
-        found = (Hash_entry*)found->next_entry;
+        found = found->next_entry;
     }
 
     if (insert) {
         Hash_entry* e;
-        Newz(0, e, 1, Hash_entry);
-        e->id = next_fid++;
+        Newc(0, e, hashtable->entry_struct_size, char, Hash_entry);
+        memzero(e, hashtable->entry_struct_size);
+        e->id = hashtable->next_id++;
         e->next_entry = NULL;
-        e->key_len = entry.key_len;
+        e->key_len = key_len;
         e->key = (char*)safemalloc(sizeof(char) * e->key_len + 1);
         e->key[e->key_len] = '\0';
-        memcpy(e->key, entry.key, e->key_len);
+        memcpy(e->key, key, key_len);
 
-        *retval =   hashtable.table[h] = e;
+        *retval =   hashtable->table[h] = e;
 
-        if (!hashtable.first_inserted)
-            hashtable.first_inserted = e;
-        if (hashtable.last_inserted)
-            hashtable.last_inserted->next_inserted = e;
-        hashtable.last_inserted = e;
+        if (!hashtable->first_inserted)
+            hashtable->first_inserted = e;
+        hashtable->prior_inserted = hashtable->last_inserted;
+        hashtable->last_inserted = e;
 
         return 1;
     }
@@ -671,12 +711,48 @@ hash_op (Hash_entry entry, Hash_entry** retval, bool insert)
     return -1;
 }
 
+static void
+hash_stats(Hash_table *hashtable, int verbosity)
+{
+    int idx = 0;
+    int max_chain_len = 0;
+    int buckets = 0;
+    int items = 0;
+
+    if (verbosity)
+        warn("%s hash: size %d\n", hashtable->name, hashtable->size);
+    if (!hashtable->table)
+        return;
+
+    for (idx=0; idx < hashtable->size; ++idx) {
+        int chain_len = 0;
+
+        Hash_entry *found = hashtable->table[idx];
+        if (!found)
+            continue;
+
+        ++buckets;
+        while (NULL != found) {
+            ++chain_len;
+            ++items;
+            found = found->next_entry;
+        }
+        if (verbosity)
+            warn("%s hash[%3d]: %d items\n", hashtable->name, idx, chain_len);
+        if (chain_len > max_chain_len)
+            max_chain_len = chain_len;
+    }
+    /* XXX would be nice to show a histogram of chain lenths */
+    warn("%s hash: %d of %d buckets used, %d items, max chain %d\n",
+        hashtable->name, buckets, hashtable->size, items, max_chain_len);
+}
+
 
 static void
-emit_fid (Hash_entry *fid_info)
+emit_fid (fid_hash_entry *fid_info)
 {
-    char  *file_name     = fid_info->key;
-    STRLEN file_name_len = fid_info->key_len;
+    char  *file_name     = fid_info->he.key;
+    STRLEN file_name_len = fid_info->he.key_len;
     if (fid_info->key_abs) {
         file_name = fid_info->key_abs;
         file_name_len = strlen(file_name);
@@ -700,7 +776,7 @@ emit_fid (Hash_entry *fid_info)
     }
 #endif
 
-    NYTP_write_new_fid(out, fid_info->id, fid_info->eval_fid,
+    NYTP_write_new_fid(out, fid_info->he.id, fid_info->eval_fid,
                        fid_info->eval_line_num, fid_info->fid_flags,
                        fid_info->file_size, fid_info->file_mtime,
                        file_name, (I32)file_name_len);
@@ -709,11 +785,11 @@ emit_fid (Hash_entry *fid_info)
 
 /* return true if file is a .pm that was actually loaded as a .pmc */
 static int
-fid_is_pmc(pTHX_ Hash_entry *fid_info)
+fid_is_pmc(pTHX_ fid_hash_entry *fid_info)
 {
     int is_pmc = 0;
-    char  *file_name     = fid_info->key;
-    STRLEN len = fid_info->key_len;
+    char  *file_name     = fid_info->he.key;
+    STRLEN len = fid_info->he.key_len;
     if (fid_info->key_abs) {
         file_name = fid_info->key_abs;
         len = strlen(file_name);
@@ -769,23 +845,23 @@ fmt_fid_flags(pTHX_ int fid_flags, char *buf, Size_t len) {
 static void
 write_cached_fids()
 {
-    Hash_entry *e = hashtable.first_inserted;
+    fid_hash_entry *e = (fid_hash_entry*)fidhash.first_inserted;
     while (e) {
         if ( !(e->fid_flags & NYTP_FIDf_IS_ALIAS) )
             emit_fid(e);
-        e = (Hash_entry *)e->next_inserted;
+        e = (fid_hash_entry*)e->he.next_inserted;
     }
 }
 
 
-static Hash_entry *
+static fid_hash_entry *
 find_autosplit_parent(pTHX_ char* file_name)
 {
     /* extract basename from file_name, then search for most recent entry
-     * in hashtable that has the same basename
+     * in fidhash that has the same basename
      */
-    Hash_entry *e = hashtable.first_inserted;
-    Hash_entry *match = NULL;
+    fid_hash_entry *e = (fid_hash_entry*)fidhash.first_inserted;
+    fid_hash_entry *match = NULL;
     const char *sep = "/";
     char *base_end   = strstr(file_name, " (autosplit");
     char *base_start = rninstr(file_name, base_end, sep, sep+1);
@@ -797,28 +873,28 @@ find_autosplit_parent(pTHX_ char* file_name)
         logwarn("find_autosplit_parent of '%.*s' (%s)\n",
             (int)base_len, base_start, file_name);
 
-    for ( ; e; e = (Hash_entry *)e->next_inserted) {
+    for ( ; e; e = (fid_hash_entry*)e->he.next_inserted) {
         char *e_name;
 
         if (e->fid_flags & NYTP_FIDf_IS_AUTOSPLIT)
             continue;
         if (trace_level >= 4)
-            logwarn("find_autosplit_parent: checking '%.*s'\n", e->key_len, e->key);
+            logwarn("find_autosplit_parent: checking '%.*s'\n", e->he.key_len, e->he.key);
 
         /* skip if key is too small to match */
-        if (e->key_len < base_len)
+        if (e->he.key_len < base_len)
             continue;
         /* skip if the last base_len bytes don't match the base name */
-        e_name = e->key + e->key_len - base_len;
+        e_name = e->he.key + e->he.key_len - base_len;
         if (memcmp(e_name, base_start, base_len) != 0)
             continue;
         /* skip if the char before the matched key isn't a separator */
-        if (e->key_len > base_len && *(e_name-1) != *sep)
+        if (e->he.key_len > base_len && *(e_name-1) != *sep)
             continue;
 
         if (trace_level >= 3)
             logwarn("matched autosplit '%.*s' to parent fid %d '%.*s' (%c|%c)\n",
-                (int)base_len, base_start, e->id, e->key_len, e->key, *(e_name-1),*sep);
+                (int)base_len, base_start, e->he.id, e->he.key_len, e->he.key, *(e_name-1),*sep);
         match = e;
         /* keep looking, so we'll return the most recently profiled match */
     }
@@ -834,7 +910,7 @@ lookup_file_entry(pTHX_ char* file_name, STRLEN file_name_len) {
 
     entry.key = file_name;
     entry.key_len = (unsigned int)file_name_len;
-    if (hash_op(entry, &found, 0) == 0)
+    if (hash_op(fidhash, &entry, &found, 0) == 0)
         return found;
 
     return NULL;
@@ -856,23 +932,21 @@ static unsigned int
 get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
 {
 
-    Hash_entry entry, *found, *parent_entry;
+    fid_hash_entry *found, *parent_entry;
     AV *src_av = Nullav;
 
-    if (0) memset(&entry, 0, sizeof(entry)); /* handy if debugging */
-    entry.key = file_name;
-    entry.key_len = (unsigned int)file_name_len;
-
-    if (1 != hash_op(entry, &found, (bool)(created_via ? 1 : 0))) {
+    if (1 != hash_op(&fidhash, file_name, file_name_len, (Hash_entry**)&found, (bool)(created_via ? 1 : 0))) {
         /* found existing entry or else didn't but didn't create new one either */
         if (trace_level >= 7) {
             if (found)
-                 logwarn("fid %d: %.*s\n",  found->id, found->key_len, found->key);
-            else logwarn("fid -: %.*s not profiled\n",  entry.key_len,  entry.key);
+                 logwarn("fid %d: %.*s\n", found->he.id, found->he.key_len, found->he.key);
+            else logwarn("fid -: %.*s not profiled\n", (int)file_name_len, file_name);
         }
-        return (found) ? found->id : 0;
+        return (found) ? found->he.id : 0;
     }
     /* inserted new entry */
+    if (fidhash.prior_inserted)
+        fidhash.prior_inserted->next_inserted = fidhash.last_inserted;
 
     /* if this is a synthetic filename for a string eval
      * ie "(eval 42)[/some/filename.pl:line]"
@@ -942,7 +1016,7 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
         && (parent_entry = find_autosplit_parent(aTHX_ file_name))
     ) {
         /* copy some details from parent_entry to found */
-        found->id            = parent_entry->id;
+        found->he.id         = parent_entry->he.id;
         found->eval_fid      = parent_entry->eval_fid;
         found->eval_line_num = parent_entry->eval_line_num;
         found->file_size     = parent_entry->file_size;
@@ -951,15 +1025,15 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
         /* prevent write_cached_fids() from writing this fid */
         found->fid_flags |= NYTP_FIDf_IS_ALIAS;
         /* avoid a gap in the fid sequence */
-        --next_fid;
+        --fidhash.next_id;
         /* write a log message if tracing */
         if (trace_level >= 2)
             logwarn("Use fid %2u (after %2u:%-4u) %x e%u:%u %.*s %s\n",
-                found->id, last_executed_fid, last_executed_line,
+                found->he.id, last_executed_fid, last_executed_line,
                 found->fid_flags, found->eval_fid, found->eval_line_num,
-                found->key_len, found->key, (found->key_abs) ? found->key_abs : "");
+                found->he.key_len, found->he.key, (found->key_abs) ? found->key_abs : "");
         /* bail out without calling emit_fid() */
-        return found->id;
+        return found->he.id;
     }
 
     /* determine absolute path if file_name is relative */
@@ -1018,13 +1092,13 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
     /* is source code available? */
     /* source only available if PERLDB_LINE or PERLDB_SAVESRC is true */
     /* which we set if savesrc option is enabled */
-    if ( (src_av = GvAV(gv_fetchfile_flags(found->key, found->key_len, 0))) )
+    if ( (src_av = GvAV(gv_fetchfile_flags(found->he.key, found->he.key_len, 0))) )
         if (av_len(src_av) > -1)
             found->fid_flags |= NYTP_FIDf_HAS_SRC;
 
     /* flag "perl -e '...'" and "perl -" as string evals */
-    if (found->key[0] == '-' && (found->key_len == 1 ||
-                                (found->key[1] == 'e' && found->key_len == 2)))
+    if (found->he.key[0] == '-' && (found->he.key_len == 1 ||
+                                   (found->he.key[1] == 'e' && found->he.key_len == 2)))
         found->fid_flags |= NYTP_FIDf_IS_EVAL;
 
     /* if it's a string eval or a synthetic filename from CODE ref in @INC,
@@ -1033,7 +1107,7 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
     if (found->eval_fid
     || (found->fid_flags & NYTP_FIDf_IS_EVAL)
     || (profile_opts & NYTP_OPTf_SAVESRC)
-    || (found->key_len > 10 && found->key[9] == 'x' && strnEQ(found->key, "/loader/0x", 10))
+    || (found->he.key_len > 10 && found->he.key[9] == 'x' && strnEQ(found->he.key, "/loader/0x", 10))
     ) {
         found->fid_flags |= NYTP_FIDf_SAVE_SRC;
     }
@@ -1045,14 +1119,26 @@ get_file_id(pTHX_ char* file_name, STRLEN file_name_len, int created_via)
         /* including last_executed_fid can be handy for tracking down how
             * a file got loaded */
         logwarn("New fid %2u (after %2u:%-4u) 0x%02x e%u:%u %.*s %s %s\n",
-            found->id, last_executed_fid, last_executed_line,
+            found->he.id, last_executed_fid, last_executed_line,
             found->fid_flags, found->eval_fid, found->eval_line_num,
-            found->key_len, found->key, (found->key_abs) ? found->key_abs : "",
+            found->he.key_len, found->he.key, (found->key_abs) ? found->key_abs : "",
             fmt_fid_flags(aTHX_ found->fid_flags, buf, sizeof(buf))
         );
     }
 
-    return found->id;
+    return found->he.id;
+}
+
+
+/**
+ * Return a unique persistent id number for a string.
+ */
+static unsigned int
+get_str_id(pTHX_ char* str, STRLEN len)
+{
+    str_hash_entry *found;
+    hash_op(&strhash, str, len, (Hash_entry**)&found, 1);
+    return found->he.id;
 }
 
 static UV
@@ -1568,6 +1654,10 @@ DB_leave(pTHX_ OP *op, OP *prev_op)
 static void
 set_option(pTHX_ const char* option, const char* value)
 {
+    if (!value || !*value)
+        croak("%s: invalid option", "NYTProf set_option");
+    if (!value || !*value)
+        croak("%s: '%s' has no value", "NYTProf set_option", option);
 
     if (strEQ(option, "file")) {
         strncpy(PROF_output_file, value, MAXPATHLEN);
@@ -1608,13 +1698,14 @@ set_option(pTHX_ const char* option, const char* value)
             PL_exit_flags |= PERL_EXIT_DESTRUCT_END;
     }
     else {
-        struct NYTP_int_options_t *opt_p = options;
-        const struct NYTP_int_options_t *const opt_end
-            = options + sizeof(options) / sizeof (struct NYTP_int_options_t);
+
+        struct NYTP_options_t *opt_p = options;
+        const struct NYTP_options_t *const opt_end
+            = options + sizeof(options) / sizeof (struct NYTP_options_t);
         bool found = FALSE;
         do {
             if (strEQ(option, opt_p->option_name)) {
-                opt_p->option_value = strtol(value, NULL, 0);
+                opt_p->option_iv = (IV)strtol(value, NULL, 0);
                 found = TRUE;
                 break;
             }
@@ -1671,7 +1762,7 @@ open_output_file(pTHX_ char *filename)
             filename, fopen_errno, strerror(fopen_errno), hint);
     }
     if (trace_level >= 1)
-        logwarn("~ opened %s\n", filename);
+        logwarn("~ opened %s at %.6f\n", filename, gettimeofday_nv());
 
     output_header(aTHX);
 }
@@ -1701,7 +1792,7 @@ close_output_file(pTHX) {
     out = NULL;
 
     if (trace_level >= 1)
-        logwarn("~ closed file.\n");
+        logwarn("~ closed file at %.6f\n", timeofday);
 }
 
 
@@ -1715,7 +1806,7 @@ reinit_if_forked(pTHX)
 
     /* we're now the child process */
     if (trace_level >= 1)
-        logwarn("~ new pid %d (was %d) forkdepth %d\n", getpid(), last_pid, profile_forkdepth);
+        logwarn("~ new pid %d (was %d) forkdepth %ld\n", getpid(), last_pid, profile_forkdepth);
 
     /* reset state */
     last_pid = getpid();
@@ -1775,7 +1866,7 @@ new_sub_call_info_av(pTHX)
 typedef struct subr_entry_st subr_entry_t;
 struct subr_entry_st {
     unsigned int  already_counted;
-    unsigned int  subr_prof_depth;
+    U32  subr_prof_depth;
     long unsigned subr_call_seqn;
     I32 prev_subr_entry_ix; /* ix to callers subr_entry */
 
@@ -1908,6 +1999,8 @@ incr_sub_inclusive_time(pTHX_ subr_entry_t *subr_entry)
     NV  incl_subr_ticks, excl_subr_ticks;
     SV *sv_tmp;
     AV *subr_call_av;
+    time_of_day_t sub_end_time;
+    long ticks, overflow;
 
     if (subr_entry->called_subnam_sv == &PL_sv_undef) {
         if (trace_level)
@@ -1927,11 +2020,8 @@ incr_sub_inclusive_time(pTHX_ subr_entry_t *subr_entry)
 
     /* statement overheads we've accumulated since we entered the sub */
     overhead_ticks = cumulative_overhead_ticks - subr_entry->initial_overhead_ticks;
-    /* seconds spent in subroutines called by this subroutine */
+    /* ticks spent in subroutines called by this subroutine */
     called_sub_ticks = cumulative_subr_ticks - subr_entry->initial_subr_ticks;
-
-    time_of_day_t sub_end_time;
-    long ticks, overflow;
 
     /* calculate ticks since we entered the sub */
     get_time_of_day(sub_end_time);
@@ -2039,19 +2129,17 @@ incr_sub_inclusive_time(pTHX_ subr_entry_t *subr_entry)
         sv_inc(AvARRAY(subr_call_av)[NYTP_SCi_CALL_COUNT]);
     }
 
-    if (trace_level >= 5)
-        logwarn("%2d <-     %s %"NVff"s excl = %"NVff"s incl - %"NVff"s (%"NVff"-%"NVff"), oh %"NVff"-%"NVff"=%"NVff"t, d%d @%d:%d #%lu %p\n",
-            subr_entry->subr_prof_depth,
-            called_subname_pv,
-            excl_subr_ticks/ticks_per_sec,
-            incl_subr_ticks/ticks_per_sec,
-            called_sub_ticks/ticks_per_sec,
-            cumulative_subr_ticks/ticks_per_sec,
-            subr_entry->initial_subr_ticks/ticks_per_sec,
+    if (trace_level >= 5) {
+        logwarn("%2d <-     %s %"NVgf" excl = %"NVgf"t incl - %"NVgf"t (%"NVgf"-%"NVgf"), oh %"NVff"-%"NVff"=%"NVff"t, d%d @%d:%d #%lu %p\n",
+            subr_entry->subr_prof_depth, called_subname_pv,
+            excl_subr_ticks, incl_subr_ticks,
+            called_sub_ticks,
+            cumulative_subr_ticks, subr_entry->initial_subr_ticks,
             cumulative_overhead_ticks, subr_entry->initial_overhead_ticks, overhead_ticks,
             (int)subr_entry->called_cv_depth,
             subr_entry->caller_fid, subr_entry->caller_line,
             subr_entry->subr_call_seqn, (void*)subr_entry);
+    }
 
     /* only count inclusive time for the outer-most calls */
     if (subr_entry->called_cv_depth <= 1) {
@@ -2069,6 +2157,10 @@ incr_sub_inclusive_time(pTHX_ subr_entry_t *subr_entry)
     }
     excl_time_sv = *av_fetch(subr_call_av, NYTP_SCi_EXCL_TICKS, 1);
     sv_setnv(excl_time_sv, SvNV(excl_time_sv)+excl_subr_ticks);
+
+    if (opt_calls && out) {
+        NYTP_write_call_return(out, subr_entry->subr_prof_depth, called_subname_pv, incl_subr_ticks, excl_subr_ticks);
+    }
 
     subr_entry_destroy(aTHX_ subr_entry);
 
@@ -2421,6 +2513,10 @@ subr_entry_setup(pTHX_ COP *prev_cop, subr_entry_t *clone_subr_entry, OPCODE op_
      */
     save_destructor_x(incr_sub_inclusive_time_ix, INT2PTR(void *, (IV)subr_entry_ix));
 
+    if (opt_calls >= 2 && out) {
+        NYTP_write_call_entry(out, subr_entry->caller_fid, subr_entry->caller_line);
+    }
+
     SETERRNO(saved_errno, 0);
 
     return subr_entry_ix;
@@ -2569,7 +2665,7 @@ pp_subcall_profiler(pTHX_ int is_slowop)
     subr_entry = subr_entry_ix_ptr(this_subr_entry_ix);
 
     /* detect wierdness/corruption */
-    assert(subr_entry->caller_fid < next_fid);
+    assert(subr_entry->caller_fid < fidhash.next_id);
 
     /* Check if this call has already been counted because the op performed
      * a leave_scope(). E.g., OP_SUBSTCONT at end of s/.../\1/
@@ -2828,7 +2924,7 @@ disable_profile(pTHX)
         is_profiling = 0;
     }
     if (trace_level)
-        logwarn("~ disable_profile (previously %s, pid %d, trace %d)\n",
+        logwarn("~ disable_profile (previously %s, pid %d, trace %ld)\n",
             prev_is_profiling ? "enabled" : "disabled", getpid(), trace_level);
     return prev_is_profiling;
 }
@@ -2847,8 +2943,8 @@ finish_profile(pTHX)
 #endif
 
     if (trace_level >= 1)
-        logwarn("~ finish_profile (overhead %"NVff"s, is_profiling %d)\n",
-            cumulative_overhead_ticks/ticks_per_sec, is_profiling);
+        logwarn("~ finish_profile (overhead %gt, is_profiling %d)\n",
+            cumulative_overhead_ticks, is_profiling);
 
     /* write data for final statement, unless DB_leave has already */
     if (!profile_leave || opt_use_db_sub)
@@ -2857,6 +2953,11 @@ finish_profile(pTHX)
     disable_profile(aTHX);
 
     close_output_file(aTHX);
+
+    if (trace_level >= 2) {
+        hash_stats(&fidhash, 0);
+        hash_stats(&strhash, 0);
+    }
 
     /* reset sub profiler data  */
     hv_clear(sub_callers_hv);
@@ -2892,7 +2993,7 @@ _init_profiler_clock(pTHX)
     }
 #else
     if (profile_clock != -1) {  /* user tried to select different clock */
-        logwarn("clock %d not available (clock_gettime not supported on this system)\n", profile_clock);
+        logwarn("clock %ld not available (clock_gettime not supported on this system)\n", profile_clock);
         profile_clock = -1;
     }
 #endif
@@ -2952,8 +3053,8 @@ init_profiler(pTHX)
     _init_profiler_clock(aTHX);
 
     if (trace_level)
-        logwarn("~ init_profiler for pid %d, clock %d, start %d, perldb 0x%lx, exitf 0x%lx\n",
-            last_pid, profile_clock, profile_start,
+        logwarn("~ init_profiler for pid %d, clock %ld, tps %d, start %d, perldb 0x%lx, exitf 0x%lx\n",
+            last_pid, profile_clock, ticks_per_sec, profile_start,
             (long unsigned)PL_perldb, (long unsigned)PL_exit_flags);
 
     if (get_hv("DB::sub", 0) == NULL) {
@@ -2971,8 +3072,8 @@ init_profiler(pTHX)
 #endif
 
     /* create file id mapping hash */
-    hashtable.table = (Hash_entry**)safemalloc(sizeof(Hash_entry*) * hashtable.size);
-    memset(hashtable.table, 0, sizeof(Hash_entry*) * hashtable.size);
+    fidhash.table = (Hash_entry**)safemalloc(sizeof(Hash_entry*) * fidhash.size);
+    memset(fidhash.table, 0, sizeof(Hash_entry*) * fidhash.size);
 
     open_output_file(aTHX_ PROF_output_file);
 
@@ -3173,7 +3274,7 @@ parse_DBsub_value(pTHX_ SV *sv, STRLEN *filename_len_p, UV *first_line_p, UV *la
     if ('-' == *++last) { /* skip past dash, is next char a minus? */
         warn("Negative last line number in %%DB::sub entry '%s' for %s\n",
             filename, sub_name);
-        last = "0";
+        last = (char *)"0";
     }
     if (last_line_p)
         *last_line_p = atoi(last);
@@ -3300,7 +3401,7 @@ write_sub_line_ranges(pTHX)
         /* get name of file that contained first profiled sub in 'main::' */
         SV *pkg_filename_sv = sub_pkg_filename_sv(aTHX_ runtime, runtime_len);
         if (!pkg_filename_sv) { /* no subs in main, so guess */
-            sv_setpvn(sv, hashtable.first_inserted->key, hashtable.first_inserted->key_len);
+            sv_setpvn(sv, fidhash.first_inserted->key, fidhash.first_inserted->key_len);
         }
         else if (SvOK(pkg_filename_sv)) {
             sv_setsv(sv, pkg_filename_sv);
@@ -3461,7 +3562,7 @@ write_sub_callers(pTHX)
         }
     }
     if (negative_time_calls) {
-        logwarn("Warning: %d subroutine calls had negative time! See TROUBLESHOOTING in the documentation. (Clock %d)\n",
+        logwarn("Warning: %d subroutine calls had negative time! See TROUBLESHOOTING in the documentation. (Clock %ld)\n",
             negative_time_calls, profile_clock);
     }
 }
@@ -3470,7 +3571,7 @@ write_sub_callers(pTHX)
 static void
 write_src_of_files(pTHX)
 {
-    Hash_entry *e;
+    fid_hash_entry *e;
     int t_has_src  = 0;
     int t_save_src = 0;
     int t_no_src = 0;
@@ -3479,25 +3580,25 @@ write_src_of_files(pTHX)
     if (trace_level >= 1)
         logwarn("~ writing file source code\n");
 
-    for (e = hashtable.first_inserted; e; e = (Hash_entry *)e->next_inserted) {
+    for (e = (fid_hash_entry*)fidhash.first_inserted; e; e = (fid_hash_entry*)e->he.next_inserted) {
         I32 lines;
         int line;
-        AV *src_av = GvAV(gv_fetchfile_flags(e->key, e->key_len, 0));
+        AV *src_av = GvAV(gv_fetchfile_flags(e->he.key, e->he.key_len, 0));
 
         if ( !(e->fid_flags & NYTP_FIDf_HAS_SRC) ) {
-            char *hint = "";
+            const char *hint = "";
             ++t_no_src;
             if (src_av && av_len(src_av) > -1) /* sanity check */
                 hint = " (NYTP_FIDf_HAS_SRC not set but src available!)";
             if (trace_level >= 3 || *hint)
                 logwarn("fid %d has no src saved for %.*s%s\n",
-                    e->id, e->key_len, e->key, hint);
+                    e->he.id, e->he.key_len, e->he.key, hint);
             continue;
         }
         if (!src_av) { /* sanity check */
             ++t_no_src;
             logwarn("fid %d has no src but NYTP_FIDf_HAS_SRC is set! (%.*s)\n",
-                e->id, e->key_len, e->key);
+                e->he.id, e->he.key_len, e->he.key);
             continue;
         }
         ++t_has_src;
@@ -3510,16 +3611,16 @@ write_src_of_files(pTHX)
         lines = av_len(src_av); /* -1 is empty, 1 is 1 line etc, 0 shouldn't happen */
         if (trace_level >= 3)
             logwarn("fid %d has %ld src lines for %.*s\n",
-                e->id, (long)lines, e->key_len, e->key);
+                e->he.id, (long)lines, e->he.key_len, e->he.key);
         for (line = 1; line <= lines; ++line) { /* lines start at 1 */
             SV **svp = av_fetch(src_av, line, 0);
             STRLEN len = 0;
             const char *src = (svp) ? SvPV(*svp, len) : "";
             /* outputting the tag and fid for each (non empty) line
              * is a little inefficient, but not enough to worry about */
-            NYTP_write_src_line(out, e->id, line, src, (I32)len);    /* includes newline */
+            NYTP_write_src_line(out, e->he.id, line, src, (I32)len);    /* includes newline */
             if (trace_level >= 8) {
-                logwarn("fid %d src line %d: %s%s", e->id, line, src,
+                logwarn("fid %d src line %d: %s%s", e->he.id, line, src,
                     (len && src[len-1]=='\n') ? "" : "\n");
             }
             ++t_lines;
@@ -3708,6 +3809,7 @@ typedef struct loader_state_profiler {
     HV *sub_subinfo_hv;
     HV *live_pids_hv;
     HV *attr_hv;
+    HV *option_hv;
     HV *file_info_stash;
     /* these times don't reflect profile_enable & profile_disable calls */
     NV profiler_start_time;
@@ -3719,6 +3821,7 @@ static void
 load_discount_callback(Loader_state_base *cb_data, const nytp_tax_index tag, ...)
 {
     Loader_state_profiler *state = (Loader_state_profiler *)cb_data;
+    PERL_UNUSED_ARG(tag);
 
     if (trace_level >= 8)
         logwarn("discounting next statement after %u:%d\n",
@@ -4197,7 +4300,7 @@ load_pid_end_callback(Loader_state_base *cb_data, const nytp_tax_index tag, ...)
 
     store_attrib_sv(aTHX_ state->attr_hv, STR_WITH_LEN("profiler_end_time"),
                     newSVnv(end_time));
-    state->profiler_duration += end_time - state->profiler_start_time;
+    state->profiler_duration += state->profiler_end_time - state->profiler_start_time;
     store_attrib_sv(aTHX_ state->attr_hv, STR_WITH_LEN("profiler_duration"),
                     newSVnv(state->profiler_duration));
 
@@ -4234,6 +4337,38 @@ load_attribute_callback(Loader_state_base *cb_data, const nytp_tax_index tag, ..
                                    value_utf8 ? SVf_UTF8 : 0));
 }
 
+static void
+load_option_callback(Loader_state_base *cb_data, const nytp_tax_index tag, ...)
+{
+    Loader_state_profiler *state = (Loader_state_profiler *)cb_data;
+    dTHXa(state->interp);
+    va_list args;
+    char *key;
+    unsigned long key_len;
+    unsigned int key_utf8;
+    char *value;
+    unsigned long value_len;
+    unsigned int value_utf8;
+    SV *value_sv;
+
+    va_start(args, tag);
+
+    key = va_arg(args, char *);
+    key_len = va_arg(args, unsigned long);
+    key_utf8 = va_arg(args, unsigned int);
+
+    value = va_arg(args, char *);
+    value_len = va_arg(args, unsigned long);
+    value_utf8 = va_arg(args, unsigned int);
+
+    va_end(args);
+
+    value_sv = newSVpvn_flags(value, value_len, value_utf8 ? SVf_UTF8 : 0);
+    (void)hv_store(state->option_hv, key, key_utf8 ? -(I32)key_len : key_len, value_sv, 0);
+    if (trace_level >= 1)
+        logwarn("! %.*s = '%s'\n", (int) key_len, key, SvPV_nolen(value_sv));
+}
+
 struct perl_callback_info_t {
     const char *description;
     STRLEN len;
@@ -4245,6 +4380,7 @@ static struct perl_callback_info_t callback_info[nytp_tag_max] =
     {STR_WITH_LEN("[no tag]"), NULL},
     {STR_WITH_LEN("VERSION"), "uu"},
     {STR_WITH_LEN("ATTRIBUTE"), "33"},
+    {STR_WITH_LEN("OPTION"), "33"},
     {STR_WITH_LEN("COMMENT"), "3"},
     {STR_WITH_LEN("TIME_BLOCK"), "iuuuu"},
     {STR_WITH_LEN("TIME_LINE"),  "iuu"},
@@ -4257,7 +4393,9 @@ static struct perl_callback_info_t callback_info[nytp_tag_max] =
     {STR_WITH_LEN("PID_END"), "un"},
     {STR_WITH_LEN("[string]"), NULL},
     {STR_WITH_LEN("[string utf8]"), NULL},
-    {STR_WITH_LEN("START_DEFLATE"), ""}
+    {STR_WITH_LEN("START_DEFLATE"), ""},
+    {STR_WITH_LEN("SUB_ENTRY"), "uu"},
+    {STR_WITH_LEN("SUB_RETURN"), "unns"}
 };
 
 static void
@@ -4381,6 +4519,9 @@ static loader_callback perl_callbacks[nytp_tag_max] =
     load_perl_callback,
     load_perl_callback,
     load_perl_callback,
+    load_perl_callback,
+    load_perl_callback,
+    load_perl_callback,
     load_perl_callback
 };
 static loader_callback processing_callbacks[nytp_tag_max] =
@@ -4388,6 +4529,7 @@ static loader_callback processing_callbacks[nytp_tag_max] =
     0,
     0, /* version */
     load_attribute_callback,
+    load_option_callback,
     0, /* comment */
     load_time_callback,
     load_time_callback,
@@ -4400,6 +4542,8 @@ static loader_callback processing_callbacks[nytp_tag_max] =
     load_pid_end_callback,
     0, /* string */
     0, /* string utf8 */
+    0, /* sub entry */
+    0, /* sub return */
     0  /* start deflate */
 };
 
@@ -4483,8 +4627,7 @@ load_profile_data_from_stream(loader_callback *callbacks,
                 if (c == NYTP_TAG_TIME_BLOCK) {
                     block_line_num = read_u32(in);
                     sub_line_num = read_u32(in);
-                    if (profile_blocks)
-                        tag = nytp_time_block;
+                    tag = nytp_time_block;
                 }
 
                 /* Because it happens that the two "optional" arguments are
@@ -4521,6 +4664,28 @@ load_profile_data_from_stream(loader_callback *callbacks,
 
                 callbacks[nytp_src_line](state, nytp_src_line, file_num,
                                          line_num, src);
+                break;
+            }
+
+            case NYTP_TAG_SUB_ENTRY:
+            {
+                unsigned int file_num = read_u32(in);
+                unsigned int line_num = read_u32(in);
+
+                if (callbacks[nytp_sub_entry])
+                    callbacks[nytp_sub_entry](state, nytp_sub_entry, file_num, line_num);
+                break;
+            }
+
+            case NYTP_TAG_SUB_RETURN:
+            {
+                unsigned int depth = read_u32(in);
+                NV incl_time       = read_nv(in);
+                NV excl_time       = read_nv(in);
+                SV *subname = read_str(aTHX_ in, NULL);
+
+                if (callbacks[nytp_sub_return])
+                    callbacks[nytp_sub_return](state, nytp_sub_return, depth, incl_time, excl_time, subname);
                 break;
             }
 
@@ -4607,6 +4772,27 @@ load_profile_data_from_stream(loader_callback *callbacks,
                 break;
             }
 
+            case NYTP_TAG_OPTION:
+            {
+                char *value, *key_end;
+                char *end = NYTP_gets(in, &buffer, &buffer_len);
+                if (NULL == end)
+                    /* probably EOF */
+                    croak("Profile format error reading attribute");
+                --end; /* end, as returned, points 1 after the \n  */
+                if ((NULL == (value = (char *)memchr(buffer, '=', end - buffer)))) {
+                    logwarn("option malformed '%s'\n", buffer);
+                    continue;
+                }
+                key_end = value++;
+
+                callbacks[nytp_option](state, nytp_option, buffer,
+                                          (unsigned long)(key_end - buffer),
+                                          0, value,
+                                          (unsigned long)(end - value), 0);
+                break;
+            }
+
             case NYTP_TAG_COMMENT:
             {
                 char *end = NYTP_gets(in, &buffer, &buffer_len);
@@ -4670,6 +4856,7 @@ load_profile_to_hv(pTHX_ NYTP_file in)
     state.sub_subinfo_hv = newHV();
     state.live_pids_hv = newHV();
     state.attr_hv = newHV();
+    state.option_hv = newHV();
     state.file_info_stash = gv_stashpv("Devel::NYTProf::FileInfo", GV_ADDWARN);
 
     av_extend(state.fid_fileinfo_av, 64);   /* grow them up front. */
@@ -4729,6 +4916,8 @@ load_profile_to_hv(pTHX_ NYTP_file in)
     profile_modes = newHV();
     (void)hv_stores(profile_hv, "attribute",         
                     newRV_noinc((SV*)state.attr_hv));
+    (void)hv_stores(profile_hv, "option",         
+                    newRV_noinc((SV*)state.option_hv));
     (void)hv_stores(profile_hv, "fid_fileinfo",
                     newRV_noinc((SV*)state.fid_fileinfo_av));
     (void)hv_stores(profile_hv, "fid_srclines",

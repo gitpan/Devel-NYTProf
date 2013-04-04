@@ -45,6 +45,7 @@ const char *NYTP_type_of_offset(NYTP_file file);
 
 #define NYTP_TAG_NO_TAG          '\0'   /* Used as a flag to mean "no tag" */
 #define NYTP_TAG_ATTRIBUTE       ':'    /* :name=value\n */
+#define NYTP_TAG_OPTION          '!'    /* !name=value\n */
 #define NYTP_TAG_COMMENT         '#'    /* till newline */
 #define NYTP_TAG_TIME_BLOCK      '*'
 #define NYTP_TAG_TIME_LINE       '+'
@@ -58,12 +59,15 @@ const char *NYTP_type_of_offset(NYTP_file file);
 #define NYTP_TAG_STRING          '\'' 
 #define NYTP_TAG_STRING_UTF8     '"' 
 #define NYTP_TAG_START_DEFLATE   'z' 
+#define NYTP_TAG_SUB_ENTRY       '>'
+#define NYTP_TAG_SUB_RETURN      '<'
 /* also add new items to nytp_tax_index below */
 
-typedef enum {
+typedef enum {      /* XXX keep in sync with various *_callback strucures */
     nytp_no_tag,
     nytp_version,   /* Not actually a tag, but needed by the perl callback */
     nytp_attribute,
+    nytp_option,
     nytp_comment,
     nytp_time_block,
     nytp_time_line,
@@ -77,7 +81,9 @@ typedef enum {
     nytp_string,
     nytp_string_utf8,
     nytp_start_deflate,
-    nytp_tag_max
+    nytp_sub_entry,
+    nytp_sub_return,
+    nytp_tag_max /* keep last */
 } nytp_tax_index;
 
 void NYTProf_croak_if_not_stdio(NYTP_file file, const char *function);
@@ -93,6 +99,9 @@ size_t NYTP_write_attribute_unsigned(NYTP_file ofile, const char *key,
                                      size_t key_len, unsigned long value);
 size_t NYTP_write_attribute_nv(NYTP_file ofile, const char *key,
                                      size_t key_len, NV value);
+size_t NYTP_write_option_pv(NYTP_file ofile, const char *key,
+                                    const char *value, size_t value_len);
+size_t NYTP_write_option_iv(NYTP_file ofile, const char *key, IV value);
 size_t NYTP_start_deflate_write_tag_comment(NYTP_file ofile, int compression_level);
 size_t NYTP_write_process_start(NYTP_file ofile, U32 pid, U32 ppid, NV time_of_day);
 size_t NYTP_write_process_end(NYTP_file ofile, U32 pid, NV time_of_day);
@@ -113,6 +122,9 @@ size_t NYTP_write_sub_callers(NYTP_file ofile, U32 fid, U32 line,
 size_t NYTP_write_src_line(NYTP_file ofile, U32 fid,
                         U32 line, const char *text, I32 text_len);
 size_t NYTP_write_discount(NYTP_file ofile);
+size_t NYTP_write_call_entry(NYTP_file ofile, U32 caller_fid, U32 caller_line);
+size_t NYTP_write_call_return(NYTP_file ofile, U32 prof_depth, const char *called_subname_pv,
+                        NV incl_subr_ticks, NV excl_subr_ticks);
 
 
 /* XXX
