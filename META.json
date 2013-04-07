@@ -4,7 +4,7 @@
       "Tim Bunce <timb@cpan.org>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "ExtUtils::MakeMaker version 6.64, CPAN::Meta::Converter version 2.112621",
+   "generated_by" : "ExtUtils::MakeMaker version 6.62, CPAN::Meta::Converter version 2.120921",
    "license" : [
       "perl_5"
    ],
@@ -25,22 +25,22 @@
    "prereqs" : {
       "build" : {
          "requires" : {
-            "ExtUtils::MakeMaker" : 0
+            "ExtUtils::MakeMaker" : "0"
          }
       },
       "configure" : {
          "requires" : {
-            "ExtUtils::MakeMaker" : 0
+            "ExtUtils::MakeMaker" : "0"
          }
       },
       "runtime" : {
          "requires" : {
-            "Getopt::Long" : 0,
-            "JSON::Any" : 0,
-            "List::Util" : 0,
+            "Getopt::Long" : "0",
+            "JSON::Any" : "0",
+            "List::Util" : "0",
             "Test::Differences" : "0.60",
             "Test::More" : "0.84",
-            "XSLoader" : 0
+            "XSLoader" : "0"
          }
       }
    },

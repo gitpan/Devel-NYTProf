@@ -60,6 +60,7 @@ my $fonttype = "Verdana";
 my $imagewidth = 1200;		# max width, pixels
 my $frameheight = 16;		# max height is dynamic
 my $fontsize = 12;		# base text size
+my $fontwidth = 0.55;           # avg width relative to fontsize
 my $minwidth = 0.1;		# min function width, pixels
 my $titletext = "Flame Graph";  # centered heading
 my $nametype = "Function:";     # what are the names in the data?
@@ -72,7 +73,8 @@ GetOptions(
     'fonttype=s'   => \$fonttype,
     'width=i'      => \$imagewidth,
     'height=i'     => \$frameheight,
-    'fontsize=i'   => \$fontsize,
+    'fontsize=f'   => \$fontsize,
+    'fontwidth=f'  => \$fontwidth,
     'minwidth=f'   => \$minwidth,
     'title=s'      => \$titletext,
     'nametype=s'   => \$nametype,
@@ -202,7 +204,6 @@ sub flow {
 
 	my $len_a = @$last - 1;
 	my $len_b = @$this - 1;
-	$depthmax = $len_b if $len_b > $depthmax;
 
 	my $i = 0;
 	my $len_same;
@@ -255,8 +256,23 @@ if ($timemax and $timemax < $time) {
 }
 $timemax ||= $time;
 
-# Draw canvas
 my $widthpertime = ($imagewidth - 2 * $xpad) / $timemax;
+my $minwidth_time = $minwidth / $widthpertime;
+
+# prune blocks that are too narrow and determine max depth
+while (my ($id, $node) = each %Node) {
+	my ($func, $depth, $etime) = split ";", $id;
+	my $stime = $node->{stime};
+	die "missing start for $id" if not defined $stime;
+
+	if (($etime-$stime) < $minwidth_time) {
+	    delete $Node{$id};
+	    next;
+	}
+	$depthmax = $depth if $depth > $depthmax;
+}
+
+# Draw canvas
 my $imageheight = ($depthmax * $frameheight) + $ypad1 + $ypad2;
 my $im = SVG->new();
 $im->header($imagewidth, $imageheight);
@@ -291,18 +307,15 @@ $im->stringTTF($black, $fonttype, $fontsize + 5, 0.0, int($imagewidth / 2), $fon
 $im->stringTTF($black, $fonttype, $fontsize, 0.0, $xpad, $imageheight - ($ypad2 / 2), " ", "", 'id="details"');
 
 # Draw frames
-foreach my $id (keys %Node) {
+
+while (my ($id, $node) = each %Node) {
 	my ($func, $depth, $etime) = split ";", $id;
-	die "missing start for $id" if !defined $Node{$id}->{stime};
-	my $stime = $Node{$id}->{stime};
+	my $stime = $node->{stime};
 
 	$etime = $timemax if $func eq "" and $depth == 0;
 
 	my $x1 = $xpad + $stime * $widthpertime;
 	my $x2 = $xpad + $etime * $widthpertime;
-	my $width = $x2 - $x1;
-	next if $width < $minwidth;
-
 	my $y1 = $imageheight - $ypad2 - ($depth + 1) * $frameheight + 1;
 	my $y2 = $imageheight - $ypad2 - $depth * $frameheight;
 
@@ -314,7 +327,7 @@ foreach my $id (keys %Node) {
 	if ($func eq "" and $depth == 0) {
 		$info = "all ($samples_txt $countname, 100%)";
 	} else {
-		my $pct = sprintf "%.2f", ((100 * $samples) / $timemax);
+		my $pct = sprintf "%.2f", ((100 * $samples) / ($timemax * $factor));
 		my $escaped_func = $func;
 		$escaped_func =~ s/&/&amp;/g;
 		$escaped_func =~ s/</&lt;/g;
@@ -326,14 +339,15 @@ foreach my $id (keys %Node) {
         $nameattr->{class}       ||= "func_g";
         $nameattr->{onmouseover} ||= "s('".$info."')";
         $nameattr->{onmouseout}  ||= "c()";
+        $nameattr->{title}       ||= $info;
         $im->group_start($nameattr);
 
 	$im->filledRectangle($x1, $y1, $x2, $y2, color("hot"), 'rx="2" ry="2"');
 
-	if ($width > 50) {
-		my $chars = int($width / (0.7 * $fontsize));
+	my $chars = int( ($x2 - $x1) / ($fontsize * $fontwidth));
+	if ($chars >= 3) { # room for one char plus two dots
 		my $text = substr $func, 0, $chars;
-		$text .= ".." if $chars < length $func;
+		substr($text, -2, 2) = ".." if $chars < length $func;
 		$text =~ s/&/&amp;/g;
 		$text =~ s/</&lt;/g;
 		$text =~ s/>/&gt;/g;
