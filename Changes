@@ -4,6 +4,15 @@ Changes - History of significant changes in Devel::NYTProf
 
 =cut
 
+=head2 Changes in Devel::NYTProf 5.04 - 20th June 2013
+
+  Allow negative times in tests for systems with unstable clocks
+    thanks to Gisle Aas, RT#85556.
+  Added libcexit=1 option thanks to Zefram, RT#75912.
+  Added documentation for endatexit and libcexit options.
+  Added documentation for nytprofhtml --minimal
+    thanks to Mike Doherty, RT#86039.
+
 =head2 Changes in Devel::NYTProf 5.03 - 20th May 2013
 
   Fix windows to use flamegraph.bat [Christian Walde]

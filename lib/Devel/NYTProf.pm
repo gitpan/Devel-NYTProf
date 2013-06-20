@@ -11,7 +11,7 @@
 ###########################################################
 package Devel::NYTProf;
 
-our $VERSION = '5.03'; # also change in Devel::NYTProf::Core
+our $VERSION = '5.04'; # also change in Devel::NYTProf::Core
 
 package    # hide the package from the PAUSE indexer
     DB;
@@ -536,6 +536,19 @@ C<DB::finish_profile()> for you, so NYTProf 'just works'.
 When using the C<subs=0> option to disable the subroutine profiler the
 C<posix_exit> option can be used to tell NYTProf to take other steps to arrange
 for C<DB::finish_profile()> to be called before C<POSIX::_exit()>.
+
+=head2 libcexit=1
+
+Arranges for L</finish_profile> to be called via the C library C<atexit()> function.
+This may help some tricky cases where the process may exit without perl
+executing the C<END> block that NYTProf uses to call /finish_profile().
+
+=head2 endatexit=1
+
+Sets the PERL_EXIT_DESTRUCT_END flag in the PL_exit_flags of the perl interpreter.
+This makes perl run C<END> blocks in perl_destruct() instead of perl_run()
+which may help in cases, like Apache, where perl is embedded but perl_run()
+isn't called.
 
 =head2 forkdepth=N
 
@@ -1114,6 +1127,10 @@ it's very likely to be deprecated in a future release).
 L<Devel::NYTProf::ReadStream> is the module that lets you read a profile data
 file as a stream of chunks of data.
 
+Other tools:
+
+DTrace L<https://speakerdeck.com/mrallen1/perl-dtrace-and-you>
+
 =head1 TROUBLESHOOTING
 
 =head2 "Profile data incomplete, ..." or "File format error: ..."
@@ -1208,7 +1225,7 @@ For more details see L</HISTORY> below.
 =head1 COPYRIGHT AND LICENSE
 
   Copyright (C) 2008 by Adam Kaplan and The New York Times Company.
-  Copyright (C) 2008-2010 by Tim Bunce, Ireland.
+  Copyright (C) 2008-2013 by Tim Bunce, Ireland.
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.8.8 or,

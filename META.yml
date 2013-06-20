@@ -7,7 +7,7 @@ build_requires:
 configure_requires:
   ExtUtils::MakeMaker: 0
 dynamic_config: 1
-generated_by: 'ExtUtils::MakeMaker version 6.62, CPAN::Meta::Converter version 2.120921'
+generated_by: 'ExtUtils::MakeMaker version 6.66, CPAN::Meta::Converter version 2.112621'
 license: perl
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
@@ -30,4 +30,4 @@ resources:
   homepage: https://code.google.com/p/perl-devel-nytprof/
   license: http://dev.perl.org/licenses/
   x_MailingList: http://groups.google.com/group/develnytprof-dev
-version: 5.03
+version: 5.04
