@@ -4,10 +4,8 @@ author:
   - 'Tim Bunce <timb@cpan.org>'
 build_requires:
   ExtUtils::MakeMaker: 0
-configure_requires:
-  ExtUtils::MakeMaker: 0
 dynamic_config: 1
-generated_by: 'ExtUtils::MakeMaker version 6.66, CPAN::Meta::Converter version 2.120921'
+generated_by: 'ExtUtils::MakeMaker version 6.68, CPAN::Meta::Converter version 2.131560'
 license: perl
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
@@ -27,7 +25,9 @@ requires:
   Test::More: 0.84
   XSLoader: 0
 resources:
+  MailingList: http://groups.google.com/group/develnytprof-dev
+  bugtracker: https://github.com/timbunce/devel-nytprof/issues
   homepage: https://code.google.com/p/perl-devel-nytprof/
   license: http://dev.perl.org/licenses/
-  x_MailingList: http://groups.google.com/group/develnytprof-dev
-version: 5.05
+  repository: git://github.com/timbunce/devel-nytprof.git
+version: 5.06

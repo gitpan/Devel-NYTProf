@@ -7,14 +7,12 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id$
-###########################################################
 package Devel::NYTProf::Core;
 
 
 use XSLoader;
 
-our $VERSION = '5.05';    # increment with XS changes too
+our $VERSION = '5.06';    # increment with XS changes too
 
 XSLoader::load('Devel::NYTProf', $VERSION);
 

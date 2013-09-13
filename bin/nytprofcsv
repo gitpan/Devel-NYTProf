@@ -7,8 +7,6 @@
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ##########################################################
-# $Id$
-##########################################################
 
 use warnings;
 use strict;
@@ -50,7 +48,7 @@ if (!-r $opt{file}) {
     die "$0: Unable to access $opt{file}\n";
 }
 
-# handle handle output location
+# handle output location
 if (!-e $opt{out}) {
 
     # will be created
@@ -198,8 +196,6 @@ Print the help message
  # Format: time,calls,time/call,code
  0,0,0,#--------------------------------------------------------------------
  0,0,0,# My New Source File!
- 0,0,0,#--------------------------------------------------------------------
- 0,0,0,# $Id$
  0,0,0,#--------------------------------------------------------------------
  0,0,0,
  0,0,0,package NYT::Feeds::Util;

@@ -9,8 +9,6 @@ package Devel::NYTProf::Run;
 # http://search.cpan.org/dist/Devel-NYTProf/
 #
 ###########################################################
-# $Id: Util.pm 809 2009-07-07 13:24:31Z tim.bunce $
-###########################################################
 
 =head1 NAME
 
@@ -61,7 +59,7 @@ sub perl_command_words {
 
 # croaks on failure to execute
 # carps, not croak, if process has non-zero exit status
-# Devel::NYTProf::Data->new may croak, e.g., if data trucated
+# Devel::NYTProf::Data->new may croak, e.g., if data truncated
 sub profile_this {
     my %opt = @_;
 
