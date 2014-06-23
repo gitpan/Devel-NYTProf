@@ -42,7 +42,7 @@ $opts{v}    ||= $opts{d};
 $opts{html} ||= $opts{open};
 
 # note some env vars that might impact the tests
-$ENV{$_} && warn "$_=$ENV{$_}\n" for qw(PERL5DB PERL5OPT PERL_UNICODE PERLIO);
+$ENV{$_} && warn "$_='$ENV{$_}'\n" for qw(PERL5DB PERL5OPT PERL_UNICODE PERLIO);
 
 if ($ENV{NYTPROF}) {                        # avoid external interference
     warn "Existing NYTPROF env var value ($ENV{NYTPROF}) ignored for tests. Use NYTPROF_TEST env var if need be.\n";
@@ -66,6 +66,7 @@ my $text_extn_info = {
     rdt   => { order => 20, tests => ($opts{mergerdt}) ? 2 : 1, },
     x     => { order => 30, tests => 3, },
     calls => { order => 40, tests => 1, },
+    pf    => { order => 50, tests => 2, },
 };
 
 chdir('t') if -d 't';
@@ -82,6 +83,7 @@ my $bindir      = (grep {-d} qw(./blib/script ../blib/script))[0] || do {
 my $nytprofcsv   = File::Spec->catfile($bindir, "nytprofcsv");
 my $nytprofcalls = File::Spec->catfile($bindir, "nytprofcalls");
 my $nytprofhtml  = File::Spec->catfile($bindir, "nytprofhtml");
+my $nytprofpf    = File::Spec->catfile($bindir, "nytprofpf");
 my $nytprofmerge = File::Spec->catfile($bindir, "nytprofmerge");
 
 my $path_sep = $Config{path_sep} || ':';
@@ -361,6 +363,9 @@ sub run_test {
 
         verify_csv_report($test, $tag, $test_datafile, $outdir);
     }
+    elsif ($type eq 'pf') {
+        verify_platforms_csv_report($test, $tag, $test_datafile, $outdir);
+    }
     elsif ($type =~ /^(?:pl|pm|new|outdir)$/) {
         # skip; handy for "test.pl t/test01.*"
     }
@@ -474,12 +479,14 @@ sub dump_profile_to_file {
     return;
 }
 
+
 sub diff_files {
     my ($old_file, $new_file, $newp_file) = @_;
 
     # we don't care if this fails, it's just an aid to debug test failures
-    my @opts = split / /, $ENV{NYTPROF_DIFF_OPTS} || $diff_opts;    # e.g. '-y'
-    system("cmp -s $new_file $newp_file || diff @opts $old_file $new_file 1>&2");
+    # XXX needs to behave better on windows
+    my @opts = split / /, $ENV{NYTPROF_DIFF_OPTS} || $diff_opts; # e.g. '-y'
+    system("diff @opts $old_file $new_file 1>&2");
 }
 
 
@@ -588,12 +595,33 @@ sub verify_csv_report {
     chomp @got;
     chomp @expected;
     is_deeply(\@got, \@expected, "$test match generated CSV data for $tag") or do {
-        spit_file($test.'_new', join("\n", @got,''), $test.'_newp');
+        write_out_file($test.'_new', join("\n", @got,''), $test.'_newp');
         diff_files($test, $test.'_new', $test.'_newp');
     };
     is(join("\n", @accuracy_errors), '', "$test times should be reasonable");
 }
 
+sub verify_platforms_csv_report {
+    my ($test, $tag, $profile_datafile, $outdir) = @_;
+    
+    my $outfile = "$outdir/$test.csv";
+
+    my $cmd = "$perl $nytprofpf --file=$profile_datafile --out=$outfile";
+    ok run_command($cmd), "nytprofpf runs ok";
+
+    my $got = slurp_file($outfile);
+        
+    #test if all lines from .pf are contained in result file 
+    #(we can not be sure about the order, so we match each line individually)
+    my $match_result = 1;
+    open (EXPECTED, $test); 
+    while (<EXPECTED>) {
+        $match_result = $match_result && $got =~ m/$_/;
+    }
+    close (EXPECTED);    
+
+    ok $match_result, "$outfile file matches $test";
+}
 
 sub pop_times {
     my $hash = shift || return;
@@ -626,7 +654,7 @@ sub slurp_file {    # individual lines in list context, entire file in scalar co
 }
 
 
-sub spit_file {
+sub write_out_file {
     my ($file, $content, $rename_existing) = @_;
     rename $file, $rename_existing or warn "rename($file, $rename_existing): $!"
         if $rename_existing && -f $file;

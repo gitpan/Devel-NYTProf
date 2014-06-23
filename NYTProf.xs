@@ -14,9 +14,7 @@
  *
  * ************************************************************************
  */
-#ifndef WIN32
 #define PERL_NO_GET_CONTEXT                       /* we want efficiency */
-#endif
 
 #include "EXTERN.h"
 #include "perl.h"
@@ -120,6 +118,7 @@ Perl_gv_fetchfile_flags(pTHX_ const char *const name, const STRLEN namelen, cons
 #define NYTP_OPTf_ADDPID         0x0001 /* append .pid to output filename */
 #define NYTP_OPTf_OPTIMIZE       0x0002 /* affect $^P & 0x04 */
 #define NYTP_OPTf_SAVESRC        0x0004 /* copy source code lines into profile data */
+#define NYTP_OPTf_ADDTIMESTAMP   0x0008 /* append timestamp to output filename */
 
 #define NYTP_FIDf_IS_PMC         0x0001 /* .pm probably really loaded as .pmc */
 #define NYTP_FIDf_VIA_STMT       0x0002 /* fid first seen by stmt profiler */
@@ -296,13 +295,21 @@ and write the options to the stream when profiling starts.
 
 
 /* time tracking */
+#ifdef WIN32
+/* win32_gettimeofday has ~15 ms resolution on Win32, so use
+ * QueryPerformanceCounter which has us or ns resolution depending on
+ * motherboard and OS. Comment this out to use the old clock.
+ */
+#  define HAS_QPC
+#endif
 
 #ifdef HAS_CLOCK_GETTIME
+
 /* http://www.freebsd.org/cgi/man.cgi?query=clock_gettime
  * http://webnews.giga.net.tw/article//mailing.freebsd.performance/710
  * http://sean.chittenden.org/news/2008/06/01/
  * Explanation of why gettimeofday() (and presumably CLOCK_REALTIME) may go backwards:
- * http://groups.google.com/group/comp.os.linux.development.apps/tree/browse_frm/thread/dc29071f2417f75f/ac44671fdb35f6db?rnum=1&_done=%2Fgroup%2Fcomp.os.linux.development.apps%2Fbrowse_frm%2Fthread%2Fdc29071f2417f75f%2Fc46264dba0863463%3Flnk%3Dst%26rnum%3D1%26#doc_776f910824bdbee8
+ * https://groups.google.com/forum/#!topic/comp.os.linux.development.apps/3CkHHyQX918
  */
 typedef struct timespec time_of_day_t;
 #  define CLOCK_GETTIME(ts) clock_gettime(profile_clock, ts)
@@ -331,7 +338,32 @@ typedef uint64_t time_of_day_t;
 
 #else                                             /* !HAS_MACH_TIME */
 
-#ifdef HAS_GETTIMEOFDAY
+#ifdef HAS_QPC
+
+unsigned __int64 time_frequency = 0ui64;
+typedef unsigned __int64 time_of_day_t;
+#  define TICKS_PER_SEC time_frequency
+#  define get_time_of_day(into) QueryPerformanceCounter((LARGE_INTEGER*)&into)
+#  define get_ticks_between(typ, s, e, ticks, overflow) STMT_START { \
+    overflow = 0; /* XXX whats this? */ \
+    ticks = (e-s); \
+} STMT_END
+#define WANT_TIME_HIRES /* for gettimeofday_nv */
+#undef HAS_GETTIMEOFDAY /* for gettimeofday_nv */
+
+#elif defined(HAS_GETTIMEOFDAY)
+/* on Win32 gettimeofday is always implemented in Perl, not the MS C lib, so
+   either we use PerlProc_gettimeofday or win32_gettimeofday, depending on the
+   Perl defines about NO_XSLOCKS and PERL_IMPLICIT_SYS, to simplify logic,
+   we don't check the defines, just the macro symbol to see if it forwards to
+   presumably the iperlsys.h vtable call or not.
+   See https://github.com/timbunce/devel-nytprof/pull/27#issuecomment-46102026
+   for more details.
+*/
+#if defined(WIN32) && !defined(gettimeofday)
+#  define gettimeofday win32_gettimeofday
+#endif
+
 typedef struct timeval time_of_day_t;
 #  define TICKS_PER_SEC 1000000                 /* 1 million */
 #  define get_time_of_day(into) gettimeofday(&into, NULL)
@@ -340,20 +372,23 @@ typedef struct timeval time_of_day_t;
     ticks = ((e.tv_sec - s.tv_sec) * TICKS_PER_SEC + e.tv_usec - s.tv_usec); \
 } STMT_END
 
-#else
+#else /* !HAS_GETTIMEOFDAY */
 
-static int (*u2time)(pTHX_ UV *) = 0;
+/* worst-case fallback - use Time::HiRes which is expensive to call */
+#define WANT_TIME_HIRES
 typedef UV time_of_day_t[2];
 #  define TICKS_PER_SEC 1000000                 /* 1 million */
-#  define get_time_of_day(into) (*u2time)(aTHX_ into)
+#  define get_time_of_day(into) (*time_hires_u2time_hook)(aTHX_ into)
 #  define get_ticks_between(typ, s, e, ticks, overflow)  STMT_START { \
     overflow = 0; \
     ticks = ((e[0] - s[0]) * (typ)TICKS_PER_SEC + e[1] - s[1]); \
 } STMT_END
 
-#endif
-#endif
-#endif
+#endif /* HAS_GETTIMEOFDAY else */
+#endif /* HAS_MACH_TIME else */
+#endif /* HAS_CLOCK_GETTIME else */
+
+static int (*time_hires_u2time_hook)(pTHX_ UV *) = 0;
 
 static time_of_day_t start_time;
 static time_of_day_t end_time;
@@ -443,6 +478,7 @@ logwarn(const char *pat, ...)
 {
     /* we avoid using any perl mechanisms here */
     va_list args;
+    NYTP_IO_dTHX;
     va_start(args, pat);
     if (!logfh)
         logfh = stderr;
@@ -464,18 +500,28 @@ static NV
 gettimeofday_nv(void)
 {
 #ifdef HAS_GETTIMEOFDAY
+
+    NYTP_IO_dTHX;
     struct timeval when;
     gettimeofday(&when, (struct timezone *) 0);
     return when.tv_sec + (when.tv_usec / 1000000.0);
+
 #else
-    if (u2time) {
-        UV time_of_day[2];
-        (*u2time)(aTHX_ &time_of_day);
-        return time_of_day[0] + (time_of_day[1] / 1000000.0);
-    }
-    return (NV)time();
-#endif
+#ifdef WANT_TIME_HIRES
+
+    dTHX;
+    UV time_of_day[2];
+    (*time_hires_u2time_hook)(aTHX_ &time_of_day);
+    return time_of_day[0] + (time_of_day[1] / 1000000.0);
+
+#else
+
+    return (NV)time(); /* practically useless */
+
+#endif /* WANT_TIME_HIRES else */
+#endif /* HAS_GETTIMEOFDAY else */
 }
+
 
 /**
  * output file header
@@ -1683,6 +1729,11 @@ set_option(pTHX_ const char* option, const char* value)
             ? profile_opts |  NYTP_OPTf_ADDPID
             : profile_opts & ~NYTP_OPTf_ADDPID;
     }
+    else if (strEQ(option, "addtimestamp")) {
+        profile_opts = (atoi(value))
+            ? profile_opts |  NYTP_OPTf_ADDTIMESTAMP
+            : profile_opts & ~NYTP_OPTf_ADDTIMESTAMP;
+    }
     else if (strEQ(option, "optimize") || strEQ(option, "optimise")) {
         profile_opts = (atoi(value))
             ? profile_opts |  NYTP_OPTf_OPTIMIZE
@@ -1744,10 +1795,16 @@ open_output_file(pTHX_ char *filename)
     mode = "wb";
 #endif
 
-    if ((profile_opts & NYTP_OPTf_ADDPID)
-    || out /* already opened so assume forking */
-    ) {  
-        sprintf(filename_buf, "%s.%d", filename, getpid());
+    if ((profile_opts & (NYTP_OPTf_ADDPID|NYTP_OPTf_ADDTIMESTAMP))
+    || out /* already opened so assume we're forking and add the pid */
+    ) {
+        if (strlen(filename) >= MAXPATHLEN-(20+20)) /* buffer overrun protection */
+            croak("Filename '%s' too long", filename);
+        strcpy(filename_buf, filename);
+        if ((profile_opts & NYTP_OPTf_ADDPID) || out)
+            sprintf(&filename_buf[strlen(filename_buf)], ".%d", getpid());
+        if ( profile_opts & NYTP_OPTf_ADDTIMESTAMP )
+            sprintf(&filename_buf[strlen(filename_buf)], ".%.0"NVff"", gettimeofday_nv());
         filename = filename_buf;
         /* caller is expected to have purged/closed old out if appropriate */
     }
@@ -3023,6 +3080,24 @@ _init_profiler_clock(pTHX)
         profile_clock = -1;
     }
 #endif
+#ifdef HAS_QPC
+{
+    const char * fnname;
+    if(!QueryPerformanceFrequency(&time_frequency)) {
+        fnname = "QueryPerformanceFrequency";
+        goto win32_failed;
+    }
+    {
+        LARGE_INTEGER tmp; /* do 1 test call, dont check return value for
+        further calls for performance reasons */
+        if(!QueryPerformanceCounter(&tmp)) {
+            fnname = "QueryPerformanceCounter";
+            win32_failed:
+            croak("%s failed with Win32 error %u, no clocks available", fnname, GetLastError());
+        }
+    }
+}
+#endif
     ticks_per_sec = TICKS_PER_SEC;
 }
 
@@ -3032,7 +3107,7 @@ _init_profiler_clock(pTHX)
 static int
 init_profiler(pTHX)
 {
-#ifndef HAS_GETTIMEOFDAY
+#ifdef WANT_TIME_HIRES
     SV **svp;
 #endif
 
@@ -3088,13 +3163,13 @@ init_profiler(pTHX)
         return 0;
     }
 
-#ifndef HAS_GETTIMEOFDAY
+#ifdef WANT_TIME_HIRES
     require_pv("Time/HiRes.pm");                  /* before opcode redirection */
     svp = hv_fetch(PL_modglobal, "Time::U2time", 12, 0);
     if (!svp || !SvIOK(*svp)) croak("Time::HiRes is required");
-    u2time = INT2PTR(int(*)(pTHX_ UV*), SvIV(*svp));
-    if (trace_level)
-        logwarn("NYTProf using Time::HiRes %p\n", u2time);
+    time_hires_u2time_hook = INT2PTR(int(*)(pTHX_ UV*), SvIV(*svp));
+    if (trace_level || !time_hires_u2time_hook)
+        logwarn("NYTProf using Time::HiRes %p\n", time_hires_u2time_hook);
 #endif
 
     /* create file id mapping hash */
@@ -4584,10 +4659,9 @@ static loader_callback processing_callbacks[nytp_tag_max] =
  * data for each line of the string eval.
  */
 static void
-load_profile_data_from_stream(loader_callback *callbacks,
+load_profile_data_from_stream(pTHX_ loader_callback *callbacks,
                               Loader_state_base *state, NYTP_file in)
 {
-    dTHX;
     int file_major, file_minor;
 
     SV *tmp_str1_sv = newSVpvn("",0);
@@ -4868,7 +4942,6 @@ load_profile_to_hv(pTHX_ NYTP_file in)
     Zero(&state, 1, Loader_state_profiler);
     state.total_stmts_duration = 0.0;
     state.profiler_start_time = 0.0;
-    state.profiler_start_time = 0.0;
     state.profiler_end_time = 0.0;
     state.profiler_duration = 0.0;
 #ifdef MULTIPLICITY
@@ -4887,7 +4960,7 @@ load_profile_to_hv(pTHX_ NYTP_file in)
     av_extend(state.fid_srclines_av, 64);
     av_extend(state.fid_line_time_av, 64);
 
-    load_profile_data_from_stream(processing_callbacks,
+    load_profile_data_from_stream(aTHX_ processing_callbacks,
                                   (Loader_state_base *)&state, in);
 
 
@@ -5028,7 +5101,7 @@ load_profile_to_callback(pTHX_ NYTP_file in, SV *cb)
     for (i = 0; i < C_ARRAY_LENGTH(state.cb_args); i++)
         state.cb_args[i] = sv_newmortal();
 
-    load_profile_data_from_stream(perl_callbacks, (Loader_state_base *)&state,
+    load_profile_data_from_stream(aTHX_ perl_callbacks, (Loader_state_base *)&state,
                                   in);
 }
 

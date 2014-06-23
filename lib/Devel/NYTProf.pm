@@ -308,6 +308,12 @@ a backslash.
 Append the current process id to the end of the filename.
 
 This avoids concurrent, or consecutive, processes from overwriting the same file.
+If a fork is detected during profiling then the child process will automatically
+add the process id to the filename.
+
+=head2 addtimestamp=1
+
+Append the current time, as integer epoch seconds, to the end of the filename.
 
 =head2 trace=N
 
@@ -1073,6 +1079,8 @@ you're profiling spawns cpu intensive sub processes then your process will be
 impacted by those more than it otherwise would.
 
 =head3 Windows
+
+B<THIS SECTION DOESN'T MATCH THE CODE>
 
 On Windows NYTProf uses Time::HiRes which uses the windows
 QueryPerformanceCounter() API with some extra logic to adjust for the current
